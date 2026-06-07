@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>C++26 — engine prototype</title>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- lucide-react's UMD bundle reads the lowercase global window.react; only window.React
+       exists from the CDN script above. Without this shim its icon registration throws and
+       every icon component destructures to undefined. -->
+  <script>window.react = window.React;</script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://unpkg.com/lucide-react@0.344.0/dist/umd/lucide-react.js"></script>
+
+  <!-- Plain classic script, NOT data-type="module": module scripts are deferred until after
+       parsing, so the bootstrap script below would run first and find window.CPP26Engine
+       undefined, rendering nothing into #root. -->
+  <script type="text/babel" data-presets="react" src="./cpp26-engine.jsx"></script>
+  <script type="text/babel" data-presets="react">
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(window.CPP26Engine));
+  </script>
+</body>
+</html>

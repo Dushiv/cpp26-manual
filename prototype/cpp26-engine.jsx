@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen } from "lucide-react";
+const { useState } = React;
+const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen } = window.lucideReact || window.LucideReact;
 
 const COURSE_DATA = {
   "courseTitle": "C++26 — от нуля до полного понимания",
@@ -429,7 +429,7 @@ const KIND_LABEL = {
   "in-progress": "В процессе", "not-started": "Не начато",
 };
 
-export default function App() {
+function App() {
   const modules = COURSE_DATA.modules;
   const [cur, setCur] = useState("m1-l1");
   const [view, setView] = useState("lesson");
@@ -727,3 +727,5 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .repl { font-family:'IBM Plex Serif',serif; }
 .empty-big { color:var(--mut); font-style:italic; padding:30px 0; }
 `;
+
+window.CPP26Engine = App;
