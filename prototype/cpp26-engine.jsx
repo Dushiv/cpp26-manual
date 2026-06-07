@@ -384,12 +384,75 @@ function Exercise({ ex, idx, onResolve, onSkip }) {
   );
 }
 
-function Challenge({ ch }) {
+function ChallengeResult({ run, expectedOutput }) {
+  if (run.kind === "network-error") {
+    return <div className="chal-result chal-network">Не получили ответ от Compiler Explorer — попробуйте ещё раз.</div>;
+  }
+  if (run.kind === "compile-error") {
+    return (
+      <div className="chal-result">
+        <div className="chal-result-h">Ошибка компиляции</div>
+        <pre className="cb chal-raw"><code>{run.compilerStderr}</code></pre>
+      </div>
+    );
+  }
+  // "runtime-error" or "ok": show raw stdout/stderr/exit code
+  return (
+    <div className="chal-result">
+      <div className="chal-result-h">{run.kind === "runtime-error" ? "Программа завершилась с ошибкой" : "Вывод"}</div>
+      {run.stdout && <pre className="cb chal-raw"><code>{run.stdout}</code></pre>}
+      {run.stderr && <pre className="cb chal-raw chal-stderr"><code>{run.stderr}</code></pre>}
+      <div className="chal-exit">код возврата: {run.exitCode}</div>
+    </div>
+  );
+}
+
+function Challenge({ ch, verifiedWith }) {
   const [show, setShow] = useState(false);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [pendingMode, setPendingMode] = useState(null); // "run" | "check" | null — which button is in flight
+  const [run, setRun] = useState(null); // { mode: "run" | "check", ...godboltVerdict result } | { mode, kind: "network-error" }
+
+  async function execute(mode) {
+    setBusy(true);
+    setPendingMode(mode);
+    setRun(null);
+    try {
+      const data = await compileOnGodbolt(verifiedWith.compilerId, code, verifiedWith.flags);
+      setRun({ mode, ...godboltVerdict(data) });
+    } catch (e) {
+      setRun({ mode, kind: "network-error" });
+    } finally {
+      setBusy(false);
+      setPendingMode(null);
+    }
+  }
+
   return (
     <div className="card challenge">
       <div className="card-h"><span className="tag tag-opt">Челлендж · необязательно</span></div>
       <Markdown text={ch.prompt} />
+
+      <div className="chal-editor-label">Твоё решение</div>
+      <textarea
+        className="chal-editor"
+        value={code}
+        onChange={(e) => setCode(e.target.value)}
+        placeholder="// напиши свой вариант здесь — компилируется и исполняется по кнопке ниже"
+        spellCheck={false}
+      />
+      <div className="row">
+        <button className="btn" disabled={busy || !code.trim()} onClick={() => execute("run")}>
+          {pendingMode === "run" ? "Компилирую…" : "Запустить"}
+        </button>
+        <button className="btn" disabled={busy || !code.trim()} onClick={() => execute("check")}>
+          {pendingMode === "check" ? "Компилирую…" : "Сверить"}
+        </button>
+      </div>
+
+      {run && <ChallengeResult run={run} expectedOutput={ch.expectedOutput} />}
+
       {!show
         ? <button className="btn ghost" onClick={() => setShow(true)}>Показать эталонное решение</button>
         : <><div className="ref-label">Эталонное решение</div><Markdown text={ch.referenceSolution} /></>}
@@ -601,7 +664,7 @@ function App() {
                       ))}
                     </section>
 
-                    {lesson.challenge && <section><h2>Челлендж</h2><Challenge ch={lesson.challenge} /></section>}
+                    {lesson.challenge && <section><h2>Челлендж</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
 
                     <section>
                       <h2>Проверка усвоения <span className="thr">порог {Math.round(lesson.masteryCheck.passThreshold * 100)}%</span></h2>
@@ -735,6 +798,18 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .ref-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--amber); margin:8px 0 6px; }
 .ce { margin-top:8px; font-size:13px; }
 .ce a { color:var(--amber); }
+
+.chal-editor-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin:14px 0 6px; }
+.chal-editor { width:100%; min-height:140px; background:var(--codebg); border:1px solid var(--line); border-radius:10px;
+  padding:12px 14px; color:var(--ink); font-size:13px; line-height:1.55; resize:vertical; margin-bottom:10px; }
+.chal-editor:focus { outline:none; border-color:var(--amber); }
+.chal-result { margin-top:12px; }
+.chal-result-h { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin-bottom:7px; }
+.chal-raw { margin-bottom:8px; }
+.chal-stderr code { color:var(--red); }
+.chal-exit { font-size:12px; color:var(--mut); }
+.chal-network { padding:11px 14px; border-radius:9px; font-size:13px; color:var(--amber);
+  background:rgba(217,164,65,.08); border:1px solid rgba(217,164,65,.3); }
 
 .bg { margin:0 0 18px; }
 .bg-toggle { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; color:var(--mut); cursor:pointer; font-family:inherit; font-size:13px; }
