@@ -396,13 +396,27 @@ function ChallengeResult({ run, expectedOutput }) {
       </div>
     );
   }
-  // "runtime-error" or "ok": show raw stdout/stderr/exit code
+  const verdict = run.mode === "check" && run.kind === "ok"
+    ? norm(run.stdout) === norm(expectedOutput)
+    : null;
+
   return (
     <div className="chal-result">
       <div className="chal-result-h">{run.kind === "runtime-error" ? "Программа завершилась с ошибкой" : "Вывод"}</div>
       {run.stdout && <pre className="cb chal-raw"><code>{run.stdout}</code></pre>}
       {run.stderr && <pre className="cb chal-raw chal-stderr"><code>{run.stderr}</code></pre>}
       <div className="chal-exit">код возврата: {run.exitCode}</div>
+      {verdict !== null && (
+        <div className={"verdict " + (verdict ? "ok" : "no")}>
+          {verdict ? "Совпадает с эталонным выводом" : "Отличается от эталонного вывода"}
+        </div>
+      )}
+      {verdict === false && (
+        <div className="chal-diff">
+          <div><span className="chal-diff-l">Твой вывод</span><pre className="cb chal-raw"><code>{run.stdout}</code></pre></div>
+          <div><span className="chal-diff-l">Эталонный вывод</span><pre className="cb chal-raw"><code>{expectedOutput}</code></pre></div>
+        </div>
+      )}
     </div>
   );
 }
@@ -810,6 +824,10 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .chal-exit { font-size:12px; color:var(--mut); }
 .chal-network { padding:11px 14px; border-radius:9px; font-size:13px; color:var(--amber);
   background:rgba(217,164,65,.08); border:1px solid rgba(217,164,65,.3); }
+
+.chal-diff { display:flex; gap:14px; margin-top:10px; flex-wrap:wrap; }
+.chal-diff > div { flex:1; min-width:200px; }
+.chal-diff-l { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); margin-bottom:5px; }
 
 .bg { margin:0 0 18px; }
 .bg-toggle { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 12px; color:var(--mut); cursor:pointer; font-family:inherit; font-size:13px; }
