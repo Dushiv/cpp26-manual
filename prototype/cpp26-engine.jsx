@@ -236,6 +236,32 @@ const COURSE_DATA = {
 const STATUS = { NOT_STARTED: "not-started", PROGRESS: "in-progress", SKIPPED: "skipped", DONE: "done" };
 const norm = (s) => (s || "").trim();
 
+async function compileOnGodbolt(compilerId, source, flags) {
+  const res = await fetch(`https://godbolt.org/api/compiler/${compilerId}/compile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify({
+      source,
+      options: { userArguments: flags, filters: { execute: true }, tools: [] },
+    }),
+  });
+  if (!res.ok) throw new Error("godbolt-http-" + res.status);
+  return res.json();
+}
+
+function godboltVerdict(data) {
+  const join = (lines) => (lines || []).map((l) => l.text).join("\n");
+  const compileOk = data.code === 0;
+  const execOk = compileOk && data.execResult && data.execResult.code === 0;
+  return {
+    kind: !compileOk ? "compile-error" : !execOk ? "runtime-error" : "ok",
+    compilerStderr: join(data.stderr),
+    stdout: compileOk ? join(data.execResult && data.execResult.stdout) : "",
+    stderr: compileOk ? join(data.execResult && data.execResult.stderr) : "",
+    exitCode: compileOk ? (data.execResult ? data.execResult.code : null) : data.code,
+  };
+}
+
 function renderInline(text, kp) {
   const parts = [];
   const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
