@@ -37,6 +37,7 @@
       "title": "Pack indexing",
       "prerequisites": [],
       "background": null,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
       "motivation": "markdown: какую боль решает фича",
       "theory": "markdown: исчерпывающее объяснение",
       "examples": [
@@ -71,6 +72,7 @@
       "challenge": {
         "prompt": "markdown: свободное задание",
         "referenceSolution": "...",
+        "expectedOutput": "...",
         "godboltUrl": "https://godbolt.org/..."
       },
       "masteryCheck": {
@@ -86,11 +88,14 @@
 
 Поля `background` и `challenge` опциональны (`null`, если нет). Типы упражнений: `predict-output`, `find-bug`, `choice`. Свободный код — только в `challenge`, не автопроверяется.
 
+`verifiedWith` записывает компилятор и флаги, которыми проверены выводы урока (см. скилл `compiling-cpp26-examples` — в большинстве уроков это `gsnapshot` с `-std=c++26 -O2`, опционально `-fcontracts` для Модуля 4). Тем же компилятором и флагами движок компилирует код ученика в челлендже, чтобы сравнение с `expectedOutput` было корректным (см. `docs/superpowers/specs/2026-06-07-runnable-challenge-design.md`). `challenge.expectedOutput` — это проверенный вывод эталонного решения, полученный тем же прогоном через Compiler Explorer, что и для примеров; без него кнопка «Сверить» не сможет показать вердикт.
+
 ## Чек-лист готовности урока (Definition of Done)
 
 - [ ] Есть мотивация (зачем фича).
 - [ ] Теория покрывает фичу исчерпывающе.
 - [ ] Минимум базовый + продвинутый пример, у каждого проверенный `expectedOutput`.
+- [ ] Если в уроке есть `challenge`, у него заполнены `expectedOutput` (проверенный прогоном эталонного решения) и `verifiedWith` на уровне урока — иначе «Сверить» не сможет дать вердикт.
 - [ ] Минимум одна автопроверяемая задача basic и одна advanced.
 - [ ] Фоновая врезка добавлена, если есть зависимость от C++20/23.
 - [ ] Есть проверка усвоения.
