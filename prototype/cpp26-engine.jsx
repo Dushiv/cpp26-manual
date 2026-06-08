@@ -1,4 +1,4 @@
-const { useState } = React;
+const { useState, useEffect } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen } = window.lucideReact || window.LucideReact;
 
 const COURSE_DATA = {
@@ -248,6 +248,14 @@ function loadProgress() {
     return parsed.data;
   } catch (e) {
     return null;
+  }
+}
+
+function saveProgress(data) {
+  try {
+    localStorage.setItem(PROGRESS_KEY, JSON.stringify({ version: PROGRESS_VERSION, data }));
+  } catch (e) {
+    // localStorage unavailable (private browsing, full quota) — keep running in-memory only
   }
 }
 
@@ -557,6 +565,10 @@ function App() {
   const [exStatus, setExStatus] = useState(saved ? saved.exStatus : {});
   const [mastery, setMastery] = useState(saved ? saved.mastery : {});
   const [strict, setStrict] = useState(saved ? saved.strict : false);
+
+  useEffect(() => {
+    saveProgress({ cur, view, exStatus, mastery, strict });
+  }, [cur, view, exStatus, mastery, strict]);
 
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
