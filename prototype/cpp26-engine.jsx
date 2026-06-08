@@ -236,6 +236,21 @@ const COURSE_DATA = {
 const STATUS = { NOT_STARTED: "not-started", PROGRESS: "in-progress", SKIPPED: "skipped", DONE: "done" };
 const norm = (s) => (s || "").trim();
 
+const PROGRESS_KEY = "cpp26-progress";
+const PROGRESS_VERSION = 1;
+
+function loadProgress() {
+  try {
+    const raw = localStorage.getItem(PROGRESS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== PROGRESS_VERSION) return null;
+    return parsed.data;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function compileOnGodbolt(compilerId, source, flags) {
   const res = await fetch(`https://godbolt.org/api/compiler/${compilerId}/compile`, {
     method: "POST",
@@ -536,11 +551,12 @@ const KIND_LABEL = {
 
 function App() {
   const modules = COURSE_DATA.modules;
-  const [cur, setCur] = useState("m1-l1");
-  const [view, setView] = useState("lesson");
-  const [exStatus, setExStatus] = useState({});
-  const [mastery, setMastery] = useState({});
-  const [strict, setStrict] = useState(false);
+  const [saved] = useState(loadProgress);
+  const [cur, setCur] = useState(saved ? saved.cur : "m1-l1");
+  const [view, setView] = useState(saved ? saved.view : "lesson");
+  const [exStatus, setExStatus] = useState(saved ? saved.exStatus : {});
+  const [mastery, setMastery] = useState(saved ? saved.mastery : {});
+  const [strict, setStrict] = useState(saved ? saved.strict : false);
 
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
