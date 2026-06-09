@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
 const COURSE_DATA = {
@@ -604,7 +604,7 @@ function App() {
   function signIn(provider) {
     const client = getSupabaseClient();
     if (!client) return;
-    client.auth.signInWithOAuth({ provider }).catch(() => {});
+    client.auth.signInWithOAuth({ provider }).catch(console.error);
   }
   function signOut() {
     const client = getSupabaseClient();
