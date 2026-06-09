@@ -612,6 +612,16 @@ function App() {
     client.auth.signOut().catch(() => {});
   }
 
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
   const lesson = findLesson(cur);
