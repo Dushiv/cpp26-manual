@@ -1,4 +1,4 @@
-const { useState, useEffect } = React;
+const { useState, useEffect, useRef } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
 const COURSE_DATA = {
@@ -267,6 +267,24 @@ function getSupabaseClient() {
   if (!window.supabase || !SUPABASE_URL.startsWith("https://")) return null;
   if (!supabaseClient) supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
   return supabaseClient;
+}
+
+async function pullProgress(client, userId) {
+  try {
+    const { data, error } = await client.from("progress").select("blob").eq("user_id", userId).maybeSingle();
+    if (error) return { ok: false };
+    return { ok: true, blob: data ? data.blob : null };
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
+async function pushProgress(client, userId, blob) {
+  try {
+    await client.from("progress").upsert({ user_id: userId, blob, updated_at: new Date().toISOString() });
+  } catch (e) {
+    // network/Supabase unavailable — caller retries on the next sync tick
+  }
 }
 
 async function compileOnGodbolt(compilerId, source, flags) {
@@ -596,6 +614,8 @@ function App() {
   const [mastery, setMastery] = useState(saved ? saved.mastery : {});
   const [strict, setStrict] = useState(saved ? saved.strict : false);
   const [session, setSession] = useState(null);
+  const lastSyncedBlob = useRef(null);
+  const pulledForUserId = useRef(null);
 
   useEffect(() => {
     saveProgress({ cur, view, exStatus, mastery, strict });
@@ -612,13 +632,49 @@ function App() {
     client.auth.signOut().catch(() => {});
   }
 
+  function currentLocalBlob() {
+    return loadProgress() || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false };
+  }
+
+  function applyProgress(blob) {
+    setCur(blob.cur);
+    setView(blob.view);
+    setExStatus(blob.exStatus);
+    setMastery(blob.mastery);
+    setStrict(blob.strict);
+    saveProgress(blob);
+  }
+
+  async function syncOnLogin(userId) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    const result = await pullProgress(client, userId);
+    if (!result.ok) return;
+    if (result.blob) {
+      applyProgress(result.blob);
+      lastSyncedBlob.current = result.blob;
+    } else {
+      const localBlob = currentLocalBlob();
+      pushProgress(client, userId, localBlob);
+      lastSyncedBlob.current = localBlob;
+    }
+  }
+
   useEffect(() => {
     const client = getSupabaseClient();
     if (!client) return;
-    client.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => {
+    function handleSession(newSession) {
       setSession(newSession);
-    });
+      if (newSession && pulledForUserId.current !== newSession.user.id) {
+        pulledForUserId.current = newSession.user.id;
+        syncOnLogin(newSession.user.id);
+      }
+      if (!newSession) {
+        pulledForUserId.current = null;
+      }
+    }
+    client.auth.getSession().then(({ data }) => handleSession(data.session));
+    const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => handleSession(newSession));
     return () => sub.subscription.unsubscribe();
   }, []);
 
