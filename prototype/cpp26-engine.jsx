@@ -1,5 +1,5 @@
-const { useState, useEffect } = React;
-const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen } = window.lucideReact || window.LucideReact;
+const { useState, useEffect, useRef } = React;
+const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
 const COURSE_DATA = {
   "courseTitle": "C++26 — от нуля до полного понимания",
@@ -257,6 +257,16 @@ function saveProgress(data) {
   } catch (e) {
     // localStorage unavailable (private browsing, full quota) — keep running in-memory only
   }
+}
+
+const SUPABASE_URL = "https://jqkgywgvubecdmimskat.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxa2d5d2d2dWJlY2RtaW1za2F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMjMxNjgsImV4cCI6MjA5NjU5OTE2OH0.MZvtQLGJEJ8X4BU8vzu2OycG7JWTO2ubpnxv5WNpBSY";
+
+let supabaseClient = null;
+function getSupabaseClient() {
+  if (!window.supabase || !SUPABASE_URL.startsWith("https://")) return null;
+  if (!supabaseClient) supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  return supabaseClient;
 }
 
 async function compileOnGodbolt(compilerId, source, flags) {
@@ -557,6 +567,26 @@ const KIND_LABEL = {
   "in-progress": "В процессе", "not-started": "Не начато",
 };
 
+function AccountWidget({ session, onSignIn, onSignOut }) {
+  if (!session) {
+    return (
+      <div className="account">
+        <button className="acct-btn" onClick={() => onSignIn("google")}><LogIn size={14} /> Google</button>
+        <button className="acct-btn" onClick={() => onSignIn("github")}><LogIn size={14} /> GitHub</button>
+      </div>
+    );
+  }
+  const meta = session.user.user_metadata || {};
+  const name = meta.full_name || meta.user_name || session.user.email || "Ученик";
+  return (
+    <div className="account">
+      {meta.avatar_url ? <img className="acct-av" src={meta.avatar_url} alt="" /> : <User size={16} />}
+      <span className="acct-name">{name}</span>
+      <button className="acct-btn" onClick={onSignOut}><LogOut size={14} /> Выйти</button>
+    </div>
+  );
+}
+
 function App() {
   const modules = COURSE_DATA.modules;
   const [saved] = useState(loadProgress);
@@ -565,10 +595,22 @@ function App() {
   const [exStatus, setExStatus] = useState(saved ? saved.exStatus : {});
   const [mastery, setMastery] = useState(saved ? saved.mastery : {});
   const [strict, setStrict] = useState(saved ? saved.strict : false);
+  const [session, setSession] = useState(null);
 
   useEffect(() => {
     saveProgress({ cur, view, exStatus, mastery, strict });
   }, [cur, view, exStatus, mastery, strict]);
+
+  function signIn(provider) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.signInWithOAuth({ provider }).catch(() => {});
+  }
+  function signOut() {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.signOut().catch(() => {});
+  }
 
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
@@ -609,6 +651,7 @@ function App() {
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{doneCount} / {real.length} уроков</span>
         </div>
+        <AccountWidget session={session} onSignIn={signIn} onSignOut={signOut} />
       </header>
 
       <div className="body">
@@ -739,6 +782,12 @@ h1,h2,.brand span,.mod-t { font-family:'IBM Plex Serif',Georgia,serif; }
 .prog-bar { width:160px; height:6px; background:var(--line); border-radius:99px; overflow:hidden; }
 .prog-fill { height:100%; background:var(--amber); transition:width .3s; }
 .prog-txt { font-size:12px; color:var(--mut); white-space:nowrap; }
+.account { display:flex; align-items:center; gap:8px; }
+.acct-btn { display:flex; align-items:center; gap:6px; background:var(--panel2); color:var(--ink);
+  border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; font-size:12px; }
+.acct-btn:hover { border-color:var(--amber); }
+.acct-name { font-size:13px; color:var(--ink); white-space:nowrap; }
+.acct-av { width:24px; height:24px; border-radius:50%; object-fit:cover; }
 
 .body { display:flex; align-items:flex-start; }
 .side { width:288px; flex-shrink:0; border-right:1px solid var(--line); padding:16px 12px;
