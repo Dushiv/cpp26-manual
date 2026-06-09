@@ -678,6 +678,32 @@ function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!session) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+    const userId = session.user.id;
+
+    function maybePush() {
+      const blob = currentLocalBlob();
+      if (JSON.stringify(blob) === JSON.stringify(lastSyncedBlob.current)) return;
+      lastSyncedBlob.current = blob;
+      pushProgress(client, userId, blob);
+    }
+    function onVisibilityChange() {
+      if (document.visibilityState === "hidden") maybePush();
+    }
+
+    const interval = setInterval(maybePush, 3 * 60 * 1000);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("beforeunload", maybePush);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("beforeunload", maybePush);
+    };
+  }, [session]);
+
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
   const lesson = findLesson(cur);
