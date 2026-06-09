@@ -673,7 +673,7 @@ function App() {
         pulledForUserId.current = null;
       }
     }
-    client.auth.getSession().then(({ data }) => handleSession(data.session));
+    client.auth.getSession().then(({ data }) => handleSession(data.session)).catch(() => {});
     const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => handleSession(newSession));
     return () => sub.subscription.unsubscribe();
   }, []);
@@ -702,7 +702,7 @@ function App() {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("beforeunload", maybePush);
     };
-  }, [session]);
+  }, [session?.user?.id]);
 
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
