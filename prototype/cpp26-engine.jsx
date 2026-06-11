@@ -626,14 +626,27 @@ function App() {
     if (!client) return;
     client.auth.signInWithOAuth({ provider }).catch(console.error);
   }
-  function signOut() {
+  async function signOut() {
     const client = getSupabaseClient();
     if (!client) return;
+    if (session) await pushIfChanged(session.user.id);
     client.auth.signOut().catch(() => {});
   }
 
   function currentLocalBlob() {
     return loadProgress() || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false };
+  }
+
+  // lastSyncedBlob.current is null until syncOnLogin establishes a baseline;
+  // pushing before that could overwrite the cloud row with pre-pull local state.
+  function pushIfChanged(userId) {
+    if (lastSyncedBlob.current === null) return Promise.resolve();
+    const client = getSupabaseClient();
+    if (!client) return Promise.resolve();
+    const blob = currentLocalBlob();
+    if (JSON.stringify(blob) === JSON.stringify(lastSyncedBlob.current)) return Promise.resolve();
+    lastSyncedBlob.current = blob;
+    return pushProgress(client, userId, blob);
   }
 
   function applyProgress(blob) {
@@ -649,7 +662,10 @@ function App() {
     const client = getSupabaseClient();
     if (!client) return;
     const result = await pullProgress(client, userId);
-    if (!result.ok) return;
+    if (!result.ok) {
+      lastSyncedBlob.current = currentLocalBlob();
+      return;
+    }
     if (result.blob) {
       applyProgress(result.blob);
       lastSyncedBlob.current = result.blob;
@@ -680,29 +696,33 @@ function App() {
 
   useEffect(() => {
     if (!session) return;
-    const client = getSupabaseClient();
-    if (!client) return;
     const userId = session.user.id;
 
-    function maybePush() {
-      const blob = currentLocalBlob();
-      if (JSON.stringify(blob) === JSON.stringify(lastSyncedBlob.current)) return;
-      lastSyncedBlob.current = blob;
-      pushProgress(client, userId, blob);
+    function push() {
+      pushIfChanged(userId);
     }
     function onVisibilityChange() {
-      if (document.visibilityState === "hidden") maybePush();
+      if (document.visibilityState === "hidden") push();
     }
 
-    const interval = setInterval(maybePush, 3 * 60 * 1000);
+    const interval = setInterval(push, 3 * 60 * 1000);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("beforeunload", maybePush);
+    window.addEventListener("beforeunload", push);
     return () => {
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("beforeunload", maybePush);
+      window.removeEventListener("beforeunload", push);
     };
   }, [session?.user?.id]);
+
+  // Debounced push: ~5s after the learner stops changing progress, sync to
+  // the cloud without waiting for the 3-minute timer or a tab-visibility change.
+  useEffect(() => {
+    if (!session) return;
+    const userId = session.user.id;
+    const timer = setTimeout(() => pushIfChanged(userId), 5000);
+    return () => clearTimeout(timer);
+  }, [cur, view, exStatus, mastery, strict, session?.user?.id]);
 
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
