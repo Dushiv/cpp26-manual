@@ -365,18 +365,20 @@ function ExampleCard({ ex, idx }) {
   );
 }
 
-function Exercise({ ex, idx, onResolve, onSkip }) {
+function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
   const [picked, setPicked] = useState(null);
   const [val, setVal] = useState("");
   const [done, setDone] = useState(false);
   const [correct, setCorrect] = useState(false);
+  const [skipped, setSkipped] = useState(() => status === "skipped");
 
   const lvl = ex.level === "advanced" ? "advanced" : "basic";
   const lvlLabel = ex.level === "advanced" ? "Advanced" : "Basic";
 
-  function finish(isCorrect) { setDone(true); setCorrect(isCorrect); onResolve(isCorrect); }
+  function finish(isCorrect) { setDone(true); setCorrect(isCorrect); setSkipped(false); onResolve(isCorrect); }
   function reset() { setDone(false); setCorrect(false); setPicked(null); setVal(""); }
-  function skip() { setDone(true); setCorrect(false); onSkip(); }
+  function skip() { setSkipped(true); onSkip(); }
+  function unskip() { setSkipped(false); onUnskip(); }
 
   let body = null;
   if (ex.type === "predict-output") {
@@ -421,12 +423,17 @@ function Exercise({ ex, idx, onResolve, onSkip }) {
     </>;
   }
 
+  const showSkipped = skipped && !done;
+
   return (
-    <div className="card ex">
+    <div className={"card ex" + (showSkipped ? " ex-skipped" : "")}>
       <div className="card-h">
         <span className={"tag tag-" + lvl}>{lvlLabel}</span>
         <span className="tag tag-type">{ex.type}</span>
-        {!done && <button className="btn skip" onClick={skip}>Пропустить</button>}
+        {showSkipped && <span className="badge-skip">Пропущено</span>}
+        {!done && (showSkipped
+          ? <button className="btn skip" onClick={unskip}>Отменить пропуск</button>
+          : <button className="btn skip" onClick={skip}>Пропустить</button>)}
       </div>
       {body}
       {done && <div className="exp"><Markdown text={ex.explanation} /></div>}
