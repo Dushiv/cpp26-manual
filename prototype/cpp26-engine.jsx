@@ -742,6 +742,11 @@ function App() {
 
   const resolveEx = (id, ok) => setExStatus((s) => ({ ...s, [id]: ok ? "correct" : "wrong" }));
   const skipEx = (id) => setExStatus((s) => ({ ...s, [id]: "skipped" }));
+  const unskipEx = (id) => setExStatus((s) => {
+    const next = { ...s };
+    delete next[id];
+    return next;
+  });
   const passMastery = (id, sc) => setMastery((s) => ({ ...s, [id]: sc }));
 
   const real = allLessons.filter((l) => !l.stub);
@@ -856,8 +861,10 @@ function App() {
                       <h2>Упражнения</h2>
                       {lesson.exercises.map((ex, i) => (
                         <Exercise key={ex.id} ex={ex} idx={i}
+                          status={exStatus[ex.id]}
                           onResolve={(ok) => resolveEx(ex.id, ok)}
-                          onSkip={() => skipEx(ex.id)} />
+                          onSkip={() => skipEx(ex.id)}
+                          onUnskip={() => unskipEx(ex.id)} />
                       ))}
                     </section>
 
