@@ -973,6 +973,7 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .cl.wrong .lc { background:rgba(207,106,90,.16); box-shadow:inset 2px 0 0 var(--red); }
 
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 14px; }
+.card.ex-skipped { opacity:.6; border-style:dashed; border-color:var(--amber); }
 .card-h { display:flex; align-items:center; gap:8px; margin-bottom:11px; }
 .card-t { font-family:'IBM Plex Serif',serif; font-size:15px; }
 .tag { font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--mut); }
@@ -981,6 +982,7 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .tag-advanced { color:var(--amber); border-color:var(--amber); }
 .tag-type { font-family:'JetBrains Mono',monospace; text-transform:none; letter-spacing:0; }
 .tag-opt { color:var(--mut); }
+.badge-skip { font-size:10px; text-transform:uppercase; letter-spacing:.05em; padding:2px 8px; border-radius:99px; border:1px solid var(--amber); color:var(--amber); }
 
 .btn { background:var(--amber); color:#1a1714; border:none; border-radius:8px; padding:8px 14px; font-size:13px; font-weight:600; cursor:pointer; font-family:inherit; }
 .btn:hover { filter:brightness(1.07); }
