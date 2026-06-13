@@ -1,338 +1,18 @@
 const { useState, useEffect, useRef } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
-const COURSE_DATA = {
-  "courseTitle": "C++26 — от нуля до полного понимания",
-  "modules": [
-    {
-      "id": "m0",
-      "moduleNumber": 0,
-      "title": "Контекст C++26",
-      "significance": "вводный",
-      "prerequisites": [],
-      "lessons": [
-        {
-          "id": "m0-l1",
-          "title": "Контекст C++26",
-          "prerequisites": [],
-          "background": null,
-          "motivation": "Прежде чем читать про конкретные фичи C++26, стоит понять две вещи: что вообще изменилось в языке на этом витке стандарта и как устроен сам курс. Без первого сложно расставить приоритеты — например, понять, почему рефлексии и контрактам посвящены целые модули, а мелочам вроде `_` — один урок. Без второго легко перепутать «Пропущено» с «Выполнено» или не заметить, что прогресс модуля считается по проверке усвоения, а не по факту открытия уроков.",
-          "theory": "C++ — это международный стандарт ISO/IEC, который определяет язык и стандартную библиотеку. Стандарт развивается итеративно: рабочая группа WG21 принимает предложения («papers», вида `PxxxxRN`, где `RN` — номер редакции предложения), которые проходят обсуждение, голосование и попадают в очередную редакцию языка. После C++23 следующая по графику редакция — **C++26**.\n\n**C++26 утверждён**: ISO ратифицировал стандарт 28.03.2026, итоговый текст — документ **N5046**. Это значит, что все фичи, о которых идёт речь в этом курсе, — не черновики и не «может быть войдёт», а зафиксированная часть языка.\n\nПервый флагман — **Static Reflection** (на основе предложения P2996). До C++26 язык не давал коду способа «посмотреть на себя»: узнать на этапе компиляции, какие поля есть у структуры, какие у функции параметры, как называется тип. Reflection вводит операторы `^^` (взять «отражение» сущности) и `[: :]` (превратить отражение обратно в код), а также библиотеку `<meta>` для работы с этими отражениями. Это открывает путь к генерации кода без макросов и внешних кодогенераторов — сериализация, ORM-подобные обёртки, автоматические тесты пишутся на самом C++. Этому посвящён Модуль 5.\n\nВторой флагман — **Contracts**. Раньше проверки предусловий и постусловий писали вручную через `assert` или `if`+`throw`, и они были частью реализации, а не интерфейса. C++26 добавляет в язык синтаксис `pre(...)`, `post(...)` и `contract_assert(...)` — контракты становятся видимой частью объявления функции, с настраиваемой политикой проверки (включить, выключить, аварийно завершить). Модуль 4 разбирает это подробно.\n\nТретий флагман — **`std::execution`** (Senders/Receivers, P2300). Это единая модель описания асинхронных и параллельных вычислений в стандартной библиотеке: вместо разрозненных API для потоков, futures и асинхронного I/O — общий словарь «отправитель»/«получатель», на котором строятся конкретные исполнители (executors). Подробно — в Модуле 6.\n\nЧерез несколько модулей курса проходит сквозная тема — **безопасность**: C++26 в ряде мест меняет поведение «было тихим UB» на «диагностируется при компиляции». Пример уже встречался в Модуле 1: индексация пака за границами раньше была бы undefined behavior, а в C++26 — ill-formed, то есть ошибка компиляции. Модуль 2 целиком посвящён таким изменениям.\n\nСам курс устроен так: 11 модулей (0–10), от вводного контекста до отладки и удалённых возможностей; порядок — по зависимостям, а не по номерам спецификации. Каждый написанный урок имеет одну и ту же анатомию: мотивация → теория → примеры → упражнения → проверка усвоения. Упражнения можно пропустить — пропущенное получает статус «Пропущено» (это не «Выполнено») и попадает в «зону повторения», откуда его можно закрыть в любой момент. Модуль считается пройденным после проверки усвоения с порогом **80%** правильных ответов.",
-          "examples": [],
-          "exercises": [
-            {
-              "id": "m0-l1-e1",
-              "level": "basic",
-              "type": "choice",
-              "prompt": "Какая из перечисленных фич — один из трёх флагманов C++26?",
-              "options": [
-                "Static Reflection",
-                "Modules",
-                "Concepts",
-                "Ranges"
-              ],
-              "answerIndex": 0,
-              "explanation": "Три флагмана C++26 — Static Reflection (Модуль 5), Contracts (Модуль 4) и `std::execution` (Модуль 6). Modules, Concepts и Ranges — это фичи C++20, уже знакомые ученику по базовой планке курса."
-            },
-            {
-              "id": "m0-l1-e2",
-              "level": "advanced",
-              "type": "choice",
-              "prompt": "Ученик нажал «Пропустить» на задаче и больше к ней не возвращался. Что произойдёт с модулем?",
-              "options": [
-                "Модуль закроется как «Выполнено», потому что пропуск не считается ошибкой",
-                "Модуль не закроется как «Выполнено» в строгом режиме, а в обычном — может закрыться, но задача останется в «зоне повторения» со статусом «Пропущено»",
-                "Курс автоматически удалит этот урок из навигации",
-                "Пропуск отменяет результаты проверки усвоения для всего модуля"
-              ],
-              "answerIndex": 1,
-              "explanation": "«Пропущено» — отдельный статус, не равный «Выполнено». Задача копится в «зоне повторения»; в обычном режиме модуль может закрыться по проверке усвоения даже с пропусками, а в строгом режиме — нет."
-            }
-          ],
-          "challenge": null,
-          "masteryCheck": {
-            "passThreshold": 0.8,
-            "questions": [
-              {
-                "type": "choice",
-                "prompt": "Когда был утверждён стандарт C++26?",
-                "options": [
-                  "28.03.2026, документ N5046",
-                  "В 2023 году, вместе с C++23",
-                  "Дата ещё не назначена",
-                  "В 2029 году"
-                ],
-                "answerIndex": 0
-              },
-              {
-                "type": "choice",
-                "prompt": "Какие три фичи курс называет флагманами C++26?",
-                "options": [
-                  "Static Reflection, Contracts и std::execution",
-                  "Modules, Concepts и Ranges",
-                  "Coroutines, Modules и Ranges",
-                  "Pack indexing, `_` и `#embed`"
-                ],
-                "answerIndex": 0
-              },
-              {
-                "type": "choice",
-                "prompt": "Какая сквозная тема проходит через несколько модулей курса (в первую очередь Модуль 2)?",
-                "options": [
-                  "Производительность",
-                  "Безопасность — превращение бывшего UB в ошибки компиляции",
-                  "Совместимость с C",
-                  "Сокращение времени компиляции"
-                ],
-                "answerIndex": 1
-              },
-              {
-                "type": "choice",
-                "prompt": "Что означает статус «Пропущено» у задачи?",
-                "options": [
-                  "То же самое, что «Выполнено»",
-                  "Задача провалена окончательно и больше не доступна",
-                  "Задача не засчитана как выполненная, попадает в «зону повторения», но её можно закрыть позже",
-                  "Модуль из-за этого будет навсегда заблокирован"
-                ],
-                "answerIndex": 2
-              },
-              {
-                "type": "choice",
-                "prompt": "Какой порог правильных ответов нужен для прохождения проверки усвоения модуля?",
-                "options": [
-                  "50%",
-                  "100%",
-                  "80%",
-                  "Порог определяется самим учеником"
-                ],
-                "answerIndex": 2
-              }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "id": "m1",
-      "moduleNumber": 1,
-      "title": "Core language ergonomics",
-      "significance": "базовый",
-      "prerequisites": [],
-      "lessons": [
-        {
-          "id": "m1-l1",
-          "title": "Pack indexing",
-          "prerequisites": [],
-          "background": null,
-          "motivation": "До C++26 достать из пака один конкретный элемент было на удивление неудобно. Прямого способа сказать «дай N-й элемент пака» язык не давал, поэтому приходилось идти окольными путями: рекурсией по паку (отщипывая по элементу на каждый инстанс шаблона), упаковкой всего в `std::tuple` ради `std::get<N>` или трюками с fold-expression. Любой из этих путей многословен, бьёт по времени компиляции и заслоняет само намерение — «мне нужен элемент номер N».\n\n**Pack indexing** убирает эту возню: он добавляет к пакам обычный subscript, и обращение к элементу — что по значению, что по типу — становится однострочником, читаемым ровно так, как читается мысль.",
-          "theory": "Pack indexing (предложение P2662) — это subscript-синтаксис, который выбирает из пака один элемент по индексу, известному на этапе компиляции. Раньше пак можно было только «развернуть целиком» через `...`; теперь к нему допустимо обратиться точечно, почти как к массиву.\n\nУ синтаксиса две формы, и различаются они лишь контекстом. Когда `pack...[N]` стоит там, где ожидается выражение, это **pack-index-expression**, и оно даёт N-е значение. Когда та же запись стоит там, где ожидается тип, это **pack-index-specifier**, и она даёт N-й тип. Один и тот же `...[N]` несёт два смысла в зависимости от позиции, и какой из них в силе, компилятор понимает сам.\n\nИндекс отсчитывается с нуля. Главное требование: `N` обязан быть **constant expression** — значением, которое компилятор знает заранее, поэтому проиндексировать пак runtime-переменной нельзя, и попытка обернётся ошибкой компиляции. При этом `N` может зависеть от параметров шаблона: `sizeof...(Ts) - 1` тоже constant expression — так берут последний элемент. Если индекс выходит за границы (у пака из `k` элементов валидны индексы от `0` до `k-1`), программа становится **ill-formed**: снова диагностика при компиляции, без undefined behavior. Это осознанная линия C++26 — то, что в старом языке стало бы тихим UB, здесь ловит компилятор (подробнее в Модуле 2).\n\nИндексировать можно любой пак: function parameter pack, template parameter pack (и type, и non-type), пак из generic-лямбды, а также structured-binding pack (последнее — через P1061, отдельный урок). Важна и value category: при индексации function parameter pack выражение `args...[i]` именует конкретный параметр, то есть это lvalue — на него можно сослаться или взять адрес.\n\nНаконец, границы: pack indexing не даёт ни срезов (slicing), ни выбора по runtime-значению — это прямое следствие требования constant expression. Если выбор нужен в рантайме, по-прежнему строят массив или tuple и индексируют его.",
-          "outputsVerified": true,
-          "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
-          "examples": [
-            {
-              "title": "Выбор N-го значения",
-              "code": "#include <print>\n\ntemplate <typename... Args>\nconstexpr auto second(Args... args) {\n    return args...[1];          // 0-based: элемент #1\n}\n\nint main() {\n    std::print(\"{}\\n\", second(10, 20, 30));\n}",
-              "expectedOutput": "20",
-              "explanation": "Запись `args...[1]` напрямую достаёт второе значение пака — без рекурсии и без промежуточного tuple."
-            },
-            {
-              "title": "Последний элемент + обе формы",
-              "code": "#include <print>\n#include <type_traits>\n\ntemplate <typename... Ts>\nconstexpr auto last(Ts... xs) {\n    return xs...[sizeof...(Ts) - 1];        // value-форма\n}\n\ntemplate <typename... Ts>\nusing last_t = Ts...[sizeof...(Ts) - 1];    // type-форма\n\nint main() {\n    static_assert(std::is_same_v<last_t<int, double, char>, char>);\n    std::print(\"{}\\n\", last(1, 2, 3));\n}",
-              "expectedOutput": "3",
-              "explanation": "Индекс `sizeof...(Ts) - 1` сам по себе constant expression, поэтому легален. Один и тот же `...[N]` обслуживает и value pack `xs`, и type pack `Ts`; то, что `static_assert` компилируется, доказывает, что `last_t<int, double, char>` — это `char`."
-            },
-            {
-              "title": "Тип-форма прямо в сигнатуре",
-              "code": "#include <print>\n\ntemplate <typename... Ts>\nTs...[0] first_of(Ts... xs) {       // тип возврата — первый тип пака\n    return xs...[0];\n}\n\nint main() {\n    std::print(\"{}\\n\", first_of(3.14, 1, 'x'));\n}",
-              "expectedOutput": "3.14",
-              "explanation": "Здесь `Ts...[0]` стоит ровно там, где обычно пишут тип возврата — это и есть суть pack-index-specifier: он годится в любую позицию, где ожидается тип. Первый тип пака — `double`, поэтому функция возвращает `double`."
-            },
-            {
-              "title": "Элемент пака — это lvalue",
-              "code": "#include <print>\n\ntemplate <typename... Ts>\nconstexpr int tweak(Ts... xs) {\n    auto& r = xs...[0];      // xs...[0] именует первый параметр -> lvalue\n    r += 5;                  // меняем через ссылку\n    return xs...[0];\n}\n\nint main() {\n    std::print(\"{}\\n\", tweak(10, 20, 30));\n}",
-              "expectedOutput": "15",
-              "explanation": "`xs...[0]` — не копия, а имя первого параметра, поэтому к нему можно привязать `auto&` и изменить значение. `10` становится `15`, и второе обращение возвращает уже изменённое значение."
-            }
-          ],
-          "exercises": [
-            {
-              "id": "m1-l1-e1",
-              "level": "basic",
-              "type": "predict-output",
-              "code": "#include <print>\ntemplate <int... Ns>\nconstexpr int pick() { return Ns...[2]; }\nint main() { std::print(\"{}\\n\", pick<5, 6, 7, 8>()); }",
-              "answer": "7",
-              "explanation": "Индекс 2 с нуля → третий элемент `5, 6, 7, 8`, то есть `7`. Non-type template parameter pack индексируется так же, как пак значений."
-            },
-            {
-              "id": "m1-l1-e2",
-              "level": "advanced",
-              "type": "find-bug",
-              "code": "#include <print>\ntemplate <typename... T>\nauto at(int i, T... v) {\n    return v...[i];\n}\nint main() { std::print(\"{}\\n\", at(1, 10, 20, 30)); }",
-              "answerLine": 4,
-              "explanation": "Индекс пака обязан быть constant expression, а `i` — runtime-параметр. Поэтому `v...[i]` не скомпилируется: у pack indexing нет runtime-формы. Для выбора по runtime-значению элементы кладут в массив/tuple."
-            },
-            {
-              "id": "m1-l1-e3",
-              "level": "advanced",
-              "type": "choice",
-              "prompt": "`f(1, 2, 3)` инстанцируется, где `f` определена как `constexpr auto f(T... v) { return v...[3]; }`. Что произойдёт?",
-              "options": [
-                "Вернёт последний элемент, 3",
-                "Вернёт 0",
-                "Ошибка компиляции: индекс вне диапазона (ill-formed)",
-                "Undefined behavior в рантайме"
-              ],
-              "answerIndex": 2,
-              "explanation": "У пака из трёх элементов валидны индексы 0..2, поэтому `[3]` выходит за границу → ill-formed, ловится при компиляции. Никакого UB — линия безопасности C++26 (Модуль 2)."
-            }
-          ],
-          "challenge": {
-            "prompt": "Классический до-C++26 способ достать N-й элемент пака — рекурсивный хелпер. Перепиши его в одну строку через pack indexing.\n\n```cpp\ntemplate <std::size_t N, typename T0, typename... Ts>\nauto nth(T0 t0, Ts... ts) {\n    if constexpr (N == 0) return t0; else return nth<N - 1>(ts...);\n}\n```",
-            "referenceSolution": "```cpp\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n```",
-            "expectedOutput": "20",
-            "godboltUrl": null
-          },
-          "masteryCheck": {
-            "passThreshold": 0.8,
-            "questions": [
-              {
-                "type": "choice",
-                "prompt": "Чем должен быть `N` в `pack...[N]`?",
-                "options": [
-                  "runtime-значением",
-                  "constant expression",
-                  "указателем",
-                  "любым int"
-                ],
-                "answerIndex": 1
-              },
-              {
-                "type": "choice",
-                "prompt": "Для пака размера 4 валидные индексы — это:",
-                "options": [
-                  "1–4",
-                  "0–4",
-                  "0–3",
-                  "1–3"
-                ],
-                "answerIndex": 2
-              },
-              {
-                "type": "choice",
-                "prompt": "Индексация пака вне диапазона — это:",
-                "options": [
-                  "UB в рантайме",
-                  "значение по умолчанию",
-                  "зацикливание",
-                  "ill-formed на этапе компиляции"
-                ],
-                "answerIndex": 3
-              }
-            ]
-          }
-        },
-        {
-          "id": "m1-l2",
-          "title": "Placeholder `_`",
-          "stub": true
-        },
-        {
-          "id": "m1-l3",
-          "title": "= delete(\"reason\")",
-          "stub": true
-        },
-        {
-          "id": "m1-l4",
-          "title": "Structured bindings as pack (P1061)",
-          "stub": true
-        },
-        {
-          "id": "m1-l5",
-          "title": "#embed",
-          "stub": true
-        },
-        {
-          "id": "m1-l6",
-          "title": "Прочие мелочи (variadic friend, static_assert message)",
-          "stub": true
-        }
-      ]
-    },
-    {
-      "id": "m2",
-      "moduleNumber": 2,
-      "title": "Безопасность ядра",
-      "significance": "важный",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m3",
-      "moduleNumber": 3,
-      "title": "constexpr: всё на этапе компиляции",
-      "significance": "фундамент",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m4",
-      "moduleNumber": 4,
-      "title": "Contracts",
-      "significance": "флагман",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m5",
-      "moduleNumber": 5,
-      "title": "Static Reflection",
-      "significance": "флагман №1",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m6",
-      "moduleNumber": 6,
-      "title": "std::execution (Senders/Receivers)",
-      "significance": "флагман",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m7",
-      "moduleNumber": 7,
-      "title": "Новые контейнеры и типы",
-      "significance": "важный",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m8",
-      "moduleNumber": 8,
-      "title": "Числа и производительность",
-      "significance": "важный",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m9",
-      "moduleNumber": 9,
-      "title": "Низкоуровневая конкурентность",
-      "significance": "специальный",
-      "prerequisites": [],
-      "lessons": []
-    },
-    {
-      "id": "m10",
-      "moduleNumber": 10,
-      "title": "Отладка, формат, удалённое",
-      "significance": "завершающий",
-      "prerequisites": [],
-      "lessons": []
-    }
-  ]
-};
+const COURSE_TITLE = "C++26 — от нуля до полного понимания";
+
+const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"];
+
+async function loadCourseData(locale) {
+  const modules = await Promise.all(MODULE_IDS.map(async (id) => {
+    const res = await fetch(`../content/modules/${locale}/${id}.json`);
+    if (!res.ok) throw new Error(`failed to load ${locale}/${id}.json: ${res.status}`);
+    return res.json();
+  }));
+  return { modules };
+}
 
 const STATUS = { NOT_STARTED: "not-started", PROGRESS: "in-progress", SKIPPED: "skipped", DONE: "done" };
 const norm = (s) => (s || "").trim();
@@ -714,8 +394,16 @@ function AccountWidget({ session, onSignIn, onSignOut }) {
 }
 
 function App() {
-  const modules = COURSE_DATA.modules;
   const [saved] = useState(loadProgress);
+  const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
+  const [courseData, setCourseData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setCourseData(null);
+    loadCourseData(locale).then((data) => { if (!cancelled) setCourseData(data); });
+    return () => { cancelled = true; };
+  }, [locale]);
   const [cur, setCur] = useState(saved ? saved.cur : "m1-l1");
   const [view, setView] = useState(saved ? saved.view : "lesson");
   const [exStatus, setExStatus] = useState(saved ? saved.exStatus : {});
@@ -834,6 +522,10 @@ function App() {
     return () => clearTimeout(timer);
   }, [cur, view, exStatus, mastery, strict, session?.user?.id]);
 
+  if (!courseData) {
+    return <div className="app"><style>{CSS}</style><div className="empty-big">Loading…</div></div>;
+  }
+  const modules = courseData.modules;
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
   const findLesson = (id) => allLessons.find((l) => l.id === id);
   const lesson = findLesson(cur);
@@ -873,7 +565,7 @@ function App() {
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
-        <div className="brand"><BookOpen size={18} /><span>{COURSE_DATA.courseTitle}</span></div>
+        <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLE}</span></div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{doneCount} / {real.length} уроков</span>
