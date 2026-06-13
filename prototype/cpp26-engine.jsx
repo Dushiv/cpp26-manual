@@ -631,7 +631,7 @@ function App() {
   function signIn(provider) {
     const client = getSupabaseClient();
     if (!client) return;
-    client.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.href } })
+    client.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin + window.location.pathname } })
       .then(({ error }) => { if (error) console.error("signInWithOAuth error:", error); })
       .catch(console.error);
   }
