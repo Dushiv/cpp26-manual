@@ -75,6 +75,7 @@ Full per-module content scope is in `docs/MASTER_PLAN.md` Part A.
 
 ## Current status / open calibrations
 
-- No lesson content is finished yet; `m1-l1` ("Pack indexing") is the most complete example and serves as the format reference, but its example outputs are not yet marked verified.
-- Open calibrations to resolve when starting content work in earnest (see `docs/PROJECT_OVERVIEW.md` §"Открытые калибровки"): lesson content language (Russian/English/both — project docs themselves are Russian), depth-per-feature-size threshold, and the reference compiler for verifying outputs (GCC 16.1 / Clang fork / EDG; reflection needs experimental builds).
-- Implementation milestones (M1–M6, see `docs/MASTER_PLAN.md` Part B8) start with a data model + module navigation + progress tracking on one stub module, before content production scales up.
+- `m1-l1` ("Pack indexing") is finished and serves as the format reference: all examples, exercises, and the challenge solution are verified against GCC trunk (`outputsVerified: true`). The rest of module 1 (`m1-l2`…`m1-l6`) and modules 0 and 2 are still stubs.
+- The prototype has e2e coverage via Playwright (`e2e/`): navigation, all exercise types, skip/unskip, and progress persistence.
+- Open calibrations to resolve when starting content work in earnest (see `docs/PROJECT_OVERVIEW.md` §"Открытые калибровки"): lesson content language (Russian/English/both — project docs themselves are Russian) and the depth-per-feature-size threshold. The reference compiler question is resolved — see `compiling-cpp26-examples` skill.
+- Implementation milestones (M1–M6, see `docs/MASTER_PLAN.md` Part B8): M1 (data model + navigation + progress) is largely in place in the prototype; current work is M2 (content pipeline — filling out modules 0–2).
