@@ -67,6 +67,10 @@ Depth calibration by feature size (draft, to be confirmed): minor feature → 1 
 
 No local C++26 toolchain exists (the only local compiler is MinGW GCC 4.8.1, far too old). To get a verified `expectedOutput`, compile and run examples yourself against the public Compiler Explorer API via `prototype/run-on-godbolt.js` — see the **`compiling-cpp26-examples`** skill for the workflow, compiler IDs (incl. the reflection fork for Module 5), and pitfalls. Don't relay code through the user, and never fabricate an output.
 
+## Git conventions
+
+Commit messages (subject and body) must be in **English**, even though project docs and lesson content are in Russian. Identifiers/titles that are inherently Russian (e.g. a lesson title like `m0-l1` "Контекст C++26") may appear quoted inside an otherwise-English message, but the message itself should read as English.
+
 ## Line endings
 
 Tracked text files (`.md`, `.json`, `.jsx`, `.ts`) use **CRLF** in the working tree (Windows checkout, `core.autocrlf=true`, no `.gitattributes`). When writing a Node script/regex that parses one of these files (e.g. extracting `COURSE_DATA` from `prototype/cpp26-engine.jsx`), match `\r\n` or use a `\r?\n`-tolerant pattern — `\n`-only patterns will silently fail to match.
