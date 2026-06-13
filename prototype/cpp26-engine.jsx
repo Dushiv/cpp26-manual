@@ -962,10 +962,12 @@ function App() {
                     <section><h2>Мотивация</h2><Markdown text={lesson.motivation} /></section>
                     <section><h2>Теория</h2><Markdown text={lesson.theory} /></section>
 
-                    <section>
-                      <h2>Примеры</h2>
-                      {lesson.examples.map((ex, i) => <ExampleCard key={i} ex={ex} idx={i} />)}
-                    </section>
+                    {lesson.examples.length > 0 && (
+                      <section>
+                        <h2>Примеры</h2>
+                        {lesson.examples.map((ex, i) => <ExampleCard key={i} ex={ex} idx={i} />)}
+                      </section>
+                    )}
 
                     <section>
                       <h2>Упражнения</h2>
