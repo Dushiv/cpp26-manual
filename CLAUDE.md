@@ -75,7 +75,8 @@ Full per-module content scope is in `docs/MASTER_PLAN.md` Part A.
 
 ## Current status / open calibrations
 
-- `m1-l1` ("Pack indexing") is finished and serves as the format reference: all examples, exercises, and the challenge solution are verified against GCC trunk (`outputsVerified: true`). The rest of module 1 (`m1-l2`…`m1-l6`) and modules 0 and 2 are still stubs.
+- `m1-l1` ("Pack indexing") is finished and serves as the format reference: all examples, exercises, and the challenge solution are verified against GCC trunk (`outputsVerified: true`). The rest of module 1 (`m1-l2`…`m1-l6`) and module 2 are still stubs.
+- Module 0 (`m0-l1`, "Контекст C++26") is complete — an orientation lesson with no examples/challenge, all-`choice` exercises and mastery check.
 - The prototype has e2e coverage via Playwright (`e2e/`): navigation, all exercise types, skip/unskip, and progress persistence.
 - Open calibrations to resolve when starting content work in earnest (see `docs/PROJECT_OVERVIEW.md` §"Открытые калибровки"): lesson content language (Russian/English/both — project docs themselves are Russian) and the depth-per-feature-size threshold. The reference compiler question is resolved — see `compiling-cpp26-examples` skill.
 - Implementation milestones (M1–M6, see `docs/MASTER_PLAN.md` Part B8): M1 (data model + navigation + progress) is largely in place in the prototype; current work is M2 (content pipeline — filling out modules 0–2).
