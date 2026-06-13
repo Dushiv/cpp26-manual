@@ -6,8 +6,8 @@ export default defineConfig({
     baseURL: "http://127.0.0.1:8901",
   },
   webServer: {
-    command: "npx http-server prototype -p 8901 --cors",
-    url: "http://127.0.0.1:8901/index.html",
+    command: "npx http-server . -p 8901 --cors",
+    url: "http://127.0.0.1:8901/prototype/index.html",
     reuseExistingServer: true,
   },
 });

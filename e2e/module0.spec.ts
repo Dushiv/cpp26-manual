@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/index.html");
+  await page.goto("/prototype/index.html");
   await page.getByRole("listitem").filter({ hasText: "Контекст C++26" }).click();
 });
 
