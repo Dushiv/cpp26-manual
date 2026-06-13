@@ -1,0 +1,8 @@
+{
+  "id": "m3",
+  "moduleNumber": 3,
+  "title": "constexpr: всё на этапе компиляции",
+  "significance": "фундамент",
+  "prerequisites": [],
+  "lessons": []
+}

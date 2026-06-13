@@ -1,0 +1,39 @@
+{
+  "id": "m1",
+  "moduleNumber": 1,
+  "title": "Core language ergonomics",
+  "significance": "basic",
+  "prerequisites": [],
+  "lessons": [
+    {
+      "id": "m1-l1",
+      "title": "Pack indexing",
+      "stub": true
+    },
+    {
+      "id": "m1-l2",
+      "title": "Placeholder `_`",
+      "stub": true
+    },
+    {
+      "id": "m1-l3",
+      "title": "= delete(\"reason\")",
+      "stub": true
+    },
+    {
+      "id": "m1-l4",
+      "title": "Structured bindings as pack (P1061)",
+      "stub": true
+    },
+    {
+      "id": "m1-l5",
+      "title": "#embed",
+      "stub": true
+    },
+    {
+      "id": "m1-l6",
+      "title": "Miscellaneous (variadic friend, static_assert message)",
+      "stub": true
+    }
+  ]
+}
