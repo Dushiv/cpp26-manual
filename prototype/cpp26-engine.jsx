@@ -80,6 +80,7 @@ const UI_STRINGS = {
     statusInProgress: "В процессе",
     statusNotStarted: "Не начато",
     outputsPending: "выводы ждут прогона на GCC 16.1",
+    loadError: "Не удалось загрузить контент урока. Обновите страницу или попробуйте позже.",
   },
   en: {
     courseTitle: "C++26 — from zero to full understanding",
@@ -148,6 +149,7 @@ const UI_STRINGS = {
     statusInProgress: "In progress",
     statusNotStarted: "Not started",
     outputsPending: "outputs await a run on GCC 16.1",
+    loadError: "Failed to load lesson content. Please reload or try again later.",
   },
 };
 
@@ -551,18 +553,30 @@ function AccountWidget({ session, onSignIn, onSignOut }) {
 }
 
 function LocaleSwitcher({ locale, setLocale }) {
-  return null;
+  return (
+    <div className="locale-switch">
+      {["ru", "en"].map((l) => (
+        <button key={l} className={"locale-btn" + (locale === l ? " active" : "")} onClick={() => setLocale(l)}>
+          {l.toUpperCase()}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function App() {
   const [saved] = useState(loadProgress);
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const [courseData, setCourseData] = useState(null);
+  const [loadError, setLoadError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setCourseData(null);
-    loadCourseData(locale).then((data) => { if (!cancelled) setCourseData(data); });
+    setLoadError(null);
+    loadCourseData(locale)
+      .then((data) => { if (!cancelled) setCourseData(data); })
+      .catch((err) => { if (!cancelled) { console.error(err); setLoadError(err); } });
     return () => { cancelled = true; };
   }, [locale]);
   const [cur, setCur] = useState(saved ? saved.cur : "m1-l1");
@@ -575,8 +589,12 @@ function App() {
   const pulledForUserId = useRef(null);
 
   useEffect(() => {
-    saveProgress({ cur, view, exStatus, mastery, strict });
-  }, [cur, view, exStatus, mastery, strict]);
+    saveProgress({ cur, view, exStatus, mastery, strict, locale });
+  }, [cur, view, exStatus, mastery, strict, locale]);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+  }, [locale]);
 
   function signIn(provider) {
     const client = getSupabaseClient();
@@ -593,7 +611,7 @@ function App() {
   }
 
   function currentLocalBlob() {
-    return loadProgress() || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false };
+    return loadProgress() || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
   }
 
   // lastSyncedBlob.current is null until syncOnLogin establishes a baseline;
@@ -614,6 +632,7 @@ function App() {
     setExStatus(blob.exStatus);
     setMastery(blob.mastery);
     setStrict(blob.strict);
+    if (blob.locale) setLocale(blob.locale);
     saveProgress(blob);
   }
 
@@ -683,6 +702,9 @@ function App() {
     return () => clearTimeout(timer);
   }, [cur, view, exStatus, mastery, strict, session?.user?.id]);
 
+  if (loadError) {
+    return <div className="app"><style>{CSS}</style><div className="empty-big">{UI_STRINGS[locale].loadError || UI_STRINGS.ru.loadError}</div></div>;
+  }
   if (!courseData) {
     return <div className="app"><style>{CSS}</style><div className="empty-big">Loading…</div></div>;
   }
@@ -890,6 +912,11 @@ h1,h2,.brand span,.mod-t { font-family:'IBM Plex Serif',Georgia,serif; }
 .acct-btn:hover { border-color:var(--amber); }
 .acct-name { font-size:13px; color:var(--ink); white-space:nowrap; }
 .acct-av { width:24px; height:24px; border-radius:50%; object-fit:cover; }
+.locale-switch { display:flex; gap:4px; }
+.locale-btn { background:var(--panel2); color:var(--mut); border:1px solid var(--line); border-radius:8px;
+  padding:6px 10px; cursor:pointer; font-size:12px; font-weight:600; font-family:inherit; }
+.locale-btn:hover { border-color:var(--amber); }
+.locale-btn.active { color:var(--amber); border-color:var(--amber); }
 
 .body { display:flex; align-items:flex-start; }
 .side { width:288px; flex-shrink:0; border-right:1px solid var(--line); padding:16px 12px;
