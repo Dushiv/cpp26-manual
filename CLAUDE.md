@@ -15,9 +15,10 @@ The project is currently in the **content-design stage**: no build tooling or ap
   - `MASTER_PLAN.md` — source of truth for the learning roadmap (module map, per-module content scope) and the implementation plan (content model, exercise system, mastery-gating, persistence, tech stack rationale).
   - `CONTENT_GUIDE.md` — rules for writing lessons: principles, depth calibration by feature size, the lesson JSON schema, and the Definition-of-Done checklist.
   - `LESSON_TEMPLATE.md` — empty prose skeleton for drafting a lesson before converting it to JSON.
-- `content/modules/` — actual lesson content as data, one JSON file per module (e.g. `m1.json`), authored in the schema defined by `CONTENT_GUIDE.md`. This is what the engine renders and what content work mostly produces/edits.
+- `content/modules/` — actual lesson content as data, one JSON file per module per locale: `content/modules/ru/mN.json` and `content/modules/en/mN.json`, both authored in the schema defined by `CONTENT_GUIDE.md`. This is what the engine renders (via `fetch()` per the active locale) and what content work mostly produces/edits. `prototype/check-i18n-parity.js` verifies the two locale trees stay structurally in sync.
 - `prototype/` — the throwaway/iteration-stage app code:
-  - `cpp26-engine.jsx` — prototype React component (rendering engine + an inlined copy of the course data) used to iterate on lesson format/navigation/progress in-chat before the real PWA is built. Note: its inline `COURSE_DATA` currently duplicates `content/modules/m1.json` rather than loading it — when the two diverge, `content/modules/m1.json` is the authored source of truth.
+  - `cpp26-engine.jsx` — prototype React component (rendering engine) used to iterate on lesson format/navigation/progress in-chat before the real PWA is built. It loads lesson content at runtime via `fetch()` from `content/modules/<locale>/*.json` — there is no inline copy of course data.
+  - `check-i18n-parity.js` — Node script verifying `content/modules/ru/` and `content/modules/en/` stay structurally in sync.
 
 All project docs are written in Russian; lesson content language is one of the open calibrations (see below).
 
@@ -26,7 +27,7 @@ All project docs are written in Russian; lesson content language is one of the o
 These come from `docs/PROJECT_OVERVIEW.md` §"Зафиксированные решения" — treat them as constraints, not suggestions:
 
 - **Stack:** web app packaged as a **PWA** — React + Prism.js/highlight.js for code highlighting, no build tools required (React via CDN is acceptable). Runs in desktop browsers and installs to the Android home screen (offline, local storage).
-- **Content is data.** Lessons live as structured JSON, separate from app code. The shell is a small "engine"; content is written and reviewed independently (see `prototype/cpp26-engine.jsx` + `content/modules/m1.json` for the current split).
+- **Content is data.** Lessons live as structured JSON, separate from app code. The shell is a small "engine"; content is written and reviewed independently (see `prototype/cpp26-engine.jsx` + `content/modules/ru/m1.json` for the current split).
 - **Learner baseline:** confident C++14 + knowledge of C++17. Anything below that is *not* explained (external link only). Background callouts cover **only** the C++17 → C++26 gap, and only what's load-bearing for the specific C++26 feature being taught.
 - **Self-contained — nothing compiles.** The learner is not on a real machine and never compiles code. All example output is pre-verified by *us* once during content prep (Compiler Explorer / a real compiler) and stored as the expected reference; the learner checks their answer against it.
 - **Exercise model:** auto-checkable types (`predict-output`, `find-bug`, `choice`) count toward progress; free-form "write it yourself" is an optional challenge with a reference solution + Compiler Explorer link and does *not* affect completion.
@@ -48,7 +49,7 @@ Course → Module (0..10) → Lesson
 
 A lesson is considered incomplete without an advanced example or a mastery check. The "Background" block appears only when the lesson has C++20/23 prerequisite tags, and is collapsed by default.
 
-The canonical JSON schema for a lesson (with all fields) is in `docs/CONTENT_GUIDE.md`; `content/modules/m1.json` / the `COURSE_DATA` object in `prototype/cpp26-engine.jsx` show a filled-in real example (`m1-l1`, "Pack indexing"). Modules/lessons not yet written are present as stubs (`"stub": true` or empty `"lessons": []`).
+The canonical JSON schema for a lesson (with all fields) is in `docs/CONTENT_GUIDE.md`; `content/modules/ru/m1.json` (and its `content/modules/en/m1.json` counterpart) show a filled-in real example (`m1-l1`, "Pack indexing"). Modules/lessons not yet written are present as stubs (`"stub": true` or empty `"lessons": []`).
 
 ## Authoring a lesson — workflow
 
@@ -73,7 +74,7 @@ Commit messages (subject and body) must be in **English**, even though project d
 
 ## Line endings
 
-Tracked text files (`.md`, `.json`, `.jsx`, `.ts`) use **CRLF** in the working tree (Windows checkout, `core.autocrlf=true`, no `.gitattributes`). When writing a Node script/regex that parses one of these files (e.g. extracting `COURSE_DATA` from `prototype/cpp26-engine.jsx`), match `\r\n` or use a `\r?\n`-tolerant pattern — `\n`-only patterns will silently fail to match.
+Tracked text files (`.md`, `.json`, `.jsx`, `.ts`) use **CRLF** in the working tree (Windows checkout, `core.autocrlf=true`, no `.gitattributes`). When writing a Node script/regex that parses one of these files, match `\r\n` or use a `\r?\n`-tolerant pattern — `\n`-only patterns will silently fail to match.
 
 ## Module roadmap (ordered by dependency, not alphabetically)
 

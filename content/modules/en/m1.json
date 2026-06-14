@@ -1,0 +1,146 @@
+{
+  "id": "m1",
+  "moduleNumber": 1,
+  "title": "Core language ergonomics",
+  "significance": "basic",
+  "prerequisites": [],
+  "lessons": [
+    {
+      "id": "m1-l1",
+      "title": "Pack indexing",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before C++26, getting a single specific element out of a pack was surprisingly awkward. The language gave you no direct way to say \"give me the N-th element of this pack\", so you had to take detours: recursing over the pack (peeling off one element per template instantiation), packing everything into a `std::tuple` just to use `std::get<N>`, or fold-expression tricks. Every one of these approaches is verbose, hurts compile times, and obscures the actual intent — \"I just need element number N\".\n\n**Pack indexing** removes this hassle: it adds an ordinary subscript to packs, and accessing an element — by value or by type — becomes a one-liner that reads exactly like the thought behind it.",
+      "theory": "Pack indexing (proposal P2662) is a subscript syntax that picks a single element out of a pack by an index known at compile time. Previously, a pack could only be \"expanded entirely\" via `...`; now you're allowed to access it pointwise, almost like an array.\n\nThe syntax has two forms, distinguished only by context. When `pack...[N]` appears where an expression is expected, it's a **pack-index-expression**, and it yields the N-th value. When the same notation appears where a type is expected, it's a **pack-index-specifier**, and it yields the N-th type. The same `...[N]` carries two meanings depending on position, and the compiler figures out which one applies on its own.\n\nThe index is zero-based. The main requirement: `N` must be a **constant expression** — a value the compiler knows ahead of time — so you cannot index a pack with a runtime variable, and trying to do so is a compile error. That said, `N` can depend on template parameters: `sizeof...(Ts) - 1` is also a constant expression — that's how you grab the last element. If the index is out of range (for a pack of `k` elements, valid indices are `0` through `k-1`), the program becomes **ill-formed**: again diagnosed at compile time, with no undefined behavior. This is a deliberate C++26 line — what used to be silent UB in the old language is caught by the compiler here (more on this in Module 2).\n\nYou can index any pack: a function parameter pack, a template parameter pack (both type and non-type), a pack from a generic lambda, and also a structured-binding pack (the latter via P1061, a separate lesson). Value category matters too: when indexing a function parameter pack, the expression `args...[i]` names a specific parameter — that is, it's an lvalue — so you can take a reference to it or its address.\n\nFinally, the limits: pack indexing gives you neither slicing nor runtime-value selection — a direct consequence of the constant-expression requirement. If you need runtime selection, you still build an array or tuple and index that.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
+      "examples": [
+        {
+          "title": "Picking the N-th value",
+          "code": "#include <print>\n\ntemplate <typename... Args>\nconstexpr auto second(Args... args) {\n    return args...[1];          // 0-based: element #1\n}\n\nint main() {\n    std::print(\"{}\\n\", second(10, 20, 30));\n}",
+          "expectedOutput": "20",
+          "explanation": "The notation `args...[1]` directly retrieves the pack's second value — no recursion, no intermediate tuple."
+        },
+        {
+          "title": "Last element + both forms",
+          "code": "#include <print>\n#include <type_traits>\n\ntemplate <typename... Ts>\nconstexpr auto last(Ts... xs) {\n    return xs...[sizeof...(Ts) - 1];        // value form\n}\n\ntemplate <typename... Ts>\nusing last_t = Ts...[sizeof...(Ts) - 1];    // type form\n\nint main() {\n    static_assert(std::is_same_v<last_t<int, double, char>, char>);\n    std::print(\"{}\\n\", last(1, 2, 3));\n}",
+          "expectedOutput": "3",
+          "explanation": "The index `sizeof...(Ts) - 1` is itself a constant expression, so it's legal. The same `...[N]` serves both the value pack `xs` and the type pack `Ts`; the fact that the `static_assert` compiles proves that `last_t<int, double, char>` is `char`."
+        },
+        {
+          "title": "The type form right in the signature",
+          "code": "#include <print>\n\ntemplate <typename... Ts>\nTs...[0] first_of(Ts... xs) {       // return type is the pack's first type\n    return xs...[0];\n}\n\nint main() {\n    std::print(\"{}\\n\", first_of(3.14, 1, 'x'));\n}",
+          "expectedOutput": "3.14",
+          "explanation": "Here `Ts...[0]` sits exactly where a return type is normally written — that's the essence of pack-index-specifier: it fits any position where a type is expected. The pack's first type is `double`, so the function returns `double`."
+        },
+        {
+          "title": "A pack element is an lvalue",
+          "code": "#include <print>\n\ntemplate <typename... Ts>\nconstexpr int tweak(Ts... xs) {\n    auto& r = xs...[0];      // xs...[0] names the first parameter -> lvalue\n    r += 5;                  // mutate through the reference\n    return xs...[0];\n}\n\nint main() {\n    std::print(\"{}\\n\", tweak(10, 20, 30));\n}",
+          "expectedOutput": "15",
+          "explanation": "`xs...[0]` isn't a copy — it's the name of the first parameter, so you can bind `auto&` to it and modify its value. `10` becomes `15`, and the second access returns the already-modified value."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\ntemplate <int... Ns>\nconstexpr int pick() { return Ns...[2]; }\nint main() { std::print(\"{}\\n\", pick<5, 6, 7, 8>()); }",
+          "answer": "7",
+          "explanation": "Index 2, zero-based → the third element of `5, 6, 7, 8`, which is `7`. A non-type template parameter pack is indexed the same way as a value pack."
+        },
+        {
+          "id": "m1-l1-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\ntemplate <typename... T>\nauto at(int i, T... v) {\n    return v...[i];\n}\nint main() { std::print(\"{}\\n\", at(1, 10, 20, 30)); }",
+          "answerLine": 4,
+          "explanation": "A pack index must be a constant expression, but `i` is a runtime parameter. So `v...[i]` won't compile: pack indexing has no runtime form. For runtime selection, you put the elements into an array/tuple instead."
+        },
+        {
+          "id": "m1-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "`f(1, 2, 3)` is instantiated, where `f` is defined as `constexpr auto f(T... v) { return v...[3]; }`. What happens?",
+          "options": [
+            "Returns the last element, 3",
+            "Returns 0",
+            "Compile error: index out of range (ill-formed)",
+            "Undefined behavior at runtime"
+          ],
+          "answerIndex": 2,
+          "explanation": "For a pack of three elements, valid indices are 0..2, so `[3]` is out of range → ill-formed, caught at compile time. No UB — this is C++26's safety line (Module 2)."
+        }
+      ],
+      "challenge": {
+        "prompt": "The classic pre-C++26 way to get the N-th element of a pack is a recursive helper. Rewrite it as a one-liner using pack indexing.\n\n```cpp\ntemplate <std::size_t N, typename T0, typename... Ts>\nauto nth(T0 t0, Ts... ts) {\n    if constexpr (N == 0) return t0; else return nth<N - 1>(ts...);\n}\n```",
+        "referenceSolution": "```cpp\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n```",
+        "expectedOutput": "20",
+        "godboltUrl": null
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What must `N` be in `pack...[N]`?",
+            "options": [
+              "a runtime value",
+              "a constant expression",
+              "a pointer",
+              "any int"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "For a pack of size 4, the valid indices are:",
+            "options": [
+              "1–4",
+              "0–4",
+              "0–3",
+              "1–3"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Indexing a pack out of range is:",
+            "options": [
+              "UB at runtime",
+              "a default value",
+              "an infinite loop",
+              "ill-formed at compile time"
+            ],
+            "answerIndex": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "m1-l2",
+      "title": "Placeholder `_`",
+      "stub": true
+    },
+    {
+      "id": "m1-l3",
+      "title": "= delete(\"reason\")",
+      "stub": true
+    },
+    {
+      "id": "m1-l4",
+      "title": "Structured bindings as pack (P1061)",
+      "stub": true
+    },
+    {
+      "id": "m1-l5",
+      "title": "#embed",
+      "stub": true
+    },
+    {
+      "id": "m1-l6",
+      "title": "Miscellaneous (variadic friend, static_assert message)",
+      "stub": true
+    }
+  ]
+}

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
-  await page.goto("/index.html");
+  await page.goto("/prototype/index.html");
   await expect(page.locator(".card.ex").first()).toBeVisible();
 });
 

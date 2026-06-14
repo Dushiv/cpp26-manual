@@ -1,0 +1,109 @@
+{
+  "id": "m0",
+  "moduleNumber": 0,
+  "title": "C++26 context",
+  "significance": "intro",
+  "prerequisites": [],
+  "lessons": [
+    {
+      "id": "m0-l1",
+      "title": "C++26 context",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before diving into specific C++26 features, it's worth understanding two things: what actually changed in the language in this revision of the standard, and how the course itself is structured. Without the first, it's hard to prioritize — for example, to understand why reflection and contracts each get a whole module, while small features like `_` get a single lesson. Without the second, it's easy to confuse \"Skipped\" with \"Done\", or to miss that a module's progress is measured by its mastery check, not by simply opening its lessons.",
+      "theory": "C++ is an international ISO/IEC standard that defines the language and the standard library. The standard evolves iteratively: the WG21 working group adopts proposals (\"papers\", in the form `PxxxxRN`, where `RN` is the proposal's revision number), which go through discussion, voting, and land in the next revision of the language. After C++23, the next revision on schedule is **C++26**.\n\n**C++26 is finalized**: ISO ratified the standard on 28.03.2026, with the final text published as document **N5046**. This means every feature discussed in this course is not a draft or a \"maybe it'll make it in\" — it's a locked-in part of the language.\n\nThe first flagship is **Static Reflection** (based on proposal P2996). Before C++26, the language gave code no way to \"look at itself\": to find out at compile time which fields a struct has, what parameters a function takes, or what a type is named. Reflection introduces the `^^` operator (take the \"reflection\" of an entity) and `[: :]` (turn a reflection back into code), plus the `<meta>` library for working with these reflections. This opens the door to code generation without macros or external code generators — serialization, ORM-like wrappers, and automated tests can all be written in C++ itself. Module 5 covers this in depth.\n\nThe second flagship is **Contracts**. Previously, pre- and postcondition checks were written by hand using `assert` or `if`+`throw`, and were part of the implementation rather than the interface. C++26 adds the syntax `pre(...)`, `post(...)`, and `contract_assert(...)` to the language — contracts become a visible part of a function's declaration, with a configurable checking policy (enable, disable, or terminate). Module 4 covers this in detail.\n\nThe third flagship is **`std::execution`** (Senders/Receivers, P2300). It's a unified model for describing asynchronous and parallel computation in the standard library: instead of disparate APIs for threads, futures, and async I/O, there's a common \"sender\"/\"receiver\" vocabulary on top of which concrete executors are built. Module 6 covers this in detail.\n\nA cross-cutting theme runs through several modules of the course — **safety**: in a number of places, C++26 changes behavior from \"used to be silent UB\" to \"diagnosed at compile time\". You've already seen an example in Module 1: out-of-bounds pack indexing used to be undefined behavior, but in C++26 it's ill-formed — a compile error. Module 2 is dedicated entirely to changes like this.\n\nThe course itself is structured as follows: 11 modules (0–10), from an introductory context lesson to debugging and removed features; the order follows dependencies, not the spec's numbering. Every written lesson has the same anatomy: motivation → theory → examples → exercises → mastery check. Exercises can be skipped — a skipped exercise gets the status \"Skipped\" (not \"Done\") and goes into the \"review zone\", from which it can be cleared at any time. A module is considered complete once its mastery check passes with a threshold of **80%** correct answers.",
+      "examples": [],
+      "exercises": [
+        {
+          "id": "m0-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Which of the listed features is one of C++26's three flagships?",
+          "options": [
+            "Static Reflection",
+            "Modules",
+            "Concepts",
+            "Ranges"
+          ],
+          "answerIndex": 0,
+          "explanation": "C++26's three flagships are Static Reflection (Module 5), Contracts (Module 4), and `std::execution` (Module 6). Modules, Concepts, and Ranges are C++20 features the learner is already expected to know from the course's baseline."
+        },
+        {
+          "id": "m0-l1-e2",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "The learner clicked \"Skip\" on an exercise and never returned to it. What happens to the module?",
+          "options": [
+            "The module will close as \"Done\", because skipping doesn't count as an error",
+            "In strict mode the module won't close as \"Done\"; in normal mode it may close, but the exercise stays in the \"review zone\" with the status \"Skipped\"",
+            "The course will automatically remove this lesson from navigation",
+            "Skipping invalidates the mastery check results for the whole module"
+          ],
+          "answerIndex": 1,
+          "explanation": "\"Skipped\" is a separate status, not equal to \"Done\". The exercise accumulates in the \"review zone\"; in normal mode a module can close via its mastery check even with skipped exercises, but in strict mode it cannot."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "When was the C++26 standard ratified?",
+            "options": [
+              "28.03.2026, document N5046",
+              "In 2023, together with C++23",
+              "The date hasn't been set yet",
+              "In 2029"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "Which three features does the course call C++26's flagships?",
+            "options": [
+              "Static Reflection, Contracts, and std::execution",
+              "Modules, Concepts, and Ranges",
+              "Coroutines, Modules, and Ranges",
+              "Pack indexing, `_`, and `#embed`"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "Which cross-cutting theme runs through several modules of the course (Module 2 in particular)?",
+            "options": [
+              "Performance",
+              "Safety — turning former UB into compile errors",
+              "C compatibility",
+              "Reducing compile times"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does the \"Skipped\" status on an exercise mean?",
+            "options": [
+              "The same as \"Done\"",
+              "The exercise has failed permanently and is no longer accessible",
+              "The exercise isn't counted as done, goes into the \"review zone\", but can be cleared later",
+              "The module will be permanently locked because of this"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What pass threshold of correct answers is required for a module's mastery check?",
+            "options": [
+              "50%",
+              "100%",
+              "80%",
+              "The threshold is set by the learner themselves"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    }
+  ]
+}
