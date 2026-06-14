@@ -15,9 +15,10 @@ The project is currently in the **content-design stage**: no build tooling or ap
   - `MASTER_PLAN.md` — source of truth for the learning roadmap (module map, per-module content scope) and the implementation plan (content model, exercise system, mastery-gating, persistence, tech stack rationale).
   - `CONTENT_GUIDE.md` — rules for writing lessons: principles, depth calibration by feature size, the lesson JSON schema, and the Definition-of-Done checklist.
   - `LESSON_TEMPLATE.md` — empty prose skeleton for drafting a lesson before converting it to JSON.
-- `content/modules/` — actual lesson content as data, one JSON file per module (e.g. `m1.json`), authored in the schema defined by `CONTENT_GUIDE.md`. This is what the engine renders and what content work mostly produces/edits.
+- `content/modules/` — actual lesson content as data, one JSON file per module per locale: `content/modules/ru/mN.json` and `content/modules/en/mN.json`, both authored in the schema defined by `CONTENT_GUIDE.md`. This is what the engine renders (via `fetch()` per the active locale) and what content work mostly produces/edits. `prototype/check-i18n-parity.js` verifies the two locale trees stay structurally in sync.
 - `prototype/` — the throwaway/iteration-stage app code:
-  - `cpp26-engine.jsx` — prototype React component (rendering engine + an inlined copy of the course data) used to iterate on lesson format/navigation/progress in-chat before the real PWA is built. Note: its inline `COURSE_DATA` currently duplicates `content/modules/m1.json` rather than loading it — when the two diverge, `content/modules/m1.json` is the authored source of truth.
+  - `cpp26-engine.jsx` — prototype React component (rendering engine) used to iterate on lesson format/navigation/progress in-chat before the real PWA is built. It loads lesson content at runtime via `fetch()` from `content/modules/<locale>/*.json` — there is no inline copy of course data.
+  - `check-i18n-parity.js` — Node script verifying `content/modules/ru/` and `content/modules/en/` stay structurally in sync.
 
 All project docs are written in Russian; lesson content language is one of the open calibrations (see below).
 
