@@ -11,7 +11,7 @@
       "prerequisites": [],
       "background": null,
       "motivation": "Before C++26, getting a single specific element out of a pack was surprisingly awkward. The language gave you no direct way to say \"give me the N-th element of this pack\", so you had to take detours: recursing over the pack (peeling off one element per template instantiation), packing everything into a `std::tuple` just to use `std::get<N>`, or fold-expression tricks. Every one of these approaches is verbose, hurts compile times, and obscures the actual intent — \"I just need element number N\".\n\n**Pack indexing** removes this hassle: it adds an ordinary subscript to packs, and accessing an element — by value or by type — becomes a one-liner that reads exactly like the thought behind it.",
-      "theory": "Pack indexing (proposal P2662) is a subscript syntax that picks a single element out of a pack by an index known at compile time. Previously, a pack could only be \"expanded entirely\" via `...`; now you're allowed to access it pointwise, almost like an array.\n\nThe syntax has two forms, distinguished only by context. When `pack...[N]` appears where an expression is expected, it's a **pack-index-expression**, and it yields the N-th value. When the same notation appears where a type is expected, it's a **pack-index-specifier**, and it yields the N-th type. The same `...[N]` carries two meanings depending on position, and the compiler figures out which one applies on its own.\n\nThe index is zero-based. The main requirement: `N` must be a **constant expression** — a value the compiler knows ahead of time — so you cannot index a pack with a runtime variable, and trying to do so is a compile error. That said, `N` can depend on template parameters: `sizeof...(Ts) - 1` is also a constant expression — that's how you grab the last element. If the index is out of range (for a pack of `k` elements, valid indices are `0` through `k-1`), the program becomes **ill-formed**: again diagnosed at compile time, with no undefined behavior. This is a deliberate C++26 line — what used to be silent UB in the old language is caught by the compiler here (more on this in Module 2).\n\nYou can index any pack: a function parameter pack, a template parameter pack (both type and non-type), a pack from a generic lambda, and also a structured-binding pack (the latter via P1061, a separate lesson). Value category matters too: when indexing a function parameter pack, the expression `args...[i]` names a specific parameter — that is, it's an lvalue — so you can take a reference to it or its address.\n\nFinally, the limits: pack indexing gives you neither slicing nor runtime-value selection — a direct consequence of the constant-expression requirement. If you need runtime selection, you still build an array or tuple and index that.",
+      "theory": "Pack indexing (proposal P2662) is a subscript syntax that picks a single element out of a pack by an index known at compile time. Previously, a pack could only be \"expanded entirely\" via `...`; now you're allowed to access it pointwise, almost like an array.\n\nThe syntax has two forms, distinguished only by context. When `pack...[N]` appears where an expression is expected, it's a **pack-index-expression**, and it yields the N-th value. When the same notation appears where a type is expected, it's a **pack-index-specifier**, and it yields the N-th type. The same `...[N]` carries two meanings depending on position, and the compiler figures out which one applies on its own.\n\nThe index is zero-based. The main requirement: `N` must be a **constant expression** — a value the compiler knows ahead of time — so you cannot index a pack with a runtime variable, and trying to do so is a compile error. That said, `N` can depend on template parameters: `sizeof...(Ts) - 1` is also a constant expression — that's how you grab the last element. If the index is out of range (for a pack of `k` elements, valid indices are `0` through `k-1`), the program becomes **ill-formed**: again diagnosed at compile time, with no undefined behavior. This is a deliberate C++26 line — what used to be silent UB in the old language is caught by the compiler here (more on this in Module 2).\n\nYou can index any pack: a function parameter pack, a template parameter pack (both type and non-type), a pack from a generic lambda, and also a structured-binding pack (the latter via P1061, a separate lesson). Value category matters too: when indexing a function parameter pack, the expression `args...[i]` names a specific parameter — that is, it's an lvalue — so you can take a reference to it or its address.\n\nFinally, the limits: pack indexing gives you neither slicing nor runtime-value selection — a direct consequence of the constant-expression requirement. If you need runtime selection, you still build an array or tuple and index that.\n\n`pack...[N]` follows the same `decltype` rules as an ordinary variable name: `decltype(xs...[0])` gives the parameter's declared type without a reference — just like `decltype(x)` for a variable `x` — while `decltype((xs...[0]))`, with extra parentheses, gives a type that reflects value category, i.e. `T&` for an lvalue. It's the same long-familiar \"id-expression vs. parenthesized expression\" pair of rules, just applied to a pack.\n\nBeing ill-formed due to an out-of-range index is a special case of a template-argument substitution error, and SFINAE applies to it: if `pack...[N]` with an invalid `N` appears in the immediate context of a substitution (for example, in a trailing return type via `decltype`), the compiler doesn't fail the whole build — it simply drops that overload or specialization from the candidate set, like any other type error under SFINAE. That turns `...[N]` into a ready-made \"does the pack have at least N+1 elements\" check, without `requires` or `enable_if`.\n\nThat said, pack indexing doesn't replace `std::tuple` and `std::get<N>`: a pack is a template abstraction over the parameters of the current instantiation, not an object with its own storage and lifetime. If a set of values needs to be stored, copied, or passed around as a single entity, `std::tuple` remains the right choice; `...[N]` is about reaching into a pack's parameters in place, without wrapping them.",
       "outputsVerified": true,
       "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
       "examples": [
@@ -38,6 +38,12 @@
           "code": "#include <print>\n\ntemplate <typename... Ts>\nconstexpr int tweak(Ts... xs) {\n    auto& r = xs...[0];      // xs...[0] names the first parameter -> lvalue\n    r += 5;                  // mutate through the reference\n    return xs...[0];\n}\n\nint main() {\n    std::print(\"{}\\n\", tweak(10, 20, 30));\n}",
           "expectedOutput": "15",
           "explanation": "`xs...[0]` isn't a copy — it's the name of the first parameter, so you can bind `auto&` to it and modify its value. `10` becomes `15`, and the second access returns the already-modified value."
+        },
+        {
+          "title": "SFINAE: index as a check on pack size",
+          "code": "#include <print>\n\n// Only viable if the pack has an index 2 (at least 3 elements)\ntemplate <typename... Ts>\nauto third(Ts... xs) -> decltype(xs...[2]) {\n    return xs...[2];\n}\n\n// Fallback for shorter packs\ntemplate <typename... Ts>\nint third(Ts...) {\n    return -1;\n}\n\nint main() {\n    std::print(\"{}\\n\", third(10, 20));\n}",
+          "expectedOutput": "-1",
+          "explanation": "For the pack `{10, 20}` (size 2, valid indices 0..1), `xs...[2]` is out of range — an error in the first overload's trailing return type. But that error occurs in the immediate context of substitution, so SFINAE kicks in: the first overload is quietly removed, the second remains, and the call returns `-1`. For a pack of three or more elements, the first overload would have been chosen."
         }
       ],
       "exercises": [
@@ -70,6 +76,20 @@
           ],
           "answerIndex": 2,
           "explanation": "For a pack of three elements, valid indices are 0..2, so `[3]` is out of range → ill-formed, caught at compile time. No UB — this is C++26's safety line (Module 2)."
+        },
+        {
+          "id": "m1-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Given two overloads:\n```cpp\ntemplate <typename... Ts>\nauto third(Ts... xs) -> decltype(xs...[2]) { return xs...[2]; }\n\ntemplate <typename... Ts>\nint third(Ts...) { return -1; }\n```\nWhat does `third(10, 20)` return?",
+          "options": [
+            "30 — index 2 is taken from the padded pack",
+            "Compile error: index out of range — the program is ill-formed",
+            "-1 — the first overload is dropped by SFINAE, leaving the second",
+            "Undefined behavior at runtime"
+          ],
+          "answerIndex": 2,
+          "explanation": "For the pack `{10, 20}`, index 2 is out of range, so `decltype(xs...[2])` in the first overload's trailing return type is a substitution error in the immediate context. SFINAE removes that overload from the candidate set, leaving the second — it's called and returns `-1`."
         }
       ],
       "challenge": {
@@ -113,6 +133,17 @@
               "ill-formed at compile time"
             ],
             "answerIndex": 3
+          },
+          {
+            "type": "choice",
+            "prompt": "For a function parameter pack `xs` whose first parameter has type `int`, what does `decltype((xs...[0]))` (with extra parentheses) give?",
+            "options": [
+              "int",
+              "int&",
+              "int&&",
+              "const int"
+            ],
+            "answerIndex": 1
           }
         ]
       }
