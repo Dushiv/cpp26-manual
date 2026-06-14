@@ -1,8 +1,6 @@
 const { useState, useEffect, useRef } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
-const COURSE_TITLE = "C++26 — от нуля до полного понимания";
-
 const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"];
 
 async function loadCourseData(locale) {
@@ -552,8 +550,11 @@ function AccountWidget({ session, onSignIn, onSignOut }) {
   );
 }
 
+function LocaleSwitcher({ locale, setLocale }) {
+  return null;
+}
+
 function App() {
-  const t = useT();
   const [saved] = useState(loadProgress);
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const [courseData, setCourseData] = useState(null);
@@ -722,25 +723,43 @@ function App() {
   const st = lessonStatus(lesson);
 
   return (
+    <LocaleContext.Provider value={locale}>
+      <App_ locale={locale} setLocale={setLocale} modules={modules} cur={cur} setCur={setCur}
+        view={view} setView={setView} exStatus={exStatus} mastery={mastery} strict={strict}
+        setStrict={setStrict} session={session} signIn={signIn} signOut={signOut}
+        lesson={lesson} st={st} doneCount={doneCount} real={real} skippedItems={skippedItems}
+        moduleSkips={moduleSkips} lessonStatus={lessonStatus} resolveEx={resolveEx}
+        skipEx={skipEx} unskipEx={unskipEx} passMastery={passMastery} />
+    </LocaleContext.Provider>
+  );
+}
+
+function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus, mastery,
+  strict, setStrict, session, signIn, signOut, lesson, st, doneCount, real, skippedItems,
+  moduleSkips, lessonStatus, resolveEx, skipEx, unskipEx, passMastery }) {
+  const t = useT();
+  const isFlagship = (sig) => /флагман|flagship/i.test(sig);
+  return (
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
-        <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLE}</span></div>
+        <div className="brand"><BookOpen size={18} /><span>{t("courseTitle")}</span></div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
-          <span className="prog-txt">{doneCount} / {real.length} уроков</span>
+          <span className="prog-txt">{t("lessonsProgress", doneCount, real.length)}</span>
         </div>
+        <LocaleSwitcher locale={locale} setLocale={setLocale} />
         <AccountWidget session={session} onSignIn={signIn} onSignOut={signOut} />
       </header>
 
       <div className="body">
         <aside className="side">
           <button className={"rep " + (view === "repetition" ? "active" : "")} onClick={() => setView("repetition")}>
-            <Repeat size={15} /> Зона повторения <span className="rep-n">{skippedItems.length}</span>
+            <Repeat size={15} /> {t("repetitionZone")} <span className="rep-n">{skippedItems.length}</span>
           </button>
           <label className="strict">
             <input type="checkbox" checked={strict} onChange={(e) => setStrict(e.target.checked)} />
-            Строгий режим (закрытие без пропусков)
+            {t("strictMode")}
           </label>
 
           <nav>
@@ -751,9 +770,9 @@ function App() {
                   <div className="mod-h">
                     <span className="mod-n">{m.moduleNumber}</span>
                     <span className="mod-t">{m.title}</span>
-                    <span className={"sig sig-" + (m.significance.includes("флагман") ? "flag" : "base")}>{m.significance}</span>
+                    <span className={"sig sig-" + (isFlagship(m.significance) ? "flag" : "base")}>{m.significance}</span>
                   </div>
-                  {sk > 0 && <div className="mod-skip">{sk} задач пропущено</div>}
+                  {sk > 0 && <div className="mod-skip">{t("modSkipped", sk)}</div>}
                   {(m.lessons && m.lessons.length > 0)
                     ? <ul>
                         {m.lessons.map((l) => {
@@ -764,13 +783,13 @@ function App() {
                                 onClick={() => { setCur(l.id); setView("lesson"); }}>
                               <StatusIcon kind={ls.kind} />
                               <span className="ltitle">{renderInline(l.title, l.id + "-")}</span>
-                              {l.stub && <span className="soon">скоро</span>}
+                              {l.stub && <span className="soon">{t("soon")}</span>}
                               {ls.skipped > 0 && <span className="ldot">{ls.skipped}</span>}
                             </li>
                           );
                         })}
                       </ul>
-                    : <div className="empty">уроки появятся позже</div>}
+                    : <div className="empty">{t("lessonsComingSoon")}</div>}
                 </div>
               );
             })}
@@ -780,10 +799,10 @@ function App() {
         <main className="main">
           {view === "repetition"
             ? <div className="repview">
-                <h1>Зона повторения</h1>
-                <p className="sub">Сюда автоматически попадают пропущенные задачи. Статус «Пропущено» — это не «Выполнено»; вернись и закрой пробел в любой момент.</p>
+                <h1>{t("repetitionTitle")}</h1>
+                <p className="sub">{t("repetitionSubtitle")}</p>
                 {skippedItems.length === 0
-                  ? <div className="empty-big">Пропущенных задач нет.</div>
+                  ? <div className="empty-big">{t("noSkippedItems")}</div>
                   : skippedItems.map(({ l, e }) => (
                       <div key={e.id} className="repitem" onClick={() => { setCur(l.id); setView("lesson"); }}>
                         <div><span className="tag tag-type">{e.type}</span> <span className="repl">{l.title}</span></div>
@@ -792,37 +811,37 @@ function App() {
                     ))}
               </div>
             : !lesson
-              ? <div className="empty-big">Выбери урок слева.</div>
+              ? <div className="empty-big">{t("selectLesson")}</div>
               : lesson.stub
                 ? <div className="lesson">
-                    <div className="lhead"><div className="lhead-top">Модуль {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
+                    <div className="lhead"><div className="lhead-top">{t("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{renderInline(lesson.title, "h-")}</h1></div>
-                    <div className="empty-big">Этот урок ещё не написан. Каркас движка готов его принять — контент подставляется из JSON.</div>
+                    <div className="empty-big">{t("stubLesson")}</div>
                   </div>
                 : <div className="lesson">
                     <div className="lhead">
-                      <div className="lhead-top">Модуль {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
+                      <div className="lhead-top">{t("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{lesson.title}</h1>
                       <div className="lmeta">
-                        <span className={"badge badge-" + st.kind}>{t(STATUS_KEY[st.kind])}{st.skipped > 0 ? " · " + st.skipped + " пропущено" : ""}</span>
-                        {lesson.outputsVerified === false && <span className="badge badge-pending">выводы ждут прогона на GCC 16.1</span>}
+                        <span className={"badge badge-" + st.kind}>{t(STATUS_KEY[st.kind])}{st.skipped > 0 ? " · " + t("modSkipped", st.skipped) : ""}</span>
+                        {lesson.outputsVerified === false && <span className="badge badge-pending">{t("outputsPending")}</span>}
                       </div>
                     </div>
 
                     <Background text={lesson.background} />
 
-                    <section><h2>Мотивация</h2><Markdown text={lesson.motivation} /></section>
-                    <section><h2>Теория</h2><Markdown text={lesson.theory} /></section>
+                    <section><h2>{t("motivation")}</h2><Markdown text={lesson.motivation} /></section>
+                    <section><h2>{t("theory")}</h2><Markdown text={lesson.theory} /></section>
 
                     {lesson.examples.length > 0 && (
                       <section>
-                        <h2>Примеры</h2>
+                        <h2>{t("examples")}</h2>
                         {lesson.examples.map((ex, i) => <ExampleCard key={i} ex={ex} idx={i} />)}
                       </section>
                     )}
 
                     <section>
-                      <h2>Упражнения</h2>
+                      <h2>{t("exercises")}</h2>
                       {lesson.exercises.map((ex, i) => (
                         <Exercise key={ex.id} ex={ex} idx={i}
                           status={exStatus[ex.id]}
@@ -832,10 +851,10 @@ function App() {
                       ))}
                     </section>
 
-                    {lesson.challenge && <section><h2>Челлендж</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
+                    {lesson.challenge && <section><h2>{t("challengeOptional").split(" ·")[0]}</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
 
                     <section>
-                      <h2>Проверка усвоения <span className="thr">порог {Math.round(lesson.masteryCheck.passThreshold * 100)}%</span></h2>
+                      <h2>{t("masteryCheckTitle")} <span className="thr">{t("threshold", Math.round(lesson.masteryCheck.passThreshold * 100))}</span></h2>
                       <Mastery lesson={lesson} onPass={(sc) => passMastery(lesson.id, sc)} />
                     </section>
                   </div>}
