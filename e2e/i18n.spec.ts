@@ -14,6 +14,12 @@ test("switching locale changes UI chrome and lesson content", async ({ page }) =
   // at this point in the plan (Task 10 fills it in), so switching to EN
   // replaces the exercises with the "lesson not written yet" placeholder —
   // in English. The Russian "Упражнения" heading must disappear either way.
+  //
+  // TODO(Task 10): once m1-l1 has real EN content, this whole test needs a
+  // rewrite — replace both assertions below with the original plan's check
+  // that an EN "Exercises" heading becomes visible (don't just delete the
+  // stub-text line, or this test would stop verifying lesson content
+  // actually translates).
   await expect(page.getByRole("heading", { name: "Упражнения" })).toHaveCount(0);
   await expect(page.getByText("This lesson isn't written yet.")).toBeVisible();
 
