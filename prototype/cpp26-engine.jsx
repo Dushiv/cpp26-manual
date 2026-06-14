@@ -703,10 +703,10 @@ function App() {
   }, [cur, view, exStatus, mastery, strict, session?.user?.id]);
 
   if (loadError) {
-    return <div className="app"><style>{CSS}</style><div className="empty-big">{UI_STRINGS[locale].loadError || UI_STRINGS.ru.loadError}</div></div>;
+    return <div className="app"><style>{CSS}</style><div className="empty-big">{t(locale, "loadError")}</div></div>;
   }
   if (!courseData) {
-    return <div className="app"><style>{CSS}</style><div className="empty-big">Loading…</div></div>;
+    return <div className="app"><style>{CSS}</style><div className="empty-big">{t(locale, "loading")}</div></div>;
   }
   const modules = courseData.modules;
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
