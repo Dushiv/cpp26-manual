@@ -6,8 +6,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "Placeholder" }).click();
-  await expect(page.locator("h1")).toContainText("Placeholder");
+  await page.getByRole("listitem").filter({ hasText: "delete" }).click();
+  await expect(page.locator("h1")).toContainText("delete");
   await expect(page.locator(".empty-big")).toContainText("ещё не написан");
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();

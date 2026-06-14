@@ -151,7 +151,93 @@
     {
       "id": "m1-l2",
       "title": "Placeholder `_`",
-      "stub": true
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before C++26, the \"I don't care what this is called\" variable had no good answer. You could already ignore a structured-binding element (`auto [x, _, z] = f();`) — `_` was just an ordinary legal name — but reusing it in the same scope was a redefinition error, so every \"don't need this\" name had to be unique (`unused1`, `tmp2`, ...) and manually marked `[[maybe_unused]]`, or the compiler would complain about an unused variable.\n\nThis was especially painful for RAII guards that exist purely for their destructor's side effect (`std::lock_guard`, `std::scoped_lock`, etc.): every such guard in a function needed its own name, and a forgotten name turned `std::lock_guard<std::mutex>(mtx);` into a temporary that's destroyed immediately — without holding the lock at all.\n\n**Placeholder `_`** (proposal P2169) makes `_` a special name: it can be declared any number of times in the same scope without a redefinition error, and such declarations implicitly get `[[maybe_unused]]` — the compiler stops complaining about an \"unused\" variable that was never meant to be used.",
+      "theory": "`_` (proposal P2169, \"A nice placeholder, with no name\") introduces the notion of a **name-independent declaration** — a declaration whose only declarator-id is `_`. This covers: local variables with automatic storage duration, non-static data members, structured-binding names, and lambda init-captures. Two special rules apply to them.\n\nFirst: redeclaring `_` in the same scope is not a redefinition. Each `_` introduces a distinct entity with its own type, initializer, and lifetime; the compiler simply skips the usual \"name already taken\" check for it. Second: such a declaration implicitly gets `[[maybe_unused]]` — neither `-Wunused-variable` nor `-Wunused-but-set-variable` fires, even if `_` is never used after being declared.\n\nThese rules don't apply to every `_`. Declarations that have linkage or an identity beyond the immediate scope are *not* name-independent declarations: namespace-scope (including global) variables, `static`/`thread_local` local variables, function and lambda parameters, and names of functions and types. For these, `_` remains an ordinary name: a repeated `int _;` at namespace scope, or `static int _; static double _;` inside a function, is a plain redefinition error (GCC spells this out explicitly: \"variable/static variable is not name-independent\"), and a lone `_` parameter still triggers `-Wunused-parameter`.\n\nName lookup for `_` works like this: if exactly one name-independent `_` is declared in a scope, it can be referred to like any ordinary variable — it's a legal, if unremarkable, identifier, just as before C++26. But as soon as a second (or later) `_` appears in the same scope, any attempt to name `_` becomes **ambiguous** — the program is ill-formed at compile time, with no UB. In other words: from the second `_` onward, the name becomes \"write-only\"; referring to it is caught by the compiler as a diagnostic, not turned into undefined or surprising behavior.\n\nThe same applies to structured bindings: `auto [x, _, _] = f();` — both `_`s are valid and don't conflict with each other, whereas `auto [x, y, y] = f();` was, and remains, ill-formed because of the repeated \"real\" name `y`.\n\nThe idiom particularly pays off for RAII guards used purely for their destructor's side effect: `std::lock_guard<std::mutex> _{mtx};` is a fully-fledged named variable with a normal lifetime to the end of its scope (the mutex stays held for the whole block), and its \"unnamability\" afterward is exactly what's wanted — nothing else is ever done with the guard. Several such guards can be declared one after another in the same function, each named `_` — that's the main payoff of \"redeclaration isn't a redefinition\".\n\nThe remaining checklist items don't apply directly: `_` is a question of the name in a declaration, not of an expression, so value category, SFINAE, and behavior in unevaluated contexts (`decltype`, `sizeof`, etc.) get no new rules — there, `_` follows the same name-lookup ambiguity rule as in evaluated code (if `_` is declared twice, `decltype(_)` is just as ill-formed as `_` alone). In templates, name-independence is a property of the declaration itself, not of the instantiation result, so it behaves the same in ordinary and templated code. An explicit `[[maybe_unused]]` on `_` is redundant but harmless — the attribute just duplicates what's already implied.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2 -Wall -Wextra" },
+      "examples": [
+        {
+          "title": "Ignoring a structured-binding element and holding an RAII guard",
+          "code": "#include <print>\n#include <tuple>\n#include <mutex>\n\nstd::mutex mtx;\n\nstd::tuple<int, int, int> stats() { return {1, 2, 3}; }\n\nint main() {\n    auto [total, _, count] = stats(); // the middle element isn't needed\n\n    {\n        std::lock_guard<std::mutex> _{mtx}; // hold the lock to the end of the block\n        std::print(\"{} / {}\\n\", total, count);\n    }\n}",
+          "expectedOutput": "1 / 3",
+          "explanation": "`_` in the second slot of the structured binding simply discards the middle element of the triple — no extra name, no `[[maybe_unused]]`. Likewise, `std::lock_guard<std::mutex> _{mtx}` is an ordinary local variable: it lives (and holds the mutex) to the end of the block, just like any named guard, but it can't be referred to by name afterward — which is exactly the point."
+        },
+        {
+          "title": "Multiple `_`s in one scope: two RAII guards",
+          "code": "#include <print>\n#include <mutex>\n\nstd::mutex m1, m2;\n\nvoid critical() {\n    std::lock_guard<std::mutex> _{m1};  // hold m1 to the end of the function\n    std::lock_guard<std::mutex> _{m2};  // and m2 -- a different _ variable\n    std::print(\"both locked\\n\");\n}\n\nint main() {\n    critical();\n}",
+          "expectedOutput": "both locked",
+          "explanation": "Two `std::lock_guard<std::mutex> _{...}` declarations in the same function are name-independent declarations: each introduces its own entity with its own lifetime, both live to the end of `critical()`, and both mutexes stay locked. Before C++26 you'd have had to invent `guard1`/`guard2` (or leave one anonymous -- with the immediate-destruction risk that comes with that)."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <tuple>\n\nstd::tuple<int, int, int> minmax_sum(int a, int b, int c) {\n    int mn = a < b ? (a < c ? a : c) : (b < c ? b : c);\n    int mx = a > b ? (a > c ? a : c) : (b > c ? b : c);\n    return {mn, a + b + c, mx};\n}\n\nint main() {\n    auto [lo, _, hi] = minmax_sum(5, 2, 9);\n    std::print(\"{} {}\\n\", lo, hi);\n}",
+          "answer": "2 9",
+          "explanation": "`minmax_sum(5, 2, 9)` returns `{min, sum, max} = {2, 16, 9}`. The middle element (the sum) is discarded via `_`, so only `lo = 2` and `hi = 9` are printed."
+        },
+        {
+          "id": "m1-l2-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n\nint main() {\n    int _ = 10;\n    int _ = 20;\n    std::print(\"{}\\n\", _);\n}",
+          "answerLine": 6,
+          "explanation": "Both `int _ = ...;` declarations are fine on their own (name-independent declarations don't cause a redefinition). But once there are two, the name `_` becomes ambiguous -- line 6, `std::print(\"{}\\n\", _)`, fails to compile: \"reference to `_` is ambiguous\", with two equally valid candidates."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "`int _ = ...;` is declared twice as local variables in the same scope. What happens?",
+            "options": [
+              "A redefinition error, like for any other name",
+              "The second declaration introduces a separate entity -- not a redefinition",
+              "The second declaration shadows the first",
+              "Error: `_` can only be declared once per program"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Which of the following is NOT a name-independent declaration (i.e. `_` behaves there like an ordinary name)?",
+            "options": [
+              "a local variable `_` with automatic storage duration",
+              "a structured-binding name `_`",
+              "a variable `_` at namespace scope",
+              "a lambda init-capture `_`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Two name-independent `_`s are declared in a scope. What happens when you try to refer to `_` by name?",
+            "options": [
+              "It refers to the latest declaration (like shadowing)",
+              "UB at runtime",
+              "Compile error: the reference to `_` is ambiguous",
+              "It refers to the first declaration"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What's the problem with `std::lock_guard<std::mutex>(mtx);` (no variable name) compared to `std::lock_guard<std::mutex> _{mtx};`?",
+            "options": [
+              "No difference -- both hold the lock to the end of the block",
+              "The first creates a temporary that's destroyed immediately -- the mutex isn't held",
+              "The second doesn't compile before C++26",
+              "The first is a compile error"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
     },
     {
       "id": "m1-l3",
