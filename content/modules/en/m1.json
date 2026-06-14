@@ -242,7 +242,93 @@
     {
       "id": "m1-l3",
       "title": "= delete(\"reason\")",
-      "stub": true
+      "prerequisites": [],
+      "background": null,
+      "motivation": "`= delete` has been around since C++11 and remains the standard way to say \"this function exists in the overload set, but you may not call it\" — banning copies, ruling out unwanted overloads, marking a template specialization unavailable. The catch is that `= delete` on its own explains nothing: the compile error just says \"function is deleted\", and the *why* has to be looked up in a comment near the declaration (if there even is one) or in documentation.\n\nBefore C++26, the only way to get the reason in front of whoever sees the error was a comment next to `= delete` — which the compiler obviously never shows in its diagnostic. Or you'd resort to a trick: instead of `= delete`, write `static_assert(false, \"reason\")` inside a template body, just to get a meaningful message in a templated context — but that doesn't work for ordinary (non-template) functions, and it muddles the very idea of \"this function is unavailable by design\".\n\n**`= delete(\"reason\")`** (proposal P2573) lets you attach a string literal to `= delete` that the compiler folds straight into the diagnostic text when something tries to call the deleted function — the reason becomes part of the compile error itself, not a comment nobody reads at the moment it matters most.",
+      "theory": "`= delete(\"reason\")` is a syntactic extension of the existing `= delete`: after the `delete` keyword, parentheses hold a string literal explaining why the function is deleted. The deletion rule itself doesn't change in the slightest — only what the programmer sees in the error message changes.\n\n**Where it applies.** A reason can be attached anywhere a plain `= delete` could already appear: ordinary functions and their overloads (`void f(int) = delete(\"...\")`), special member functions — the copy constructor, copy-assignment operator, move constructor, destructor (`Foo(const Foo&) = delete(\"no copying\")`), overloaded operators including `operator new`/`operator delete`, and function templates as a whole or individual explicit specializations (`template <typename T> void h(T) = delete(\"...\")`). `= delete` doesn't gain any new positions — only the existing positions gain a richer spelling.\n\n**Format of the reason.** The reason is an **ordinary string literal** (`\"...\"`), not an arbitrary constant expression. Adjacent string literals can be joined via plain C++ adjacent-literal concatenation (`\"use \" \"f(long) instead\"` becomes the single string \"use f(long) instead\" already at the lexing stage — a general language rule, not something special to `= delete`). But you cannot pass a variable, a `constexpr` `const char*`, or a computed expression: `delete(some_constexpr_string)` is ill-formed at compile time — GCC requires an actual string-literal token at this syntactic position (a diagnostic along the lines of \"expected string-literal\"). This is a deliberate restriction: the reason is part of the compiler's diagnostic text, not a program value, so there's no point — and no mechanism — for computing it at compile time.\n\n**What the compiler shows.** When something tries to call (or, more generally, overload resolution selects) a function deleted with a reason, the compiler folds the reason text straight into the main error message — for example, `error: use of deleted function 'void f(int)': use f(long) instead`. Without a reason, it would just be `error: use of deleted function 'void f(int)'`. Nothing else about the error changes: it's still \"use of deleted function\" — the same error category as plain `= delete` — `= delete(\"reason\")` doesn't change *when* a function is considered unavailable, only *how that's reported*.\n\n**Effect on overload resolution and SFINAE — none.** This is the important point: adding a reason **does not change** overload resolution rules in any way. A deleted function — with or without a reason — still participates in overload resolution on equal footing with other candidates; the error only arises if *that* candidate ends up chosen as the best match. If the overload set has a deleted-with-reason `f(int)` and an ordinary working `f(long long)`, and the call `f(42LL)` unambiguously resolves to `f(long long)`, the program compiles without a single mention of the deleted overload or its reason — exactly as it would with a plain reasonless `= delete`. In other words, `= delete(\"reason\")` is an improvement to *error-time diagnostics*, not a new mechanism for conditionally excluding overloads (that's still the job of `requires`/SFINAE/`enable_if`, entirely unrelated to `= delete`).\n\n**Ill-formed vs UB vs diagnostic.** Calling a function deleted with a reason is a **compile error** (ill-formed), of the same nature as calling a function deleted without one: the program simply fails to compile — there's no UB and never was a \"runs, but incorrectly\" path here. C++26 doesn't change the error category here — it just makes the error message more informative.\n\n**Unevaluated contexts, value category, decltype.** These checklist items don't apply directly: `= delete(\"reason\")` doesn't introduce a new expression or produce a value — it's part of the function's *declaration*, not an expression. A deleted function (with or without a reason) participates in `decltype`, `noexcept`, `sizeof`, and other unevaluated contexts exactly the same before and after C++26: if such a context doesn't actually *call* the deleted function (it just inspects its type/signature), no call happens and no deleted-function error arises at all — nothing has changed here relative to C++11's `= delete`.\n\n**Old alternative.** Before C++26, the only ways to communicate a reason were a comment next to `= delete` (which the compiler never shows in diagnostics) or, for templates, replacing `= delete` with a body containing `static_assert(false, \"reason\")`, which produces a static_assert-style message but requires the template to be instantiated and doesn't work for non-template overloads or special member functions. `= delete(\"reason\")` doesn't make these obsolete (a comment is still useful for someone reading the header without calling the function), but for *calling* code it gives a more direct and uniform mechanism — one that works for every form of `= delete`, not just templates.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
+      "examples": [
+        {
+          "title": "A deleted overload doesn't get in the way of the working one",
+          "code": "#include <print>\n\n// The int-taking overload is deleted with an explanation for future readers.\nvoid process(int) = delete(\"use process(long long) instead -- avoid silent truncation\");\nvoid process(long long value) {\n    std::print(\"processing {}\\n\", value);\n}\n\nint main() {\n    process(42LL); // resolves to process(long long): the working overload isn't deleted\n}",
+          "expectedOutput": "processing 42",
+          "explanation": "`process(int)` is deleted with a reason, but the call `process(42LL)` resolves to `process(long long)` -- the working, non-deleted overload. The program compiles and runs normally: the deleted-with-reason overload participates in overload resolution on equal footing, but isn't selected, and its reason never makes it into a diagnostic. If `42LL` were plain `42` (type `int`) instead, the call would resolve to `process(int)`, and compilation would fail with `use of deleted function 'void process(int)': use process(long long) instead -- avoid silent truncation`."
+        },
+        {
+          "title": "Deleted special member functions with a reason",
+          "code": "#include <print>\n\nclass Resource {\npublic:\n    explicit Resource(int id) : id_(id) {}\n\n    Resource(const Resource&) = delete(\"Resource owns a unique handle; use clone() to copy explicitly\");\n    Resource& operator=(const Resource&) = delete(\"Resource owns a unique handle; use clone() to copy explicitly\");\n\n    Resource(Resource&&) = default;\n    Resource& operator=(Resource&&) = default;\n\n    Resource clone() const { return Resource(id_); }\n\n    int id() const { return id_; }\n\nprivate:\n    int id_;\n};\n\nint main() {\n    Resource a(1);\n    Resource b = a.clone();      // explicit copy is allowed\n    Resource c = std::move(a);   // move is allowed\n\n    std::print(\"{} {} {}\\n\", b.id(), c.id(), a.id());\n}",
+          "expectedOutput": "1 1 1",
+          "explanation": "The copy constructor and copy-assignment operator are deleted with a reason explaining why: `Resource` owns a unique handle, and implicit copying is banned by design, not because someone forgot to define it. Meanwhile, move (`= default`) and the explicit `clone()` remain available and work as usual. If someone wrote `Resource b = a;` (a copy without `clone()`), compilation would fail with `use of deleted function 'Resource::Resource(const Resource&)': Resource owns a unique handle; use clone() to copy explicitly` -- the reason immediately points at what to do instead of copying."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nvoid emit(int) = delete(\"emit(int) is ambiguous about units; use emit(milliseconds)\");\nvoid emit(double seconds) {\n    std::print(\"{} s\\n\", seconds);\n}\n\nint main() {\n    emit(1.5);\n}",
+          "answer": "1.5 s",
+          "explanation": "`emit(int)` is deleted with a reason, but the argument to `emit(1.5)` is `double`, so overload resolution picks `emit(double)`, not the deleted overload. A deleted-with-reason function participates in overload resolution as usual -- it just doesn't win it -- so the program compiles and prints `1.5 s`."
+        },
+        {
+          "id": "m1-l3-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n\nclass Logger {\npublic:\n    Logger() = default;\n\n    void log(const char* msg) = delete(\"Logger::log(const char*) is unsafe; use log(std::string_view) instead\");\n    void log(int code) {\n        std::print(\"code: {}\\n\", code);\n    }\n};\n\nint main() {\n    Logger l;\n    l.log(\"startup\");\n}",
+          "answerLine": 15,
+          "explanation": "`l.log(\"startup\")` passes a `const char*`, so overload resolution selects the deleted overload `log(const char*)`. Compilation fails at line 15 with `use of deleted function 'void Logger::log(const char*)': Logger::log(const char*) is unsafe; use log(std::string_view) instead`. There's nothing else wrong with the code -- `log(int)` is defined and would work fine if it were the one selected."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does `= delete(\"reason\")` add compared to plain `= delete`?",
+            "options": [
+              "A new way to exclude overloads from overload resolution",
+              "The reason text appears in the compiler's diagnostic when a call to the deleted function is selected",
+              "The ability to call the \"deleted\" function at runtime with a warning",
+              "constexpr-evaluation of the reason at compile time"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What can `\"reason\"` be in `= delete(\"reason\")`?",
+            "options": [
+              "Any constant expression of type `const char*`",
+              "Only an ordinary string literal (adjacent literals may be joined by string-literal concatenation)",
+              "The name of a variable declared `constexpr`",
+              "A call to a `constexpr` function returning a string"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "An overload set has `f(int)`, deleted with a reason, and a working `f(long long)`. The call `f(42LL)` resolves to `f(long long)`. What happens at compile time?",
+            "options": [
+              "A compile error showing the reason from `f(int)`, because the deleted overload is also considered",
+              "The program compiles cleanly: the deleted overload participates in resolution but isn't chosen, and its reason never appears in any diagnostic",
+              "A warning, but not an error",
+              "UB at runtime, since both overloads are visible to the compiler"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Which declarations can `= delete(\"reason\")` be applied to?",
+            "options": [
+              "Only ordinary (non-template, non-member) functions",
+              "Only special member functions (constructors, assignment operators)",
+              "The same positions where plain `= delete` was already legal: ordinary functions/overloads, special member functions, operators, function templates and their specializations",
+              "Only function templates, as a replacement for `static_assert(false, ...)`"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
     },
     {
       "id": "m1-l4",
