@@ -284,14 +284,15 @@ function Markdown({ text }) {
 
 function ExampleCard({ ex, idx }) {
   const [show, setShow] = useState(false);
+  const t = useT();
   return (
     <div className="card">
-      <div className="card-h"><span className="tag tag-ex">Пример {idx + 1}</span><span className="card-t">{ex.title}</span></div>
+      <div className="card-h"><span className="tag tag-ex">{t("example")} {idx + 1}</span><span className="card-t">{ex.title}</span></div>
       <CodeBlock code={ex.code} />
       {!show
-        ? <button className="btn ghost" onClick={() => setShow(true)}>Сначала предскажи вывод — потом раскрой</button>
+        ? <button className="btn ghost" onClick={() => setShow(true)}>{t("predictThenReveal")}</button>
         : <>
-            <div className="out"><span className="out-l">Вывод</span><code className="out-v">{ex.expectedOutput}</code><span className="pend">ждёт прогона</span></div>
+            <div className="out"><span className="out-l">{t("output")}</span><code className="out-v">{ex.expectedOutput}</code><span className="pend">{t("pendingRun")}</span></div>
             <div className="exp"><Markdown text={ex.explanation} /></div>
           </>}
     </div>
@@ -304,6 +305,7 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
   const [done, setDone] = useState(false);
   const [correct, setCorrect] = useState(false);
   const [skipped, setSkipped] = useState(() => status === "skipped");
+  const t = useT();
 
   const lvl = ex.level === "advanced" ? "advanced" : "basic";
   const lvlLabel = ex.level === "advanced" ? "Advanced" : "Basic";
@@ -319,10 +321,10 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
       <CodeBlock code={ex.code} />
       {!done
         ? <div className="row">
-            <input className="inp" value={val} onChange={(e) => setVal(e.target.value)} placeholder="ваш предсказанный вывод" />
-            <button className="btn" onClick={() => finish(norm(val) === norm(ex.answer))} disabled={!val.trim()}>Проверить</button>
+            <input className="inp" value={val} onChange={(e) => setVal(e.target.value)} placeholder={t("yourPredictedOutput")} />
+            <button className="btn" onClick={() => finish(norm(val) === norm(ex.answer))} disabled={!val.trim()}>{t("check")}</button>
           </div>
-        : <div className={"verdict " + (correct ? "ok" : "no")}>{correct ? "Верно" : ("Правильный ответ: " + ex.answer)}</div>}
+        : <div className={"verdict " + (correct ? "ok" : "no")}>{correct ? t("correct") : t("correctAnswerIs", ex.answer)}</div>}
     </>;
   } else if (ex.type === "find-bug") {
     const lines = ex.code.split("\n");
@@ -338,8 +340,8 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
         })}
       </pre>
       {!done
-        ? <div className="row"><button className="btn" disabled={!picked} onClick={() => finish(picked === ex.answerLine)}>Проверить{picked ? " строку #" + picked : ""}</button></div>
-        : <div className={"verdict " + (correct ? "ok" : "no")}>{(correct ? "Верно — " : "") + "баг в строке " + ex.answerLine}</div>}
+        ? <div className="row"><button className="btn" disabled={!picked} onClick={() => finish(picked === ex.answerLine)}>{t("checkLine", picked)}</button></div>
+        : <div className={"verdict " + (correct ? "ok" : "no")}>{(correct ? t("correctPrefix") : "") + t("correctBugAt", ex.answerLine)}</div>}
     </>;
   } else {
     body = <>
@@ -363,26 +365,27 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
       <div className="card-h">
         <span className={"tag tag-" + lvl}>{lvlLabel}</span>
         <span className="tag tag-type">{ex.type}</span>
-        {showSkipped && <span className="badge-skip">Пропущено</span>}
+        {showSkipped && <span className="badge-skip">{t("skipped")}</span>}
         {!done && (showSkipped
-          ? <button className="btn skip" onClick={unskip}>Отменить пропуск</button>
-          : <button className="btn skip" onClick={skip}>Пропустить</button>)}
+          ? <button className="btn skip" onClick={unskip}>{t("unskip")}</button>
+          : <button className="btn skip" onClick={skip}>{t("skip")}</button>)}
       </div>
       {body}
       {done && <div className="exp"><Markdown text={ex.explanation} /></div>}
-      {done && <button className="btn ghost sm" onClick={reset}>Попробовать снова</button>}
+      {done && <button className="btn ghost sm" onClick={reset}>{t("tryAgain")}</button>}
     </div>
   );
 }
 
 function ChallengeResult({ run, expectedOutput }) {
+  const t = useT();
   if (run.kind === "network-error") {
-    return <div className="chal-result chal-network">Не получили ответ от Compiler Explorer — попробуйте ещё раз.</div>;
+    return <div className="chal-result chal-network">{t("networkError")}</div>;
   }
   if (run.kind === "compile-error") {
     return (
       <div className="chal-result">
-        <div className="chal-result-h">Ошибка компиляции</div>
+        <div className="chal-result-h">{t("compileError")}</div>
         <pre className="cb chal-raw"><code>{run.compilerStderr}</code></pre>
       </div>
     );
@@ -393,19 +396,19 @@ function ChallengeResult({ run, expectedOutput }) {
 
   return (
     <div className="chal-result">
-      <div className="chal-result-h">{run.kind === "runtime-error" ? "Программа завершилась с ошибкой" : "Вывод"}</div>
+      <div className="chal-result-h">{run.kind === "runtime-error" ? t("runtimeError") : t("output")}</div>
       {run.stdout && <pre className="cb chal-raw"><code>{run.stdout}</code></pre>}
       {run.stderr && <pre className="cb chal-raw chal-stderr"><code>{run.stderr}</code></pre>}
-      <div className="chal-exit">код возврата: {run.exitCode}</div>
+      <div className="chal-exit">{t("exitCode", run.exitCode)}</div>
       {verdict !== null && (
         <div className={"verdict " + (verdict ? "ok" : "no")}>
-          {verdict ? "Совпадает с эталонным выводом" : "Отличается от эталонного вывода"}
+          {verdict ? t("matchesExpected") : t("differsFromExpected")}
         </div>
       )}
       {verdict === false && (
         <div className="chal-diff">
-          <div><span className="chal-diff-l">Твой вывод</span><pre className="cb chal-raw"><code>{run.stdout}</code></pre></div>
-          <div><span className="chal-diff-l">Эталонный вывод</span><pre className="cb chal-raw"><code>{expectedOutput}</code></pre></div>
+          <div><span className="chal-diff-l">{t("yourOutput")}</span><pre className="cb chal-raw"><code>{run.stdout}</code></pre></div>
+          <div><span className="chal-diff-l">{t("referenceOutput")}</span><pre className="cb chal-raw"><code>{expectedOutput}</code></pre></div>
         </div>
       )}
     </div>
@@ -418,6 +421,7 @@ function Challenge({ ch, verifiedWith }) {
   const [busy, setBusy] = useState(false);
   const [pendingMode, setPendingMode] = useState(null); // "run" | "check" | null — which button is in flight
   const [run, setRun] = useState(null); // { mode: "run" | "check", ...godboltVerdict result } | { mode, kind: "network-error" }
+  const t = useT();
 
   async function execute(mode) {
     setBusy(true);
@@ -436,50 +440,52 @@ function Challenge({ ch, verifiedWith }) {
 
   return (
     <div className="card challenge">
-      <div className="card-h"><span className="tag tag-opt">Челлендж · необязательно</span></div>
+      <div className="card-h"><span className="tag tag-opt">{t("challengeOptional")}</span></div>
       <Markdown text={ch.prompt} />
 
-      <div className="chal-editor-label">Твоё решение</div>
+      <div className="chal-editor-label">{t("yourSolution")}</div>
       <textarea
         className="chal-editor"
         value={code}
         onChange={(e) => setCode(e.target.value)}
-        placeholder="// напиши свой вариант здесь — компилируется и исполняется по кнопке ниже"
+        placeholder={t("solutionPlaceholder")}
         spellCheck={false}
       />
       <div className="row">
         <button className="btn" disabled={busy || !code.trim()} onClick={() => execute("run")}>
-          {pendingMode === "run" ? "Компилирую…" : "Запустить"}
+          {pendingMode === "run" ? t("compiling") : t("run")}
         </button>
         <button className="btn" disabled={busy || !code.trim()} onClick={() => execute("check")}>
-          {pendingMode === "check" ? "Компилирую…" : "Сверить"}
+          {pendingMode === "check" ? t("compiling") : t("compareWithReference")}
         </button>
       </div>
 
       {run && <ChallengeResult run={run} expectedOutput={ch.expectedOutput} />}
 
       {!show
-        ? <button className="btn ghost" onClick={() => setShow(true)}>Показать эталонное решение</button>
-        : <><div className="ref-label">Эталонное решение</div><Markdown text={ch.referenceSolution} /></>}
+        ? <button className="btn ghost" onClick={() => setShow(true)}>{t("showReferenceSolution")}</button>
+        : <><div className="ref-label">{t("referenceSolutionLabel")}</div><Markdown text={ch.referenceSolution} /></>}
       <div className="ce">{ch.godboltUrl
-        ? <a href={ch.godboltUrl} target="_blank" rel="noreferrer">Открыть в Compiler Explorer</a>
-        : <span className="pend">godbolt-ссылка появится после прогона</span>}</div>
+        ? <a href={ch.godboltUrl} target="_blank" rel="noreferrer">{t("openInCompilerExplorer")}</a>
+        : <span className="pend">{t("godboltPending")}</span>}</div>
     </div>
   );
 }
 
 function Background({ text }) {
   const [open, setOpen] = useState(false);
+  const t = useT();
   if (!text) return null;
   return (
     <div className="bg">
-      <button className="bg-toggle" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} Фон / предпосылки</button>
+      <button className="bg-toggle" onClick={() => setOpen((o) => !o)}>{open ? "▾" : "▸"} {t("background")}</button>
       {open && <div className="bg-body"><Markdown text={text} /></div>}
     </div>
   );
 }
 
 function Mastery({ lesson, onPass }) {
+  const t = useT();
   const qs = lesson.masteryCheck.questions;
   const [ans, setAns] = useState({});
   const [submitted, setSubmitted] = useState(false);
@@ -504,10 +510,10 @@ function Mastery({ lesson, onPass }) {
         </div>
       ))}
       {!submitted
-        ? <button className="btn primary" disabled={!allAnswered} onClick={submit}>Завершить проверку</button>
+        ? <button className="btn primary" disabled={!allAnswered} onClick={submit}>{t("finishCheck")}</button>
         : <div className={"mres " + (passed ? "ok" : "no")}>
-            Результат: {Math.round(score * 100)}% — {passed ? "зачёт, урок пройден" : ("ниже порога " + Math.round(thr * 100) + "% — повтори теорию и пройди заново")}
-            <button className="btn ghost sm" onClick={() => { setSubmitted(false); setAns({}); }}>Пройти заново</button>
+            {t("masteryResult", Math.round(score * 100), passed, Math.round(thr * 100))}
+            <button className="btn ghost sm" onClick={() => { setSubmitted(false); setAns({}); }}>{t("retake")}</button>
           </div>}
     </div>
   );
@@ -520,32 +526,34 @@ function StatusIcon({ kind }) {
   return <Circle size={15} className="i-none" />;
 }
 
-const KIND_LABEL = {
-  "done": "Выполнено", "skipped": "Пройдено с пропусками",
-  "in-progress": "В процессе", "not-started": "Не начато",
+const STATUS_KEY = {
+  "done": "statusDone", "skipped": "statusSkipped",
+  "in-progress": "statusInProgress", "not-started": "statusNotStarted",
 };
 
 function AccountWidget({ session, onSignIn, onSignOut }) {
+  const t = useT();
   if (!session) {
     return (
       <div className="account">
-        <button className="acct-btn" onClick={() => onSignIn("google")}><LogIn size={14} /> Google</button>
-        <button className="acct-btn" onClick={() => onSignIn("github")}><LogIn size={14} /> GitHub</button>
+        <button className="acct-btn" onClick={() => onSignIn("google")}><LogIn size={14} /> {t("signInGoogle")}</button>
+        <button className="acct-btn" onClick={() => onSignIn("github")}><LogIn size={14} /> {t("signInGithub")}</button>
       </div>
     );
   }
   const meta = session.user.user_metadata || {};
-  const name = meta.full_name || meta.user_name || session.user.email || "Ученик";
+  const name = meta.full_name || meta.user_name || session.user.email || t("defaultLearnerName");
   return (
     <div className="account">
       {meta.avatar_url ? <img className="acct-av" src={meta.avatar_url} alt="" /> : <User size={16} />}
       <span className="acct-name">{name}</span>
-      <button className="acct-btn" onClick={onSignOut}><LogOut size={14} /> Выйти</button>
+      <button className="acct-btn" onClick={onSignOut}><LogOut size={14} /> {t("signOut")}</button>
     </div>
   );
 }
 
 function App() {
+  const t = useT();
   const [saved] = useState(loadProgress);
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const [courseData, setCourseData] = useState(null);
@@ -796,7 +804,7 @@ function App() {
                       <div className="lhead-top">Модуль {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{lesson.title}</h1>
                       <div className="lmeta">
-                        <span className={"badge badge-" + st.kind}>{KIND_LABEL[st.kind]}{st.skipped > 0 ? " · " + st.skipped + " пропущено" : ""}</span>
+                        <span className={"badge badge-" + st.kind}>{t(STATUS_KEY[st.kind])}{st.skipped > 0 ? " · " + st.skipped + " пропущено" : ""}</span>
                         {lesson.outputsVerified === false && <span className="badge badge-pending">выводы ждут прогона на GCC 16.1</span>}
                       </div>
                     </div>
