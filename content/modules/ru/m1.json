@@ -380,7 +380,7 @@
           "type": "find-bug",
           "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, b, c, ...rest] = t;\n    std::print(\"{} {} {} {}\\n\", a, b, c, sizeof...(rest));\n}\n\nint main() {\n    f(std::tuple{1, 2});\n}",
           "answerLine": 6,
-          "explanation": "В списке три обычных имени (`a, b, c`) плюс пак `rest`, а `std::tuple{1, 2}` содержит всего 2 элемента. Даже пустой пак (`sizeof...(rest) == 0`) не спасает: обычных имён (3) больше, чем элементов источника (2), поэтому привязка ill-formed на этапе компиляции — строка 6, `auto [a, b, c, ...rest] = t;` («3 names provided for structured binding ... decomposes into 2 elements»)."
+          "explanation": "В списке три обычных имени (`a, b, c`) плюс пак `rest`, а `std::tuple{1, 2}` содержит всего 2 элемента. Даже пустой пак (`sizeof...(rest) == 0`) не спасает: обычных имён (3) больше, чем элементов источника (2), поэтому привязка ill-formed на этапе компиляции — строка 6, `auto [a, b, c, ...rest] = t;` («4 names provided for structured binding ... decomposes into 2 elements»)."
         },
         {
           "id": "m1-l4-e3",
@@ -408,7 +408,7 @@
       "challenge": {
         "prompt": "Напиши функцию `sum_tail`, которая принимает `std::tuple` из произвольного числа целочисленных элементов и возвращает сумму всех элементов, кроме первого, используя structured-binding pack и fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // твой код: разложи t на first и pack rest, верни сумму rest\n}\n```",
         "referenceSolution": "```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n```",
-        "expectedOutput": "10",
+        "expectedOutput": "9",
         "godboltUrl": null
       },
       "masteryCheck": {

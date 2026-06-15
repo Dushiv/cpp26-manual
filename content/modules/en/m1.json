@@ -380,7 +380,7 @@
           "type": "find-bug",
           "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, b, c, ...rest] = t;\n    std::print(\"{} {} {} {}\\n\", a, b, c, sizeof...(rest));\n}\n\nint main() {\n    f(std::tuple{1, 2});\n}",
           "answerLine": 6,
-          "explanation": "The list has three ordinary names (`a, b, c`) plus the pack `rest`, but `std::tuple{1, 2}` only has 2 elements. Even an empty pack (`sizeof...(rest) == 0`) doesn't save it: there are more ordinary names (3) than elements in the source (2), so the binding is ill-formed at compile time — line 6, `auto [a, b, c, ...rest] = t;` (\"3 names provided for structured binding ... decomposes into 2 elements\")."
+          "explanation": "The list has three ordinary names (`a, b, c`) plus the pack `rest`, but `std::tuple{1, 2}` only has 2 elements. Even an empty pack (`sizeof...(rest) == 0`) doesn't save it: there are more ordinary names (3) than elements in the source (2), so the binding is ill-formed at compile time — line 6, `auto [a, b, c, ...rest] = t;` (\"4 names provided for structured binding ... decomposes into 2 elements\")."
         },
         {
           "id": "m1-l4-e3",
@@ -408,7 +408,7 @@
       "challenge": {
         "prompt": "Write a function `sum_tail` that takes a `std::tuple` of any number of integer elements and returns the sum of all elements except the first, using a structured-binding pack and the fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // your code: decompose t into first and a pack rest, return the sum of rest\n}\n```",
         "referenceSolution": "```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n```",
-        "expectedOutput": "10",
+        "expectedOutput": "9",
         "godboltUrl": null
       },
       "masteryCheck": {
