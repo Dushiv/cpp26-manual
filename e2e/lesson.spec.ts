@@ -6,8 +6,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "#embed" }).click();
-  await expect(page.locator("h1")).toContainText("#embed");
+  await page.getByRole("listitem").filter({ hasText: "Прочие мелочи" }).click();
+  await expect(page.locator("h1")).toContainText("Прочие мелочи");
   await expect(page.locator(".empty-big")).toContainText("ещё не написан");
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();

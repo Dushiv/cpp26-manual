@@ -464,7 +464,133 @@
     {
       "id": "m1-l5",
       "title": "#embed",
-      "stub": true
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Embedding the contents of an arbitrary file (an image, a font, firmware, test data) directly into an executable is a routine task: the resource needs to be available to the program without reading from disk at runtime. Before C++26, the language had no built-in mechanism for this at all — you had to reach for external tools: run the file through `xxd -i` or similar to get a `.h` with a byte array and `#include` it, or embed the file as an object via `objcopy`/the linker and define extern symbols for the start and end of the section, or write a custom code-generation step in the build system. Every one of these paths drags in an external dependency, an extra build step, and format coordination between the generator and the code that uses it.\n\n**`#embed`** (proposal P1967, originally adopted into C23 and then carried over into C++26) is a preprocessor directive that, during preprocessing, reads a file and substitutes its bytes as a comma-separated list of integer literals — ready to drop straight into an array initializer. No external tools, no separate build step: `#embed` sits alongside `#include`, but instead of inserting C++ text, it inserts data.",
+      "theory": "`#embed` is a preprocessor directive whose syntax mirrors `#include`: `#embed \"file.bin\"` searches next to the current file (like `#include \"...\"`), while `#embed <file.bin>` searches the include paths (like `#include <...>`). The directive's result is **neither a string nor an expression**, but a sequence of zero or more comma-separated **integer-constant tokens**: the file's bytes, each represented as an integer literal in the `unsigned char` range (`0`..`255`). This sequence is substituted into the source text exactly where the directive stood — just as `#include` substitutes a file's contents as text.\n\n**Where this is legal to use.** Since the result is a comma-separated list of constant expressions, it fits anywhere a list of initializers is syntactically expected: inside an aggregate's braced-init-list (`const unsigned char data[] = { #embed \"file.bin\" };`), including `constexpr`/`static constexpr`. If `#embed` (taking `limit`, see below, into account) yields exactly one token, it can also serve as the sole initializer of a scalar — `int x = { #embed \"f.bin\" limit(1) };` is well-formed. But `int x = { #embed \"f.bin\" limit(2) };` is **ill-formed**: a scalar expects exactly one initializer, while the directive supplied two, comma-separated — the same diagnostic as for `int x = {1, 2};`, just with the numbers coming from a file. Using `#embed` where a single bare expression is expected (e.g. directly as the operand of `+`) doesn't make sense and doesn't work: the result is a comma-separated token list, not a single prvalue.\n\n**Parameters.** After the file path (in either form), one or more parameters can be supplied in parentheses:\n\n- **`limit(N)`** — restricts the result to the file's first `N` bytes. If the file is shorter than `N`, all of its bytes are used (no error).\n- **`prefix(...)` / `suffix(...)`** — a token list inserted before/after the file's bytes (comma-separated if there's at least one byte). Handy for adding a null terminator (`suffix(, '\\0')`), or for wrapping each data \"block\" with its own markers.\n- **`if_empty(...)`** — a token list substituted *in place of* the content if the resource (after `limit` is applied) turns out to be empty — i.e. yields zero bytes. If the resource isn't empty, `if_empty` is not used at all — it doesn't get appended *in addition to* the data, it fully replaces it in the empty case.\n\n**Empty resource — a separate edge case.** `#embed` for a zero-length file (or with `limit(0)`) without `if_empty` expands to an **empty token sequence** — literally nothing. `const unsigned char data[] = { #embed \"empty.bin\" };` becomes `const unsigned char data[] = { };` — an empty braced-init-list for the array. GCC accepts this as an extension (a zero-size array), but under `-pedantic-errors` (strict ISO mode) it's **ill-formed**: \"zero-size array\". For a scalar, an empty result doesn't make sense at all — `int x = { #embed \"empty.bin\" };` would become `int x = {};`, which for a scalar means zero-initialization (also not what \"embed the file\" usually means). `if_empty(...)` is exactly the tool for predictable behavior in this case: it guarantees a non-empty, meaningful result regardless of the resource's content.\n\n**`__has_embed`** is a feature-test operator analogous to `__has_include`, but **only available inside `#if`/`#elif`** (i.e. in the evaluated expression of a preprocessor conditional directive) — trying to use it as an ordinary C++ expression (`bool b = __has_embed(...)`) is ill-formed, \"used outside of preprocessing directive\". Syntax: `__has_embed(\"file\")`, `__has_embed(<file>)`, with the same parameters (`limit`, `prefix`, `suffix`, `if_empty`) as `#embed` itself. Unlike `__has_include`, which yields a boolean 0/1, `__has_embed` is **three-valued**: it expands to one of the macros `__STDC_EMBED_NOT_FOUND__` (0 — resource not found), `__STDC_EMBED_FOUND__` (1 — resource found and non-empty), or `__STDC_EMBED_EMPTY__` (2 — resource found, but empty given `limit`). In `#if`, all three values except `__STDC_EMBED_NOT_FOUND__` (0) are true — so `#if __has_embed(\"file\")` answers \"can `#embed` be used here and produce something at all (data or explicit emptiness)\", while distinguishing \"found non-empty\" from \"found but empty\" requires an explicit comparison against `__STDC_EMBED_FOUND__` / `__STDC_EMBED_EMPTY__`.\n\n**Type and time of evaluation.** Each byte is an integer-constant-expression in the `unsigned char` value range, so the whole list is ordinary constant expressions, suitable for `constexpr`/`consteval` contexts and static initialization; no file is read at program runtime — everything is expanded by the preprocessor at compile time. The \"logical\" element type of the array is chosen by the programmer through the declaration (`unsigned char`, `char`, `std::byte` via `static_cast` in `prefix`/`suffix`, etc.) — the directive itself doesn't impose a type, only the value range of its tokens.\n\n**Nuance checklist.** *Unevaluated contexts* (`decltype`, `sizeof`, `noexcept`, `requires`) — not directly applicable: `#embed` is expanded by the preprocessor before C++ semantic analysis even begins, so the evaluated/unevaluated distinction doesn't apply to the directive itself — by the time the compiler sees the code, it's already ordinary integer literals. *SFINAE/overload resolution/concepts* — not applicable: this is a preprocessor directive, not an expression or a template declaration, so substitution failure doesn't apply to it. *Value category* — each resulting token is an integer literal, i.e. a prvalue, like any `42` in source code; the directive itself has no \"value category\" of its own, only the resulting literals do. *Old alternatives* — `xxd -i` or similar generators producing a `.h` with a byte array plus `#include`, `objcopy`/linker-based resources with extern symbols for section boundaries, build-system code generation; all of these require an external tool and a separate build step, whereas `#embed` is pure preprocessor, with no external dependency. The old approaches are still needed when the resource must end up in a separate section/segment with special linking attributes (alignment, a dedicated memory segment) — `#embed` only provides initializer data, not control over placement in the object file. *Ill-formed vs UB vs diagnostic* — every irregular case (`__has_embed` outside `#if`; an empty result without `if_empty` in strict mode; a token count mismatched with the number of elements for a scalar) is **ill-formed at compile time**, diagnosed by the preprocessor/compiler; `#embed` never produces runtime UB, since it does nothing at program runtime at all. *Interaction with the familiar* — the directive's result is just text consisting of constant expressions, substituted before template processing, so it works identically in ordinary code and inside a template body/`constexpr` function; `static constexpr unsigned char data[] = { #embed ... };` is ordinary static constexpr array initialization, with no new rules of its own.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
+      "examples": [
+        {
+          "title": "Basic #embed with limit",
+          "code": "#include <print>\n\nint main() {\n    static constexpr unsigned char data[] = {\n        #embed __FILE__ limit(8)\n    };\n    std::print(\"size={}\\n\", sizeof(data));\n    for (auto b : data) {\n        std::print(\"{} \", static_cast<int>(b));\n    }\n    std::print(\"\\n\");\n}",
+          "expectedOutput": "size=8\n35 105 110 99 108 117 100 101 ",
+          "explanation": "`#embed __FILE__` embeds the current file's own bytes -- a convenient self-contained way to demonstrate `#embed` without a separate resource. `limit(8)` takes only the first 8 bytes of the source. The file's first line starts with `#include`, and `35 105 110 99 108 117 100 101` are the ASCII codes of `#`, `i`, `n`, `c`, `l`, `u`, `d`, `e`. In real code you'd point `#embed` at an actual resource (an image, binary data, etc.) instead of `__FILE__`."
+        },
+        {
+          "title": "prefix/suffix: a null-terminated string from file bytes",
+          "code": "#include <print>\n\nint main() {\n    static constexpr char text[] = {\n        #embed __FILE__ limit(8) suffix(, '\\0')\n    };\n    std::print(\"text=\\\"{}\\\" size={}\\n\", text, sizeof(text));\n}",
+          "expectedOutput": "text=\"#include\" size=9",
+          "explanation": "`suffix(, '\\0')` appends one more token -- `'\\0'` -- after the eight embedded bytes, with a leading comma as the initializer-list syntax requires. The result is a 9-element array: the 8 bytes of `#include` plus a null terminator, making it usable as a C string for printing. `prefix(...)` works symmetrically, adding tokens before the data."
+        },
+        {
+          "title": "__has_embed: the three-valued feature test",
+          "code": "#include <print>\n\nint main() {\n#if __has_embed(__FILE__) == __STDC_EMBED_FOUND__\n    std::print(\"self: FOUND\\n\");\n#endif\n\n#if __has_embed(__FILE__ limit(0)) == __STDC_EMBED_EMPTY__\n    std::print(\"self limit(0): EMPTY\\n\");\n#endif\n\n#if __has_embed(\"definitely_missing_resource.bin\") == __STDC_EMBED_NOT_FOUND__\n    std::print(\"missing: NOT_FOUND\\n\");\n#endif\n}",
+          "expectedOutput": "self: FOUND\nself limit(0): EMPTY\nmissing: NOT_FOUND",
+          "explanation": "`__has_embed` is only available in `#if`/`#elif` and expands to one of three values: `__STDC_EMBED_FOUND__` (the resource exists and is non-empty -- true for the file itself with no `limit`), `__STDC_EMBED_EMPTY__` (the resource exists, but `limit(0)` would yield zero bytes), and `__STDC_EMBED_NOT_FOUND__` (the resource doesn't exist at all). All three branches here turn out true for their respective conditions, so all three lines print -- this is a demonstration, not typical code: in practice you'd usually check one specific resource right before `#embed`-ing it."
+        },
+        {
+          "title": "if_empty: a predictable result for an empty resource",
+          "code": "#include <print>\n\nint main() {\n    static constexpr unsigned char data[] = {\n        #embed __FILE__ limit(0) if_empty(0xDE, 0xAD)\n    };\n    std::print(\"size={} data={},{}\\n\", sizeof(data), (int)data[0], (int)data[1]);\n}",
+          "expectedOutput": "size=2 data=222,173",
+          "explanation": "`limit(0)` forces the directive to \"see\" zero bytes regardless of the file's actual size. Without `if_empty`, this would yield an empty `{ }` (on GCC without `-pedantic-errors`, a zero-size array extension; in strict ISO mode, ill-formed). `if_empty(0xDE, 0xAD)` is substituted *in place of* the empty result entirely, giving a two-byte array of known values: `0xDE = 222`, `0xAD = 173`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l5-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nint main() {\n    static constexpr unsigned char data[] = {\n        #embed __FILE__ limit(4)\n    };\n    for (auto b : data) {\n        std::print(\"{} \", static_cast<int>(b));\n    }\n    std::print(\"\\n\");\n}",
+          "answer": "35 105 110 99 ",
+          "explanation": "The file starts with `#include`. `limit(4)` takes the first 4 bytes: `#`, `i`, `n`, `c` -- ASCII codes `35, 105, 110, 99`."
+        },
+        {
+          "id": "m1-l5-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n\nint main() {\n    int x = {\n        #embed __FILE__ limit(2)\n    };\n    std::print(\"{}\\n\", x);\n}",
+          "answerLine": 4,
+          "explanation": "`limit(2)` yields two comma-separated integer tokens, but `x` is a scalar (`int`), which expects exactly one initializer. The error is on line 4 (`int x = {`): \"scalar object 'x' requires one element in initializer\" -- the same diagnostic as for `int x = {1, 2};`. For a scalar, use `limit(1)`."
+        },
+        {
+          "id": "m1-l5-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Where can `__has_embed(...)` be used?",
+          "options": [
+            "In any C++ expression, e.g. `bool ok = __has_embed(\"f.bin\");`",
+            "Only inside `#if`/`#elif` -- as the condition of a preprocessor directive",
+            "Only inside `#embed` itself, as one of its parameters",
+            "Only in `static_assert`"
+          ],
+          "answerIndex": 1,
+          "explanation": "`__has_embed` is a preprocessor feature-test operator, like `__has_include`. Using it as an ordinary C++ expression is ill-formed (\"used outside of preprocessing directive\"); it's only legal in `#if`/`#elif` conditions."
+        },
+        {
+          "id": "m1-l5-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "`#embed \"empty.bin\"` for a zero-length file, with no `if_empty` parameter, is used as `const unsigned char data[] = { #embed \"empty.bin\" };`. What happens?",
+          "options": [
+            "The directive substitutes a single byte with value 0",
+            "The directive expands to an empty token sequence -- yielding `data[] = { }`; in strict ISO mode (`-pedantic-errors`) this is ill-formed as a zero-size array",
+            "Preprocessor error: an empty file cannot be passed to `#embed`",
+            "Runtime UB on the first access to `data`"
+          ],
+          "answerIndex": 1,
+          "explanation": "An empty resource (or `limit(0)`) without `if_empty` expands to nothing -- literally no tokens at all. For an array this gives an empty braced-init-list, which GCC accepts as an extension (a zero-size array), but strict ISO C++ considers ill-formed. `if_empty(...)` exists precisely to avoid this ambiguity and guarantee a non-empty result."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does the directive `#embed \"file.bin\"` expand to?",
+            "options": [
+              "A string literal containing the file's contents",
+              "A comma-separated list of integer literals (the file's bytes)",
+              "A function call that reads the file at runtime",
+              "The file's path as a `const char*`"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does the `limit(N)` parameter do?",
+            "options": [
+              "Restricts the result to the file's first N bytes (or all bytes if the file is shorter than N)",
+              "Requires the file to be exactly N bytes, otherwise an error",
+              "Repeats the file's contents N times",
+              "Sets the resulting array's size in bytes, padding with zeros"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the `if_empty(...)` parameter for?",
+            "options": [
+              "Appends tokens after the data, if the file is non-empty",
+              "Is substituted in place of the data only if the resource (after applying limit) yields zero bytes",
+              "Checks at compile time that the file is non-empty, and otherwise stops the build",
+              "Sets a default value for each byte if that byte equals zero"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "When does the `#embed` directive read the file?",
+            "options": [
+              "On the first access to the array at program runtime",
+              "During preprocessing, before the C++ code is compiled -- the result becomes constant expressions in the source text",
+              "At link time, like `objcopy`-based resources",
+              "Lazily, the first time the program runs on the target machine"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
     },
     {
       "id": "m1-l6",
