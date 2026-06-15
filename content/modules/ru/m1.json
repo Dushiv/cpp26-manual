@@ -333,7 +333,133 @@
     {
       "id": "m1-l4",
       "title": "Structured bindings as pack (P1061)",
-      "stub": true
+      "prerequisites": ["m1-l1"],
+      "background": null,
+      "motivation": "Structured bindings (C++17) умеют разложить `std::tuple`, `std::pair`, агрегат или массив на именованные части — но только если заранее знать, сколько частей будет, и явно перечислить имя для каждой. `auto [a, b, c] = f();` работает только тогда, когда `f()` возвращает ровно три элемента; для генерик-кода, где число элементов зависит от параметров шаблона, structured bindings были бесполезны — оставался только `std::get<N>` поэлементно или рекурсивные хелперы вроде «отдели первый элемент, рекурсивно обработай остаток».\n\n**Structured bindings как пак** (предложение P1061) снимает это ограничение: один из элементов привязки можно объявить как `...name` — он заберёт себе все элементы, не покрытые остальными именами, образовав **пак** (`name` — pack, как параметр-пак шаблона). Теперь `auto [first, ...rest] = some_tuple;` работает для tuple любого размера ≥ 1: `first` получает первый элемент, а `rest` — пак из всех оставшихся. Этот пак — обычный пак в духе `m1-l1`: к нему применимы `sizeof...`, `...[N]` (pack indexing), развёртка `...` в вызовах и инициализациях.",
+      "theory": "P1061 расширяет structured-binding-list одной новой формой элемента: вместо обычного имени `name` можно написать `...name` — **structured-binding pack**. В списке привязки допустим **не более одного** такого элемента, но его позиция свободна: он может стоять в начале, в конце или в середине списка. `auto [first, ...rest] = t;`, `auto [...init, last] = t;` и `auto [head, ...mid, tail] = t;` — все три формы корректны (проверено компилятором). Пак забирает себе ровно столько элементов, сколько нужно, чтобы суммарное число привязок совпало с числом элементов источника: для `t` из `k` элементов и `m` обычных имён в списке пак получит `k - m` элементов. Если `k - m` равно нулю, пак оказывается **пустым** (`sizeof...(rest) == 0`) — это корректно, не ошибка. Если `k < m` (обычных имён больше, чем элементов источника, и паку просто не хватит элементов даже на ноль), программа **ill-formed** на этапе компиляции — ровно та же диагностика «N names provided for structured binding ... decomposes into K elements», что и для structured bindings без пака с неверным количеством имён до C++26: пак не вводит новой категории ошибок, просто `m` теперь может быть меньше `k` за счёт ненулевого `k - m`, уходящего в пак.\n\n**Что можно раскладывать.** Источники те же, что и для structured bindings вообще, и с паком ведут себя одинаково: `std::tuple`/`std::pair` (через tuple-протокол `std::tuple_size`/`std::tuple_element`/`get<N>`), сырые массивы (`T arr[N]`), `std::array`, и любой пользовательский тип, реализующий tuple-протокол (специализации `std::tuple_size`/`std::tuple_element` плюс `get<I>`, найденный через ADL или как член). Для массивов и `std::array` пак из structured binding ведёт себя так же, как пак из tuple-протокола — `auto& [head, ...tail] = arr;` даёт `tail` как пак ссылок на оставшиеся элементы массива.\n\n**Квалификаторы ссылок — старое правило, распространённое на пак.** Structured bindings и до P1061 определяли, является ли каждый элемент привязки lvalue-ссылкой, const-ссылкой или независимой копией — в зависимости от того, что написано перед `[`: `auto`, `auto&`, `const auto&` или `auto&&`. P1061 не вводит здесь новых правил: каждый элемент пака получает в точности ту же ссылочность, что получил бы обычный элемент привязки в той же позиции с тем же квалификатором. `auto [a, ...rest] = t;` — `rest` это пак независимых копий; `auto& [a, ...rest] = t;` — `rest` это пак lvalue-ссылок на элементы `t`, и `rest...[0] = 42;` изменит сам `t`; `const auto& [a, ...rest] = t;` — пак `const`-ссылок. При этом, как и для любых других именованных сущностей, *имя* элемента пака — это lvalue независимо от того, ссылка оно или копия: `decltype(rest...[0])` (без скобок) даёт объявленный тип без ссылки (как для обычной переменной), а `decltype((rest...[0]))` (со скобками) даёт `T&` для копий и lvalue-ссылок, и `const T&` для const-ссылок — та же пара правил id-expression/parenthesized-expression из `m1-l1`, применённая к structured-binding-паку.\n\n**Связь с pack indexing (`m1-l1`).** Пак, полученный из structured binding, — это пак в том же смысле, что function parameter pack или template parameter pack: к нему применимы все операции из `m1-l1`. `rest...[0]` достаёт конкретный элемент по constant-expression индексу (с теми же правилами диапазона: вне границ — ill-formed на этапе компиляции, без UB), `sizeof...(rest)` даёт текущий размер пака, а `rest...` разворачивает его целиком — например, в конструктор `std::tuple{rest...}` или как аргументы вызова функции. unevaluated-контексты (`decltype`, `sizeof`, `noexcept`) и SFINAE для structured-binding-пака подчиняются ровно тем же правилам, что и для любого другого пака — никаких новых случаев фича не вводит.\n\n**Практическое ограничение текущих компиляторов.** На момент написания структурированная привязка с паком должна находиться в зависимом контексте — то есть внутри шаблона функции, метода класса-шаблона или generic-лямбды (которая сама компилируется как шаблон). `auto [a, ...rest] = t;` прямо в `main()`, без оборачивающего шаблона, GCC trunk отклоняет с сообщением `structured binding pack outside of template`. Стандарт формально этого не требует — пак из нулевого числа элементов в нешаблонном коде просто означал бы тривиальную структурную привязку, — но на практике сегодня писать такой код стоит внутри шаблонной функции или generic-лямбды.\n\n**Старая альтернатива.** До C++26 «взять первый элемент и пак из остальных» в generic-коде делали через `std::get<0>(t)` для первого элемента и рекурсивный хелпер с `std::index_sequence`, который через `std::get<Is + 1>(t)...` собирает «хвост» в новый `std::tuple` — заметно более многословно, требует отдельной вспомогательной функции с пачкой индексов и не даёт единого читаемого выражения «первый + остальное». Structured-binding pack сворачивает это в одну строку объявления.\n\n**Чек-лист нюансов.** Unevaluated-контексты и SFINAE — см. выше, наследуются от `m1-l1` без изменений. Категория значения — определяется ссылочным квалификатором перед `[`, как и для structured bindings вообще (см. выше). Старая альтернатива — `std::get<N>` + `index_sequence`-рекурсия, см. выше. Ill-formed vs UB — недобор элементов (`k < m`) и выход индекса pack indexing за границы — оба ill-formed на этапе компиляции, без UB; пустой пак (`k == m`) — корректен. Взаимодействие с уже знакомым — структурированные привязки и pack indexing, оба уже покрыты в теории.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
+      "examples": [
+        {
+          "title": "Первый элемент + пак из остальных",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid process(Tuple t) {\n    auto [first, ...rest] = t;\n    std::print(\"first={}, rest size={}, rest...[0]={}\\n\",\n               first, sizeof...(rest), rest...[0]);\n}\n\nint main() {\n    process(std::tuple{10, 20, 30, 40});\n}",
+          "expectedOutput": "first=10, rest size=3, rest...[0]=20",
+          "explanation": "`first` забирает первый элемент tuple, `...rest` — пак из оставшихся трёх. `sizeof...(rest)` и `rest...[0]` (pack indexing из `m1-l1`) работают на нём как на любом другом паке."
+        },
+        {
+          "title": "Пак из массива по ссылке",
+          "code": "#include <print>\n\ntemplate <typename T, std::size_t N>\nvoid describe(T (&arr)[N]) {\n    auto& [head, ...tail] = arr;\n    head += 100;                      // меняем через ссылку\n    std::print(\"head={}, tail...[0]={}, sizeof...(tail)={}\\n\",\n               head, tail...[0], sizeof...(tail));\n}\n\nint main() {\n    int values[4] = {1, 2, 3, 4};\n    describe(values);\n    std::print(\"values[0]={}\\n\", values[0]);\n}",
+          "expectedOutput": "head=101, tail...[0]=2, sizeof...(tail)=3\nvalues[0]=101",
+          "explanation": "`auto& [head, ...tail] = arr;` привязывает `head` и пак `tail` как lvalue-ссылки на элементы массива — то же правило ссылочности, что для structured bindings без пака, просто распространённое на `tail`. Изменение `head` меняет `values[0]`."
+        },
+        {
+          "title": "Пак не в конце списка",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid show(Tuple t) {\n    auto [...front, last] = t;          // пак первым, одно имя последним\n    std::print(\"last={}, front...[0]={}, sizeof...(front)={}\\n\",\n               last, front...[0], sizeof...(front));\n}\n\nint main() {\n    show(std::tuple{1, 2, 3, 4});\n}",
+          "expectedOutput": "last=4, front...[0]=1, sizeof...(front)=3",
+          "explanation": "В списке привязки допустим один пак в любой позиции — не только последней. Здесь `...front` забирает первые три элемента, а `last` — четвёртый. P1061 разрешает и `[a, ...mid, z]` (пак посередине), и `[...all]` (пак из всего)."
+        },
+        {
+          "title": "Развёртка пака в новый tuple",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nauto without_first(Tuple t) {\n    auto [first, ...rest] = t;\n    return std::tuple{rest...};      // разворачиваем пак в новый tuple\n}\n\nint main() {\n    auto t = without_first(std::tuple{1, 2, 3, 4});\n    std::print(\"size={}, t...[0]={}, t...[1]={}\\n\",\n               std::tuple_size_v<decltype(t)>, std::get<0>(t), std::get<1>(t));\n}",
+          "expectedOutput": "size=3, t...[0]=2, t...[1]=3",
+          "explanation": "`rest...` разворачивает пак из трёх элементов в инициализатор `std::tuple{...}`, давая новый `std::tuple<int,int,int>` — точно так же, как разворачивался бы любой другой пак."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l4-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, ...rest] = t;\n    std::print(\"{} {}\\n\", sizeof...(rest), rest...[1]);\n}\n\nint main() {\n    f(std::tuple{5, 6, 7, 8, 9});\n}",
+          "answer": "4 7",
+          "explanation": "Tuple из 5 элементов, `a` забирает первый (`5`), `rest` — пак из оставшихся четырёх (`6, 7, 8, 9`). `sizeof...(rest) == 4`, а `rest...[1]` — второй элемент пака (с нуля), то есть `7`."
+        },
+        {
+          "id": "m1-l4-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, b, c, ...rest] = t;\n    std::print(\"{} {} {} {}\\n\", a, b, c, sizeof...(rest));\n}\n\nint main() {\n    f(std::tuple{1, 2});\n}",
+          "answerLine": 6,
+          "explanation": "В списке три обычных имени (`a, b, c`) плюс пак `rest`, а `std::tuple{1, 2}` содержит всего 2 элемента. Даже пустой пак (`sizeof...(rest) == 0`) не спасает: обычных имён (3) больше, чем элементов источника (2), поэтому привязка ill-formed на этапе компиляции — строка 6, `auto [a, b, c, ...rest] = t;` («3 names provided for structured binding ... decomposes into 2 elements»)."
+        },
+        {
+          "id": "m1-l4-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Дано `auto [...mid, z] = std::tuple{1, 2, 3, 4};` — пак стоит первым, перед единственным обычным именем `z`. Что произойдёт?",
+          "options": [
+            "Ошибка компиляции: пак обязан стоять последним в списке привязки",
+            "Корректно: `z = 4`, `mid` — пак из элементов `1, 2, 3` (`sizeof...(mid) == 3`)",
+            "Корректно, но `mid` всегда пустой, а `z` получает весь tuple",
+            "Ошибка компиляции: в списке привязки может быть только одно имя при наличии пака"
+          ],
+          "answerIndex": 1,
+          "explanation": "P1061 допускает не более одного пака в списке привязки, но без требования к позиции: пак может быть первым, последним или в середине. Здесь `z` забирает последний элемент (`4`), а `...mid` — все элементы перед ним (`1, 2, 3`), образуя пак размера 3."
+        },
+        {
+          "id": "m1-l4-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid bump(Tuple& t) {\n    auto& [a, ...rest] = t;\n    rest...[0] *= 10;\n}\n\nint main() {\n    auto t = std::tuple{1, 2, 3};\n    bump(t);\n    std::print(\"{} {} {}\\n\", std::get<0>(t), std::get<1>(t), std::get<2>(t));\n}",
+          "answer": "1 20 3",
+          "explanation": "`auto&` перед списком привязки делает `a` и весь пак `rest` lvalue-ссылками на элементы `t` — как и для structured bindings без пака. `rest...[0]` именует `std::get<1>(t)`, поэтому `rest...[0] *= 10` меняет второй элемент `t` с `2` на `20`; `t` после вызова — `{1, 20, 3}`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напиши функцию `sum_tail`, которая принимает `std::tuple` из произвольного числа целочисленных элементов и возвращает сумму всех элементов, кроме первого, используя structured-binding pack и fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // твой код: разложи t на first и pack rest, верни сумму rest\n}\n```",
+        "referenceSolution": "```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n```",
+        "expectedOutput": "10",
+        "godboltUrl": null
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Сколько элементов structured-binding-pack может встретиться в одном списке привязки `auto [...] = ...;`?",
+            "options": [
+              "Любое число, но все обязательно подряд",
+              "Не более одного, в любой позиции списка (первой, последней или в середине)",
+              "Не более одного, и только в последней позиции",
+              "Ровно один на каждый обычный элемент"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "`auto [a, b, ...rest] = std::tuple{1, 2};` — что произойдёт?",
+            "options": [
+              "Корректно: `rest` — пустой пак, `sizeof...(rest) == 0`",
+              "UB в рантайме: `rest` не инициализирован",
+              "Корректно, но обращение к `rest` ill-formed",
+              "Ошибка компиляции: недостаточно элементов даже без пака"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "Дано `const auto& [a, ...rest] = t;`. Какой ссылочности будут элементы пака `rest`?",
+            "options": [
+              "Независимые копии (value), как при `auto`",
+              "Неконстантные lvalue-ссылки, как при `auto&`",
+              "Const lvalue-ссылки на элементы `t`",
+              "rvalue-ссылки независимо от квалификатора"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Какие операции из pack indexing (`m1-l1`) применимы к паку, полученному из structured binding?",
+            "options": [
+              "Никакие — это специальный вид пака с собственными правилами",
+              "Только `sizeof...`, но не `...[N]`",
+              "`...[N]`, `sizeof...` и развёртка `...` — все те же операции, что и для любого другого пака",
+              "Только развёртка `...`, без индексации и `sizeof...`"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
     },
     {
       "id": "m1-l5",

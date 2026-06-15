@@ -333,7 +333,133 @@
     {
       "id": "m1-l4",
       "title": "Structured bindings as pack (P1061)",
-      "stub": true
+      "prerequisites": ["m1-l1"],
+      "background": null,
+      "motivation": "Structured bindings (C++17) can decompose a `std::tuple`, `std::pair`, aggregate, or array into named parts — but only if you know in advance how many parts there will be and spell out a name for each one. `auto [a, b, c] = f();` only works when `f()` returns exactly three elements; for generic code, where the number of elements depends on template parameters, structured bindings were useless — you were stuck with element-by-element `std::get<N>` or recursive helpers along the lines of \"peel off the first element, recurse on the rest\".\n\n**Structured bindings as a pack** (proposal P1061) lifts this restriction: one of the elements in a binding can be declared as `...name` — it scoops up all the elements not claimed by the other names, forming a **pack** (`name` is a pack, in the same sense as a template parameter pack). Now `auto [first, ...rest] = some_tuple;` works for a tuple of any size ≥ 1: `first` gets the first element, and `rest` becomes a pack of everything that's left. This pack is an ordinary pack in the sense of `m1-l1`: `sizeof...`, `...[N]` (pack indexing), and `...` expansion in calls and initializers all apply to it.",
+      "theory": "P1061 extends the structured-binding-list with one new kind of element: instead of an ordinary name `name`, you can write `...name` — a **structured-binding pack**. **At most one** such element is allowed in a binding list, but its position is free: it can sit at the start, the end, or in the middle. `auto [first, ...rest] = t;`, `auto [...init, last] = t;`, and `auto [head, ...mid, tail] = t;` are all valid (confirmed against the compiler). The pack claims exactly as many elements as needed so that the total number of bindings matches the number of elements in the source: for a source `t` with `k` elements and `m` ordinary names in the list, the pack gets `k - m` elements. If `k - m` is zero, the pack is **empty** (`sizeof...(rest) == 0`) — that's well-formed, not an error. If `k < m` (there are more ordinary names than elements in the source, so the pack can't even reach zero), the program is **ill-formed** at compile time — exactly the same \"N names provided for structured binding ... decomposes into K elements\" diagnostic that pre-C++26 structured bindings already gave for a mismatched count of names: a pack doesn't introduce a new error category, it just means `m` can now be less than `k`, with the difference `k - m` flowing into the pack.\n\n**What can be decomposed.** The sources are the same as for structured bindings in general, and they behave the same with a pack: `std::tuple`/`std::pair` (via the tuple protocol — `std::tuple_size`/`std::tuple_element`/`get<N>`), raw arrays (`T arr[N]`), `std::array`, and any user type implementing the tuple protocol (specializations of `std::tuple_size`/`std::tuple_element` plus a `get<I>` found via ADL or as a member). For arrays and `std::array`, a pack from a structured binding behaves the same as a pack from the tuple protocol — `auto& [head, ...tail] = arr;` gives `tail` as a pack of references to the remaining array elements.\n\n**Reference qualifiers — old rule, extended uniformly to the pack.** Even before P1061, structured bindings already determined whether each bound element is an lvalue reference, a const reference, or an independent copy — depending on what's written before `[`: `auto`, `auto&`, `const auto&`, or `auto&&`. P1061 introduces no new rules here: every element of the pack gets exactly the same reference-ness that an ordinary bound element in the same position would get under the same qualifier. `auto [a, ...rest] = t;` — `rest` is a pack of independent copies; `auto& [a, ...rest] = t;` — `rest` is a pack of lvalue references into `t`, and `rest...[0] = 42;` mutates `t` itself; `const auto& [a, ...rest] = t;` — a pack of `const` references. And, as for any other named entity, the *name* of a pack element is an lvalue regardless of whether it's a reference or a copy: `decltype(rest...[0])` (no parentheses) gives the declared type without a reference (just like for an ordinary variable), while `decltype((rest...[0]))` (with parentheses) gives `T&` for copies and lvalue references, and `const T&` for const references — the same id-expression/parenthesized-expression pair of rules from `m1-l1`, applied to a structured-binding pack.\n\n**Connection to pack indexing (`m1-l1`).** A pack obtained from a structured binding is a pack in the same sense as a function parameter pack or a template parameter pack: every operation from `m1-l1` applies to it. `rest...[0]` retrieves a specific element by a constant-expression index (with the same range rules — out of bounds is ill-formed at compile time, no UB), `sizeof...(rest)` gives the pack's current size, and `rest...` expands it in full — for example into a `std::tuple{rest...}` constructor or as call arguments. Unevaluated contexts (`decltype`, `sizeof`, `noexcept`) and SFINAE for a structured-binding pack follow exactly the same rules as for any other pack — the feature introduces no new cases.\n\n**A practical limitation of current compilers.** As of this writing, a structured binding with a pack must appear in a dependent context — that is, inside a function template, a class-template method, or a generic lambda (which itself compiles as a template). `auto [a, ...rest] = t;` written directly in `main()`, with no enclosing template, is rejected by GCC trunk with `structured binding pack outside of template`. The standard doesn't formally require this — a zero-element pack in non-template code would simply mean a trivial structured binding — but in practice, today, such code belongs inside a template function or generic lambda.\n\n**Old alternative.** Before C++26, \"take the first element plus a pack of the rest\" in generic code meant `std::get<0>(t)` for the first element and a recursive helper using `std::index_sequence`, which assembles the \"tail\" into a new `std::tuple` via `std::get<Is + 1>(t)...` — noticeably more verbose, requires a separate helper function with its own index pack, and gives no single readable \"first + rest\" expression. A structured-binding pack collapses all of that into one declaration line.\n\n**Nuance checklist.** Unevaluated contexts and SFINAE — see above, inherited unchanged from `m1-l1`. Value category — determined by the reference qualifier before `[`, same as for structured bindings in general (see above). Old alternative — `std::get<N>` plus `index_sequence` recursion, see above. Ill-formed vs UB — too few elements (`k < m`) and an out-of-range pack-indexing index are both ill-formed at compile time, no UB; an empty pack (`k == m`) is well-formed. Interaction with the familiar — structured bindings and pack indexing, both already covered in the theory above.",
+      "outputsVerified": true,
+      "verifiedWith": { "compilerId": "gsnapshot", "flags": "-std=c++26 -O2" },
+      "examples": [
+        {
+          "title": "First element + a pack of the rest",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid process(Tuple t) {\n    auto [first, ...rest] = t;\n    std::print(\"first={}, rest size={}, rest...[0]={}\\n\",\n               first, sizeof...(rest), rest...[0]);\n}\n\nint main() {\n    process(std::tuple{10, 20, 30, 40});\n}",
+          "expectedOutput": "first=10, rest size=3, rest...[0]=20",
+          "explanation": "`first` takes the tuple's first element, and `...rest` becomes a pack of the remaining three. `sizeof...(rest)` and `rest...[0]` (pack indexing from `m1-l1`) work on it like on any other pack."
+        },
+        {
+          "title": "A pack from an array, by reference",
+          "code": "#include <print>\n\ntemplate <typename T, std::size_t N>\nvoid describe(T (&arr)[N]) {\n    auto& [head, ...tail] = arr;\n    head += 100;                      // mutate through the reference\n    std::print(\"head={}, tail...[0]={}, sizeof...(tail)={}\\n\",\n               head, tail...[0], sizeof...(tail));\n}\n\nint main() {\n    int values[4] = {1, 2, 3, 4};\n    describe(values);\n    std::print(\"values[0]={}\\n\", values[0]);\n}",
+          "expectedOutput": "head=101, tail...[0]=2, sizeof...(tail)=3\nvalues[0]=101",
+          "explanation": "`auto& [head, ...tail] = arr;` binds `head` and the pack `tail` as lvalue references to the array's elements — the same reference rule as for structured bindings without a pack, just extended to `tail`. Mutating `head` mutates `values[0]`."
+        },
+        {
+          "title": "A pack that isn't last in the list",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid show(Tuple t) {\n    auto [...front, last] = t;          // pack first, one name last\n    std::print(\"last={}, front...[0]={}, sizeof...(front)={}\\n\",\n               last, front...[0], sizeof...(front));\n}\n\nint main() {\n    show(std::tuple{1, 2, 3, 4});\n}",
+          "expectedOutput": "last=4, front...[0]=1, sizeof...(front)=3",
+          "explanation": "A binding list may contain one pack in any position — not only last. Here `...front` claims the first three elements, and `last` is the fourth. P1061 also allows `[a, ...mid, z]` (pack in the middle) and `[...all]` (pack covering everything)."
+        },
+        {
+          "title": "Expanding the pack into a new tuple",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nauto without_first(Tuple t) {\n    auto [first, ...rest] = t;\n    return std::tuple{rest...};      // expand the pack into a new tuple\n}\n\nint main() {\n    auto t = without_first(std::tuple{1, 2, 3, 4});\n    std::print(\"size={}, t...[0]={}, t...[1]={}\\n\",\n               std::tuple_size_v<decltype(t)>, std::get<0>(t), std::get<1>(t));\n}",
+          "expectedOutput": "size=3, t...[0]=2, t...[1]=3",
+          "explanation": "`rest...` expands the three-element pack into the `std::tuple{...}` initializer, producing a new `std::tuple<int,int,int>` — exactly as any other pack would expand."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m1-l4-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, ...rest] = t;\n    std::print(\"{} {}\\n\", sizeof...(rest), rest...[1]);\n}\n\nint main() {\n    f(std::tuple{5, 6, 7, 8, 9});\n}",
+          "answer": "4 7",
+          "explanation": "A tuple of 5 elements: `a` takes the first (`5`), and `rest` becomes a pack of the remaining four (`6, 7, 8, 9`). `sizeof...(rest) == 4`, and `rest...[1]` is the second element of the pack (zero-based), i.e. `7`."
+        },
+        {
+          "id": "m1-l4-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid f(Tuple t) {\n    auto [a, b, c, ...rest] = t;\n    std::print(\"{} {} {} {}\\n\", a, b, c, sizeof...(rest));\n}\n\nint main() {\n    f(std::tuple{1, 2});\n}",
+          "answerLine": 6,
+          "explanation": "The list has three ordinary names (`a, b, c`) plus the pack `rest`, but `std::tuple{1, 2}` only has 2 elements. Even an empty pack (`sizeof...(rest) == 0`) doesn't save it: there are more ordinary names (3) than elements in the source (2), so the binding is ill-formed at compile time — line 6, `auto [a, b, c, ...rest] = t;` (\"3 names provided for structured binding ... decomposes into 2 elements\")."
+        },
+        {
+          "id": "m1-l4-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Given `auto [...mid, z] = std::tuple{1, 2, 3, 4};` — the pack comes first, before the single ordinary name `z`. What happens?",
+          "options": [
+            "Compile error: the pack must be the last element of the binding list",
+            "Well-formed: `z = 4`, and `mid` is a pack of `1, 2, 3` (`sizeof...(mid) == 3`)",
+            "Well-formed, but `mid` is always empty and `z` gets the whole tuple",
+            "Compile error: only one name is allowed in a binding list when a pack is present"
+          ],
+          "answerIndex": 1,
+          "explanation": "P1061 allows at most one pack in a binding list, but doesn't constrain its position: the pack can be first, last, or in the middle. Here `z` takes the last element (`4`), and `...mid` takes everything before it (`1, 2, 3`), forming a pack of size 3."
+        },
+        {
+          "id": "m1-l4-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nvoid bump(Tuple& t) {\n    auto& [a, ...rest] = t;\n    rest...[0] *= 10;\n}\n\nint main() {\n    auto t = std::tuple{1, 2, 3};\n    bump(t);\n    std::print(\"{} {} {}\\n\", std::get<0>(t), std::get<1>(t), std::get<2>(t));\n}",
+          "answer": "1 20 3",
+          "explanation": "`auto&` before the binding list makes `a` and the whole pack `rest` lvalue references into `t` — same as for structured bindings without a pack. `rest...[0]` names `std::get<1>(t)`, so `rest...[0] *= 10` changes `t`'s second element from `2` to `20`; `t` after the call is `{1, 20, 3}`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a function `sum_tail` that takes a `std::tuple` of any number of integer elements and returns the sum of all elements except the first, using a structured-binding pack and the fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // your code: decompose t into first and a pack rest, return the sum of rest\n}\n```",
+        "referenceSolution": "```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n```",
+        "expectedOutput": "10",
+        "godboltUrl": null
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "How many structured-binding-pack elements can appear in one binding list `auto [...] = ...;`?",
+            "options": [
+              "Any number, but all must be consecutive",
+              "At most one, in any position in the list (first, last, or in the middle)",
+              "At most one, and only in the last position",
+              "Exactly one per ordinary element"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "`auto [a, b, ...rest] = std::tuple{1, 2};` — what happens?",
+            "options": [
+              "Well-formed: `rest` is an empty pack, `sizeof...(rest) == 0`",
+              "UB at runtime: `rest` is uninitialized",
+              "Well-formed, but referring to `rest` is ill-formed",
+              "Compile error: not enough elements even without the pack"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "Given `const auto& [a, ...rest] = t;`. What reference-ness do the elements of the pack `rest` have?",
+            "options": [
+              "Independent copies (by value), as with `auto`",
+              "Non-const lvalue references, as with `auto&`",
+              "Const lvalue references into `t`",
+              "rvalue references regardless of the qualifier"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Which pack-indexing operations from `m1-l1` apply to a pack obtained from a structured binding?",
+            "options": [
+              "None -- it's a special kind of pack with its own rules",
+              "Only `sizeof...`, but not `...[N]`",
+              "`...[N]`, `sizeof...`, and `...` expansion -- the same operations as for any other pack",
+              "Only `...` expansion, no indexing or `sizeof...`"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
     },
     {
       "id": "m1-l5",
