@@ -4,5 +4,11 @@
   "title": "Core safety",
   "significance": "important",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    {
+      "id": "m2-l1",
+      "title": "Erroneous behaviour (P2795)",
+      "stub": true
+    }
+  ]
 }
