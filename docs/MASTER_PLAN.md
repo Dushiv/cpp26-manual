@@ -94,10 +94,26 @@
 - Другие мелкие safety-правки.
 - Зачем: безопасность — сквозная тема C++26, это фундамент для понимания, *почему* стандарт двигается в эту сторону.
 
+**Уроки (3):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m2-l1 | Ошибочное поведение / Erroneous behavior | P2795 | средняя |
+| m2-l2 | Запрет dangling-ссылок / Preventing dangling references | P2993 | средняя |
+| m2-l3 | Прочие safety-правки / Other safety fixes (bundle) | разные | мелкая |
+
 ### Модуль 3 — constexpr: всё на этапе компиляции
 - constexpr-исключения, constexpr-контейнеры и адаптеры (P3372), constexpr-приведение из `void*`.
 - `std::is_within_lifetime` и работа с временем жизни в compile-time.
 - Зачем здесь: рефлексия (модуль 5) живёт целиком в compile-time, без уверенного constexpr она не зайдёт.
+
+**Уроки (5):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m3-l1 | constexpr-исключения / constexpr exceptions | P3068 | средняя |
+| m3-l2 | constexpr-контейнеры / constexpr containers & adaptors | P3372 | средняя |
+| m3-l3 | Время жизни в compile-time: `std::is_within_lifetime` / Lifetime at compile time | P2637 | средняя |
+| m3-l4 | constexpr-приведение из `void*` / constexpr cast from void* | P2963 | мелкая |
+| m3-l5 | consteval: нестрогие аргументы (P2738) / consteval with non-constant arguments | P2738 | мелкая |
 
 ### Модуль 4 — Contracts *(флагман)*
 - `pre(...)`, `post(r: ...)`, `contract_assert(...)`.
@@ -111,6 +127,16 @@
       post(r: r * b == a)
   { return a / b; }
   ```
+
+**Уроки (6):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m4-l1 | Синтаксис: pre/post/contract_assert / Contract syntax | P2900 | средняя |
+| m4-l2 | Семантики вычисления: ignore/observe/enforce/quick-enforce / Evaluation semantics | P2900 | средняя |
+| m4-l3 | Обработчик нарушения и исключения / Violation handler & exceptions | P2900 | средняя |
+| m4-l4 | Контракты в виртуальных функциях / Contracts on virtual functions | P2900 | средняя |
+| m4-l5 | Literal vs. evaluated; побочные эффекты в условиях / Side effects & literal semantics | P2900 | продвинутый |
+| m4-l6 | Дизайн и споры / Design rationale & controversies | P2900 | продвинутый |
 
 ### Модуль 5 — Static Reflection *(флагман №1)*
 Самый объёмный модуль, дробится на под-уроки:
@@ -127,6 +153,17 @@
   ```
 - ⚠️ Точные имена функций `std::meta::*` сверяем по cppreference при написании контента.
 
+**Уроки (7):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m5-l1 | Оператор `^^` и `std::meta::info` / The `^^` operator & `std::meta::info` | P2996 | средняя |
+| m5-l2 | Сплайсинг `[: r :]` / Splicers `[: r :]` | P2996 | средняя |
+| m5-l3 | Запросы: члены, имена, базы / Querying members, names & bases | P2996 | средняя+ |
+| m5-l4 | Рефлексия перечислений, enum→string / Enum reflection | P2996 | мелкая/средняя |
+| m5-l5 | Генерация кода: `define_class` / Code generation: `define_class` | P2996 | крупная |
+| m5-l6 | Аннотации / Annotations | P1240/P3385 | средняя |
+| m5-l7 | Практические паттерны (итоговый) / Practical patterns (capstone) | P2996 + P1240 | крупная |
+
 ### Модуль 6 — std::execution (Senders/Receivers) *(флагман)*
 - Модель: **sender → receiver → scheduler**, структурированная конкурентность.
 - Базовые алгоритмы: создание (`just`), композиция (`then`), объединение (`when_all`), запуск (`sync_wait`).
@@ -134,11 +171,27 @@
 - *Концепция-пример:* конвейер вычислений, исполняемый на пуле потоков.
 - ⚠️ Самая тяжёлая для интуиции тема — много схем и пошаговых разборов.
 
+**Уроки (6):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m6-l1 | Концепции: sender, receiver, operation_state / Core abstractions | P2300 | средняя |
+| m6-l2 | `just`, `sync_wait`, первые конвейеры / First pipelines | P2300 | средняя |
+| m6-l3 | `then` и планировщики / `then` & schedulers | P2300 | средняя |
+| m6-l4 | `when_all` и пул потоков / `when_all` & thread pool | P2300 | средняя |
+| m6-l5 | Обработка ошибок и отмена / Error handling & stop tokens | P2300 | средняя |
+| m6-l6 | `let_value`/`let_error`; гарантии без скрытых аллокаций; сравнение с async/threads / Advanced composition & design guarantees | P2300 | продвинутый |
+
 ### Модуль 7 — Новые контейнеры и типы
 - **`std::inplace_vector`** — вектор с фиксированной ёмкостью, без кучи.
 - **`std::hive`** — контейнер с быстрой вставкой/удалением и стабильностью ссылок.
 - **`std::text_encoding`** — идентификация кодировок.
-- constexpr-контейнеры на практике (связка с модулем 3).
+
+**Уроки (3):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m7-l1 | `std::inplace_vector` | P0843 | средняя |
+| m7-l2 | `std::hive` | P0447 | средняя |
+| m7-l3 | `std::text_encoding` | P1885 | мелкая |
 
 ### Модуль 8 — Числа и производительность
 - **`std::simd`** — портируемые векторные вычисления.
@@ -146,15 +199,37 @@
 - **Saturating arithmetic** — `std::add_sat`, `sub_sat`, `mul_sat`, `div_sat`.
 - **`<stdbit.h>`** — битовые утилиты (C-совместимость).
 
+**Уроки (4):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m8-l1 | `std::simd` — портируемые SIMD-векторы / Portable SIMD vectors | P1928 | средняя |
+| m8-l2 | `std::linalg` — линейная алгебра / Linear algebra (BLAS interface) | P1673 | средняя |
+| m8-l3 | Saturating arithmetic: `add_sat`, `sub_sat`, `mul_sat`, `div_sat` | P0543 | мелкая |
+| m8-l4 | `<stdbit.h>` — битовые утилиты / Bit utilities (C compat) | P1956 | мелкая |
+
 ### Модуль 9 — Низкоуровневая конкурентность
 - **`std::hazard_pointer`** (`<hazard_pointer>`) — безопасное освобождение в lock-free структурах.
 - **`std::rcu`** (`<rcu>`) — read-copy-update.
 - Связь с моделью памяти и с модулем 6.
 
+**Уроки (3):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m9-l1 | `std::hazard_pointer` — безопасное освобождение / Safe reclamation in lock-free structures | P0566/P2530 | средняя |
+| m9-l2 | `std::rcu` — read-copy-update | P1122 | средняя |
+| m9-l3 | Модель памяти и связь с модулем 6 / Memory model & execution model integration | — | мелкая |
+
 ### Модуль 10 — Отладка, формат, удалённое
 - **`<debugging>`:** `std::breakpoint`, `std::is_debugger_present`, `std::breakpoint_if_debugging`.
 - Улучшения `std::format` / `std::print`.
 - **Удалённые и устаревшие возможности** C++26 — что исчезло и почему (исчерпывающее покрытие = в т.ч. то, чего больше нет).
+
+**Уроки (3):**
+| id | Название (ru / en) | Пропозал | Глубина |
+|----|--------------------|----------|---------|
+| m10-l1 | `<debugging>`: breakpoint, is_debugger_present / Debugger detection & breakpoints | P2546 | мелкая |
+| m10-l2 | Улучшения `std::format` и `std::print` / `std::format` & `std::print` improvements | P2845 и др. | средняя |
+| m10-l3 | Удалённые и устаревшие возможности / Removed & deprecated features | разные | средняя |
 
 ---
 
