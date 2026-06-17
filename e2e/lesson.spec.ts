@@ -6,8 +6,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "Erroneous behaviour" }).click();
-  await expect(page.locator("h1")).toContainText("Erroneous behaviour");
+  await page.getByRole("listitem").filter({ hasText: "constexpr-исключения" }).click();
+  await expect(page.locator("h1")).toContainText("constexpr-исключения");
   await expect(page.locator(".empty-big")).toContainText("ещё не написан");
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();
