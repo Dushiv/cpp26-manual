@@ -14,15 +14,23 @@
        exists from the CDN script above. Without this shim its icon registration throws and
        every icon component destructures to undefined. -->
   <script>window.react = window.React;</script>
-  <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script crossorigin src="https://unpkg.com/@babel/standalone@8.0.1/babel.min.js"></script>
+  <!-- Babel 8 preset-react defaults to runtime:"automatic" which emits ESM import statements,
+       breaking non-module scripts. Register a "react-classic" preset that forces runtime:"classic"
+       so Babel outputs React.createElement() calls, compatible with our CDN-based setup. -->
+  <script>
+    Babel.registerPreset('react-classic', (api, opts) => ({
+      plugins: Babel.availablePresets['react'](api, { ...opts, runtime: 'classic' }).plugins
+    }));
+  </script>
   <script crossorigin src="https://unpkg.com/lucide-react@0.344.0/dist/umd/lucide-react.js"></script>
   <script crossorigin src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.108.1/dist/umd/supabase.js"></script>
 
   <!-- Plain classic script, NOT data-type="module": module scripts are deferred until after
        parsing, so the bootstrap script below would run first and find window.CPP26Engine
        undefined, rendering nothing into #root. -->
-  <script type="text/babel" data-presets="react" src="./cpp26-engine.jsx"></script>
-  <script type="text/babel" data-presets="react">
+  <script type="text/babel" data-presets="react-classic" src="./cpp26-engine.jsx"></script>
+  <script type="text/babel" data-presets="react-classic">
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(React.createElement(window.CPP26Engine));
   </script>
