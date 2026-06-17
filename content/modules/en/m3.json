@@ -4,5 +4,11 @@
   "title": "constexpr: everything at compile time",
   "significance": "foundation",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    {
+      "id": "m3-l1",
+      "title": "constexpr exceptions (P3068)",
+      "stub": true
+    }
+  ]
 }

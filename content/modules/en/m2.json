@@ -8,7 +8,355 @@
     {
       "id": "m2-l1",
       "title": "Erroneous behaviour (P2795)",
-      "stub": true
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before C++26, reading an uninitialized variable with automatic storage duration (a local stack variable) was **undefined behavior** — one of the most dangerous categories in the language. This meant: the program's behavior was not just unpredictable at runtime, but the compiler was free to assume \"this never happens\" and optimize code based on that assumption. Such optimizations sometimes produced surprising results: readable code could be entirely eliminated by the optimizer, conditions could be treated as always-true or always-false, or the program could crash in an unrelated location.\n\nThe problem was not only runtime chaos. UB status meant that compilers were technically not obligated to even **warn** — and some didn't, or only warned in certain cases. The result: silent bugs discovered only in production or when switching compilers/flags.\n\n**P2795** introduces a new category — **erroneous behavior**: reading an uninitialized variable is still an error, but the behavior is now defined: the program gets *some* unspecified value (whatever happens to be in memory), and the compiler can no longer exploit this fact for optimizations. The error still needs to be fixed, but the bug is now diagnosable and reproducible — not a silent hole in the entire program's behavior.",
+      "theory": "**Three behavior categories** in C++: ill-formed (compile error), undefined behavior (UB, anything goes at runtime), and now — **erroneous behavior** (EB). Erroneous behavior occupies an intermediate position: the program contains an error (documented by the standard), but the behavior at that point is *defined* — though not precisely prescribed. For reading an uninitialized variable specifically, EB means: the reading expression produces an **unspecified value** — some concrete value that happens to be in the corresponding memory at the time of reading, but with no guarantee about what that value is.\n\nThe key difference from UB: with UB, the compiler could *optimize based on the assumption* that this code path can never execute. With EB — it cannot. The compiler must compile the code so that it correctly reads the bytes from memory and uses the resulting value as written. This makes the behavior **reproducible** (on one platform under the same conditions it will produce the same result) and **diagnosable** (sanitizers like UBSan can detect EB; compiler warnings like `-Wuninitialized` are now officially blessed by the standard).\n\n**Which variables EB applies to.** Only variables with **automatic storage duration** (automatic storage duration) — local variables and function parameters without an initializer. Variables with **static** and **thread-local** storage (static variables, global variables, `static` locals inside functions) are zero-initialized by the language before program start or before first use, so EB does not apply to them — they always have a defined value. Variables with **dynamic** storage (heap, `new T` without an initializer) are a separate topic not covered by P2795.\n\n**What \"unspecified value\" means.** The value really exists: it is whatever bytes happen to be in the variable's stack slot at the moment of first reading. It is not guaranteed to be zero, not guaranteed to be any particular garbage — simply \"whatever happens to be there\". In practice this depends on how the compiler laid out variables, what was on the stack before the current function call, and other ABI details. The program can observe this value and use it in further computations — the result will be deterministic within a single run, but not between different runs, compilers, or platforms.\n\n**Compiler diagnostics.** P2795 explicitly allows and encourages compilers to diagnose erroneous behavior. GCC and Clang have long warned on `-Wuninitialized` and `-Wmaybe-uninitialized` — these warnings are now officially blessed by the standard. It is recommended to compile with `-Wall` (or at least `-Wuninitialized`) and treat such warnings as errors (`-Werror=uninitialized`). The UBSan sanitizer can also detect reads of uninitialized variables (flag `-fsanitize=undefined`) — this is no longer \"trying to catch UB\" but \"diagnosing erroneous behavior\".\n\n**Interaction with the optimizer.** This is where the difference from UB is most significant. Previously, an optimizer seeing a read of an uninitialized variable could conclude: \"since this is UB, this code path is impossible\" — and delete all the code leading to that read, or change the branching conditions around it. This produced effects extremely difficult to debug. With EB, the optimizer does not have the right to draw such conclusions: it must assume the read will happen and produce *some* value.\n\n**The `[[indeterminate]]` attribute.** C++26 adds the `[[indeterminate]]` attribute, which allows the programmer to explicitly say: \"I know this variable will be read without initialization, and that is intentional — I manage its filling myself\". This attribute removes erroneous behavior status from the variable: reading an uninitialized `[[indeterminate]]` variable is no longer EB (and does not generate a compiler warning). The typical use case is a buffer that will be fully written before the first logical read: `char buf[[indeterminate]][N];` — the programmer explicitly takes responsibility for ensuring the buffer is written before reading.\n\n**Nuance checklist.**\n- *Unevaluated contexts* (`sizeof`, `decltype`, `noexcept`): a read in an unevaluated context does not happen at runtime, so EB does not arise — `sizeof(x)` with an uninitialized `x` is correct.\n- *SFINAE/concepts*: EB is a runtime property, unrelated to compile-time template substitution.\n- *Value category*: EB arises when *reading* a value, not when taking an address. `int* p = &x;` with an uninitialized `x` is not EB; `int y = *p;` when dereferencing is EB if the value at the address is uninitialized.\n- *Old alternative*: before C++26 this was UB with no guarantees whatsoever. Workaround — explicitly initialize the variable (`= 0`, `= {}`) or use `memset`. Now UBSan/warnings are standardized as diagnostic tools.\n- *Interaction with templates and `constexpr`*: in a `constexpr` context, reading an uninitialized variable is forbidden (ill-formed or constexpr-evaluation error) — stricter than runtime EB. EB only applies to the runtime context.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -Wall"
+      },
+      "examples": [
+        {
+          "title": "Basic: reading an uninitialized variable",
+          "code": "#include <print>\n\nint main() {\n    int x;             // automatic storage — no initializer\n    int y = x + 1;    // erroneous behavior: x has an unspecified value\n    std::print(\"y = {}\\n\", y);\n}",
+          "expectedOutput": "y = 1",
+          "explanation": "The compiler warns (`-Wuninitialized`): `'x' is used uninitialized`. The program compiles and runs — behavior is now defined (not UB): `x` reads bytes from the stack, which in this case happen to be zero, so `y = 0 + 1 = 1`. On another platform, with another compiler, or in another context, the value of `x` could differ. The key point: EB no longer allows the optimizer to delete this code or alter control flow based on the assumption that \"this cannot happen\"."
+        },
+        {
+          "title": "Uninitialized struct member",
+          "code": "#include <print>\n\nstruct Point {\n    int x;\n    int y;\n    // no default member initializers — when constructed without\n    // an initializer list, both fields are indeterminate\n};\n\nint main() {\n    Point p;                    // p.x and p.y are uninitialized\n    p.x = 10;                   // x is now initialized\n    int result = p.x + p.y;    // erroneous behavior: p.y is unspecified\n    std::print(\"result = {}\\n\", result);\n}",
+          "expectedOutput": "result = 10",
+          "explanation": "The EB rule applies to any local variable with automatic storage duration — including fields of a struct declared without default member initializers. `p.x` was explicitly assigned before reading, but `p.y` was not. GCC warns on `-Wuninitialized`. The specific output (`result = 10`) is produced because `p.y` happened to be zero in this environment — not guaranteed, but reproducible within this run."
+        },
+        {
+          "title": "The `[[indeterminate]]` attribute: explicit opt-out",
+          "code": "#include <print>\n\nvoid fill_buffer(char* buf, int n) {\n    for (int i = 0; i < n; ++i)\n        buf[i] = static_cast<char>('A' + i % 26);\n}\n\nint main() {\n    char buf[[indeterminate]] [8];  // explicitly opt out of EB diagnostics\n    fill_buffer(buf, 8);           // buffer is fully filled before any read\n    buf[7] = '\\0';\n    std::print(\"{}\\n\", buf);\n}",
+          "expectedOutput": "ABCDEFG",
+          "explanation": "`[[indeterminate]]` tells the compiler: \"I am intentionally using an uninitialized buffer — I promise to fill it before any logical read\". The `-Wuninitialized` warning does not fire, and EB does not apply. This pattern suits performance-critical buffers where zero-initialization is wasteful: instead of `char buf[8] = {};` or `char buf[8]{}` with explicit zero-filling, the programmer documents intent via the attribute and takes responsibility for the correct write-before-read ordering."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m2-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nint main() {\n    int a;\n    int b = 5;\n    int c = b * 2;\n    std::print(\"{}\\n\", c);\n}",
+          "answer": "10",
+          "explanation": "`a` is declared but never read — only `b` and `c` are used in the computation. No read of an uninitialized variable occurs, so there is no erroneous behavior. `c = b * 2 = 5 * 2 = 10`. The compiler will warn about `a` as an unused variable (`-Wunused-variable`), but not about uninitialized — because nobody reads it."
+        },
+        {
+          "id": "m2-l1-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <print>\n\nint sum(int n) {\n    int total;\n    for (int i = 1; i <= n; ++i)\n        total += i;\n    return total;\n}\n\nint main() {\n    std::print(\"{}\\n\", sum(5));\n}",
+          "answerLine": 4,
+          "explanation": "Line 4: `int total;` declares the variable without an initializer. The very first execution of `total += i` reads `total` before any write — erroneous behavior. The program might print the correct answer (15) if `total` happened to be zero on the stack, or might not — the result is unspecified. Fix: `int total = 0;`. GCC warns: `'total' may be used uninitialized`."
+        },
+        {
+          "id": "m2-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A programmer wants a high-performance buffer without unnecessary zero-initialization and writes:\n```cpp\nchar buf[[indeterminate]][1024];\nread_from_socket(buf, 1024);\nprocess(buf, 1024);\n```\nWhich statement about this code is correct?",
+          "options": [
+            "Compile error: `[[indeterminate]]` cannot be applied to arrays",
+            "Erroneous behavior: `buf` is read in `process` before being initialized",
+            "Correct: `[[indeterminate]]` removes EB diagnostics; the programmer takes explicit responsibility for filling the buffer before reading",
+            "UB: reading in `process` is still undefined behavior"
+          ],
+          "answerIndex": 2,
+          "explanation": "`[[indeterminate]]` is applicable to automatic-storage-duration variables, including arrays. The attribute says: \"I know the buffer is uninitialized, and I promise to fill it before any logical read\" — here `read_from_socket` fills the buffer before `process` is called. Neither the compiler warns nor does EB apply. If the order were reversed (first `process`, then `read_from_socket`), EB would arise again — `[[indeterminate]]` does not eliminate EB, it just documents the programmer's intent and removes the diagnostic."
+        },
+        {
+          "id": "m2-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "In C++23, reading an uninitialized variable with automatic storage duration was undefined behavior. In C++26 (P2795) it became erroneous behavior. Which of the following statements describes the key practical difference?",
+          "options": [
+            "In C++26 a program with EB terminates with an error (`std::terminate`), while with UB it does not",
+            "In C++26 the compiler must halt compilation upon detecting EB",
+            "In C++26 the optimizer cannot treat an EB code path as \"impossible\", so it cannot delete or distort surrounding code based on that assumption",
+            "In C++26 EB cannot be detected by sanitizers — only UB is detectable"
+          ],
+          "answerIndex": 2,
+          "explanation": "With UB the compiler could conclude: \"this never executes\" — and aggressively rewrite or delete code based on that assumption, producing hard-to-debug bugs. EB removes this right: reading an uninitialized variable produces some concrete value, and the compiler must compile the code accordingly. The program does not terminate forcibly, compilation does not stop — but the behavior becomes predictable and diagnosable (UBSan, `-Wuninitialized`)."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which storage duration does erroneous behavior (P2795) apply to when a variable is read without initialization?",
+            "options": [
+              "All variables: local, global, static, and dynamic",
+              "Only variables with automatic storage duration (local stack variables)",
+              "Only global variables and `static`-local variables",
+              "Only dynamic objects created via `new`"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How does erroneous behavior differ from undefined behavior?",
+            "options": [
+              "EB is a compile-time error (ill-formed); UB is only a runtime issue",
+              "EB produces an unspecified but concrete value; the compiler cannot treat the EB code path as \"impossible\" for optimization purposes. UB is a license for any transformation",
+              "EB and UB are identical — they are just different names for the same thing",
+              "With EB the program always terminates correctly; with UB it may crash"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does the `[[indeterminate]]` attribute do when applied to a local variable?",
+            "options": [
+              "Zero-initializes the variable, removing the need for explicit initialization",
+              "Marks the variable as intentionally uninitialized, removing erroneous behavior guarantees and compiler warnings for it",
+              "Prevents the compiler from optimizing the variable (`volatile` semantics)",
+              "Makes the variable `constexpr`-compatible without an initializer"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m2-l2",
+      "title": "Dangling reference prohibition (P2748)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "One of the most insidious sources of undefined behavior in C++ is dangling references — references that outlive the object they point to. This bug was especially easy to write in functions returning `const T&` that accidentally create a temporary in the `return` expression.\n\n```cpp\n// Classic bug: the temporary std::string dies before the function returns,\n// the caller gets a reference to a destroyed object\nconst std::string& get_name() {\n    return std::string(\"Alice\");  // UB before C++26 — merely a warning!\n}\n```\n\nBefore C++26, compilers emitted only a **warning** (`-Wreturn-local-addr`) for this code, and the program continued to compile and \"run\" with undefined behavior. C++26 (proposal **P2748** \"Disallow Binding a Returned Glvalue to a Temporary\") makes this category of mistakes **ill-formed** — code no longer compiles, and the compiler issues a hard error instead of a warning.",
+      "theory": "## What P2748 prohibits\n\nP2748 makes it **ill-formed** to return through a reference when the `return` expression is a temporary object (an rvalue expression) and the function's return type is a reference (`T&` or `const T&`). In other words, the compiler now rejects all of these:\n\n```cpp\nconst std::string& f1() {\n    return std::string(\"bad\");       // error: returning reference to temporary\n}\nconst std::string& f2(const std::string& name) {\n    return std::string(\"Mr. \") + name;  // operator+ returns rvalue — error\n}\n```\n\nIn C++23 and earlier, both forms compiled with a **warning** and caused undefined behavior when the result was accessed. In C++26, this is a hard compile error.\n\n**What P2748 does not affect.** The rule only targets returning *temporary objects* through a reference. Returning a reference to a **named** local variable (`return result;` where `result` is a `std::string`) is a different, historically older UB that in C++26 still produces only a warning. The distinction lies in the nature of the `return` expression: `return T{}` or `return a + b` (rvalue) → now an error; `return named_var` (lvalue) → still a warning.\n\n## Temporary object lifetime extension\n\nIt is important to understand that C++26 does **not** prohibit binding `const T&` or `T&&` to a temporary in general. The **lifetime extension** rule applies: if a `const` reference or rvalue reference is **directly** bound to a temporary in the same expression (i.e., in a variable declaration), the temporary's lifetime is extended to match the reference's scope.\n\n```cpp\nconst std::string& r = std::string(\"hello\");  // OK: lifetime extended\n// r is valid until end of its scope\n```\n\n**Key limitation of lifetime extension:** extension only works with **direct** binding in a variable declaration. It does **not** propagate through function calls:\n\n```cpp\nconst std::string& indirect(const std::string& s) { return s; }\n//...\nconst std::string& r = indirect(std::string(\"temp\")); // DANGLING: temporary died\n```\n\nHere the temporary `std::string(\"temp\")` binds to parameter `s` (lifetime extended for the call), but once `indirect` returns, the temporary is destroyed, and `r` points to garbage. Lifetime extension does not cross function boundaries.\n\n## Structured bindings and references\n\nThe outcome depends on the qualifier before `[`:\n\n- `auto [a, b] = f();` — **safe**: the return value of `f()` is copied into the internal binding object.\n- `const auto& [a, b] = f();` — **safe**: the temporary result of `f()` is directly bound with lifetime extension.\n- `auto&& [a, b] = f();` — **safe**: same lifetime extension as `const auto&`.\n- `auto& [a, b] = f();` — **ill-formed**: a non-const lvalue reference cannot bind to an rvalue. This is not a new C++26 restriction — it was already the rule.\n\n## reference_constructs_from_temporary (C++23 baseline)\n\nC++23 added the type traits **`std::reference_constructs_from_temporary<T, U>`** and **`std::reference_converts_from_temporary<T, U>`** (P2255), which answer the question: \"if a reference of type `T` is bound to an argument of type `U`, will a temporary object be created?\"\n\n```cpp\n// temporary int from double — yes\nstd::reference_constructs_from_temporary_v<const int&, double>;  // true\n// temporary string from const char* — yes\nstd::reference_constructs_from_temporary_v<const std::string&, const char*>;  // true\n// int& cannot bind to rvalue at all\nstd::reference_constructs_from_temporary_v<int&, int>;  // false\n```\n\nThese traits are used by the standard library itself: in C++23, the constructors of `std::tuple` and `std::pair` that take arguments by reference already use this trait in `static_assert` or via `= delete` to reject compilation when a dangling reference member would be created.\n\n## Ill-formed vs UB vs warning: summary\n\n| Situation | C++23 | C++26 |\n|---|---|---|\n| `const T& f() { return T{}; }` | warning + UB | **compile error** (P2748) |\n| `const T& f() { T r; return r; }` | warning + UB | warning + UB (not yet C++26) |\n| `const T& r = T{};` (local) | OK (lifetime extension) | OK |\n| `auto& [a,b] = f();` (f returns by value) | error | error |\n| `const auto& [a,b] = f();` | OK | OK |\n\n## Nuance checklist\n\n- **Unevaluated contexts.** `decltype`, `sizeof`, etc. do not *call* the function, so `decltype(bad_f())` will not trigger P2748 — the error occurs at the `return` statement inside the function body. The declaration `const T& f()` with such a `return` is ill-formed the moment the function body is parsed.\n- **Ill-formed vs UB vs warning.** P2748 makes ill-formed only returning a **temporary** (rvalue) through a reference. Returning a reference to a named local variable remains UB with a warning.\n- **Lifetime extension** applies only at a direct binding site in a declaration, not through function calls or aggregate member initialization.\n- **reference_constructs_from_temporary** — C++23 baseline, available in C++26 code as standard. Used by the standard library to guard `tuple`/`pair`.\n- **Old alternatives:** return by value (`std::string f()`); return a reference to a static or longer-lived variable; `std::move` for ownership transfer. Return by value is the best default: NRVO/copy elision makes it as efficient as returning a reference, without the risk.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "Safe alternatives to dangling reference return",
+          "code": "#include <print>\n#include <string>\n\n// SAFE #1: return by value (NRVO makes this efficient)\nstd::string get_name() {\n    return std::string(\"Alice\");\n}\n\n// SAFE #2: return reference to a long-lived (static) object\nconst std::string& get_static() {\n    static const std::string name = \"Bob\";\n    return name;  // OK: static lives for the entire program\n}\n\n// SAFE #3: lifetime extension — const-ref directly bound to a temporary\nvoid demo_lifetime_extension() {\n    const std::string& r = std::string(\"hello\");  // lifetime extended\n    std::print(\"extended: {}\\n\", r);  // r is valid here\n}\n\nint main() {\n    std::string name = get_name();\n    std::print(\"{}\\n\", name);\n\n    const std::string& sr = get_static();\n    std::print(\"{}\\n\", sr);\n\n    demo_lifetime_extension();\n}",
+          "expectedOutput": "Alice\nBob\nextended: hello",
+          "explanation": "Three safe patterns as alternatives to `const T& f() { return T{}; }`. **Return by value** is the best default: NRVO/copy elision makes it as efficient as returning a reference, with no risk. **Reference to a static variable** — when a single shared instance is desired. **Lifetime extension** — works only at a *direct* binding site in a declaration, not through a function."
+        },
+        {
+          "title": "Lifetime extension: when it works, when it doesn't",
+          "code": "#include <print>\n#include <string>\n#include <utility>\n\n// This function just forwards the reference — does NOT extend lifetime!\nconst std::string& passthru(const std::string& s) { return s; }\n\nint main() {\n    // CASE 1: direct binding — lifetime IS extended (OK)\n    {\n        const std::string& r = std::string(\"direct\");\n        std::print(\"direct: {}\\n\", r);\n    }\n\n    // CASE 2: const auto& in structured binding — lifetime extended (OK)\n    {\n        auto pair_fn = [] { return std::pair<std::string, int>{\"Carol\", 30}; };\n        const auto& [nm, age] = pair_fn();  // temp pair lifetime extended\n        std::print(\"{} is {}\\n\", nm, age);\n    }\n\n    // CASE 3: reference to a long-lived variable through a function (OK)\n    {\n        const std::string name = \"Dave\";\n        const std::string& ref = passthru(name);  // name outlives ref\n        std::print(\"via func: {}\\n\", ref);\n    }\n\n    return 0;\n}",
+          "expectedOutput": "direct: direct\nCarol is 30\nvia func: Dave",
+          "explanation": "Lifetime extension only works with **direct** binding in a declaration. In case 1, the temporary `std::string` lives as long as `r`. In case 2, `const auto&` before the structured binding list extends the lifetime of the entire temporary pair — both `nm` and `age` remain valid. In case 3, no extension is needed: `name` is a named variable that already outlives `ref`. If instead a temporary were passed (`passthru(std::string(\"temp\"))`), the result would dangle — lifetime extension does not cross function call boundaries."
+        },
+        {
+          "title": "std::reference_constructs_from_temporary: detector for potential dangling",
+          "code": "#include <type_traits>\n#include <string>\n#include <print>\n\nint main() {\n    // const int& binds to a temporary int (from a prvalue)\n    std::print(\"const int& <- int: {}\\n\",\n        std::reference_constructs_from_temporary_v<const int&, int>);\n\n    // const double& from int: implicit int->double creates a temporary double\n    std::print(\"const double& <- int: {}\\n\",\n        std::reference_constructs_from_temporary_v<const double&, int>);\n\n    // const string& from const char*: implicit char*->string creates a temporary string\n    std::print(\"const string& <- const char*: {}\\n\",\n        std::reference_constructs_from_temporary_v<const std::string&, const char*>);\n\n    // int& from int: non-const lvalue reference can't bind to a prvalue at all\n    std::print(\"int& <- int: {}\\n\",\n        std::reference_constructs_from_temporary_v<int&, int>);\n\n    return 0;\n}",
+          "expectedOutput": "const int& <- int: true\nconst double& <- int: true\nconst string& <- const char*: true\nint& <- int: false",
+          "explanation": "`std::reference_constructs_from_temporary_v<T, U>` returns `true` when binding a reference of type `T` to an argument of type `U` would require creating an intermediate temporary object. The last case is `false` because `int&` (non-const lvalue reference) cannot bind to an `int` prvalue at all — the error would occur before any temporary could appear. This trait is used in `std::tuple` and `std::pair` (since C++23) in `static_assert`s that prevent storing dangling references as members."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m2-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <string>\n\nstd::string make(const char* s) { return std::string(s); }\n\nvoid show(const std::string& s) {\n    std::print(\"{}\\n\", s);\n}\n\nint main() {\n    const std::string& a = make(\"one\");\n    const std::string& b = make(\"two\");\n    show(a);\n    show(b);\n}",
+          "answer": "one\ntwo",
+          "explanation": "`make(\"one\")` and `make(\"two\")` each return a temporary `std::string` by value. Binding `const std::string& a = make(\"one\")` directly binds a const reference to this temporary at the point of declaration, and its lifetime is extended to match `a`'s scope. Same for `b`. Both references are valid when `show` is called."
+        },
+        {
+          "id": "m2-l2-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n#include <string>\n\nstd::string prefix = \"Mr. \";\n\nconst std::string& greet(const std::string& name) {\n    return prefix + name;\n}\n\nint main() {\n    std::print(\"{}\\n\", greet(\"Smith\"));\n}",
+          "answerLine": 7,
+          "explanation": "Line 7: `prefix + name` calls `operator+`, which returns a new temporary `std::string`. The function `greet` attempts to return a `const std::string&` to this temporary — which is ill-formed in C++26 (P2748). The temporary will be destroyed before the caller can use the reference. Fix: change the return type to `std::string` (by value)."
+        },
+        {
+          "id": "m2-l2-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "What does `std::reference_constructs_from_temporary_v<const double&, int>` return?",
+          "options": [
+            "false — int and double are different types, binding is impossible",
+            "true — implicit int→double conversion creates a temporary double, to which the reference binds",
+            "false — const double& can bind to int directly without a temporary",
+            "Compile error: incompatible types"
+          ],
+          "answerIndex": 1,
+          "explanation": "`const double& r = some_int` is valid C++: `int` is implicitly converted to `double`, a temporary `double` object is created, and the reference binds to it with lifetime extension. That is exactly what the trait records: `true` means \"binding will create a temporary\". Even if the types matched (`const int& <- int`), the answer would still be `true` — a temporary `int` prvalue is created when binding a const reference to a prvalue."
+        },
+        {
+          "id": "m2-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Function `pair<string,int> info()` returns by value. Which structured binding variant creates a dangling reference?\n```cpp\n// A:\nauto [name, age] = info();\n// B:\nauto& [name, age] = info();\n// C:\nconst auto& [name, age] = info();\n// D:\nauto&& [name, age] = info();\n```",
+          "options": [
+            "A — copies the temporary, but copy is dangling",
+            "B — attempt to bind a non-const lvalue reference to an rvalue, ill-formed",
+            "C — references to members of a temporary that dies",
+            "D — rvalue references dangle"
+          ],
+          "answerIndex": 1,
+          "explanation": "B: `auto&` cannot bind to an rvalue (the result of `info()`), which is ill-formed — a compile error (\"cannot bind non-const lvalue reference to rvalue\"). This is not a new C++26 restriction, it was already the rule. A is safe: the return value is copied. C and D are safe: `const auto&` and `auto&&` can bind to rvalues and extend the lifetime of the temporary object. There is no dangling in A, C, or D."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "In C++26, what happens when you try to compile `const std::string& f() { return std::string(\"x\"); }`?",
+            "options": [
+              "The program compiles, but calling it is UB",
+              "A compiler warning; the program compiles",
+              "Compile error (ill-formed) — P2748",
+              "Behavior is implementation-defined"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What is lifetime extension for `const T&`?",
+            "options": [
+              "A rule that makes a temporary object live until the end of the program",
+              "Extension of a temporary's lifetime to match the scope of a const reference when directly bound in a declaration",
+              "A mechanism like `shared_ptr` that extends lifetime across function boundaries",
+              "Extension that works for any const-reference binding, including through a function call"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "`std::reference_constructs_from_temporary_v<const std::string&, const char*>` — what is the value?",
+            "options": [
+              "false — const char* and string are incompatible",
+              "true — const char* implicitly creates a temporary std::string for the reference binding",
+              "false — binding happens without a temporary via string_view",
+              "Compile error"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "For `auto&& [a, b] = f();` where `f()` returns `std::pair<int,int>` by value — what happens?",
+            "options": [
+              "Ill-formed: rvalue reference cannot be used in a structured binding",
+              "Dangling: the temporary pair is destroyed after initialization",
+              "Correct: the temporary pair's lifetime is extended to the end of the scope",
+              "Only compiles in C++26, not earlier"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m2-l3",
+      "title": "Other safety fixes: trivial loops and structured binding conditions",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "This lesson bundles two small but real C++26 fixes — both eliminate situations where code looked reasonable but actually contained a hidden trap.\n\n**Trivially-empty loops are no longer UB (P2809).** Since C++11 the standard required every thread to eventually \"make progress\": perform I/O, access a `volatile` object, perform a synchronization operation — or terminate. A loop without such effects (`while(true){}`, `for(;;){}`) violated this requirement, making the program's behavior undefined. The compiler was allowed to assume the loop would terminate and perform wild optimizations: moving code *after* the loop *before* it, or deleting the loop entirely. In practice this meant an ordinary spin-lock in a single-threaded embedded system was formally UB — even though that's exactly the scenario it was designed for. C++26 adds an explicit exception: trivially-empty iteration statements do not violate the forward-progress requirement, and the compiler must leave them alone.\n\n**Structured binding as condition (P0963).** Before C++26, destructuring a return value and immediately testing its \"success\" was awkward: first declare the binding, then test one of its fields in a separate `if`. The fields lingered in scope beyond the check, cluttering the surrounding code. C++26 allows writing `if (auto [ok, val] = lookup(key))` — the bound object itself serves as the condition via contextual bool conversion, and the fields are visible in both branches of `if`, but not beyond it. The code gets shorter and the intent clearer.",
+      "theory": "## Trivially-empty loops are no longer UB (P2809)\n\n**Background: the forward-progress requirement.** The C++ standard describes *forward progress*: every thread must eventually perform an \"observable\" action — access a `volatile` object, perform a synchronization operation, do I/O — or terminate. If a thread entered a loop with no such effects, the standard permitted the compiler to assume the loop would eventually terminate and rearrange code around it freely. In practice `-O2` would actually delete a `while(true){}` loop or move instructions *after* it to *before* it — this was not a theoretical threat.\n\n**What P2809 changes.** C++26 adds an explicit exception to the forward-progress section: a *trivially-empty iteration statement* — i.e. `for(;;){}`, `while(true){}`, `do{}while(true)` with an empty or trivially-empty body and a constant infinite condition — does **not** violate the forward-progress requirement. The compiler **may not** assume such a loop will ever terminate, and **may not** move or delete code around it.\n\n**What counts as a trivially-empty body.** The standard means it literally: an empty statement body (`{}`) or a body that reduces to an empty statement (`;`). A loop with any computation in its body — even `while(true){ x++; }` — does not qualify (there is a potentially observable side effect from `x++` if `x` is accessible externally). The practical target of P2809 was spin-wait loops and \"main loop\" patterns in embedded systems.\n\n**Interaction with `volatile`, atomics, `std::atomic`.** A loop that accesses a `volatile` variable or `std::atomic` *already* had observable effects and *already* was not UB before C++26 — P2809 does not change that. The fix targets loops whose body is literally empty: no `volatile`, no atomics, no I/O. That is exactly where embedded developers previously needed `__attribute__((optimize(\"O0\")))` tricks to prevent the compiler from deleting the loop.\n\n**Unevaluated contexts, value category, SFINAE.** Not applicable: P2809 is a rule about a *statement*, not an expression. It introduces no new types or expressions.\n\n**Old alternative.** Before C++26, to guarantee an infinite loop would not be deleted, developers added `__asm__ volatile (\"\");` or a `volatile int dummy;` access inside the body — both created an observable side effect, anchoring the loop. With C++26 these tricks are unnecessary for trivial cases.\n\n**Ill-formed vs UB vs diagnostics.** Before C++26: UB (silent miscompilation). C++26: a program with a trivially-empty infinite loop is fully correct; no diagnostic is required and there is no UB.\n\n---\n\n## Structured binding as condition (P0963)\n\n**Syntax.** In C++26, a structured binding declaration may stand directly where a boolean condition was previously required — in `if`, `while`, the condition part of `for`, and `switch`. The form:\n\n```cpp\nif (auto [x, y] = expr()) { /* ... */ }\n```\n\nHere `auto [x, y] = expr()` is a structured binding declaration, and the bound object (the result of `expr()`) serves as the condition via *contextual bool conversion*. The compiler calls `operator bool()` on the bound object and uses the result as the branch condition.\n\n**Scope of the bindings.** The fields `x` and `y` are declared not in the body of the `if` but in the scope of the `if` statement itself — they are accessible in both branches (`then` and `else`) but **not visible** outside the `if` statement. This is exactly the same semantics as `if (auto p = expr())` for a pointer: `p` is visible in both branches, not outside.\n\n```cpp\nif (auto [ok, val] = lookup(key)) {\n    use(val); // OK: val is here\n} else {\n    log(val); // OK: val is here too\n}\n// val and ok are not accessible here — ill-formed, compile error\n```\n\n**Type requirements.** The bound object must support contextual bool conversion — i.e. have `explicit operator bool() const`. Built-in types (`int`, pointers) work through this rule too: `if (auto [a, b] = expr())` is valid if `expr()` returns, say, a struct with `operator bool`. `std::pair<bool, T>` and `std::tuple` do not have this operator, so the form does not work directly with them — you need a custom type with `operator bool`.\n\n**Support in `while` and `switch`.** P0963 applies to all statements that accept a condition: `while (auto [ok, val] = next_item())` correctly iterates as long as `ok` is true, reinitializing the binding on each iteration. For `switch` it applies analogously if the type has `operator int` or another appropriate conversion.\n\n**Difference from init-statement.** C++17 already permitted `if (auto [x, y] = expr(); x)` — with a semicolon separating the initialization from the condition. That is an *init-statement + condition*. P0963 is different: the *binding declaration itself is the condition*, without a separate `; condition`. Both forms are valid in C++26:\n- `if (auto [ok, val] = f(); ok)` — C++17-style: init-statement + condition\n- `if (auto [ok, val] = f())` — C++26: the declaration itself as the condition via `operator bool`\n\n**SFINAE, unevaluated contexts, value category.** Structured binding as condition is a syntactic construct of a statement, not an expression, so SFINAE and unevaluated contexts don't apply in any new sense. Value category: the binding fields follow the ordinary structured binding rules (lvalue if the source is named).\n\n**Ill-formed vs UB.** Attempting to reference `x` or `y` after the closing brace of the `if` is **ill-formed**: a compile error \"not declared in this scope\". No UB.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "P2809: spin loop — defined behavior in C++26",
+          "code": "#include <print>\n\n// Before C++26: a loop with no observable side effects was UB.\n// The compiler could assume it terminates and move code around it.\n// C++26: a trivially-empty infinite loop is explicitly defined to\n// spin forever — the compiler may not delete or hoist past it.\n\nvolatile bool ready = true; // volatile: the read is an observable effect\n\nint main() {\n    // C++26: well-formed — compiler cannot delete this loop\n    while (!ready) {} // spin until ready is set\n\n    std::print(\"ready\\n\");\n    std::print(\"spin loops are defined in C++26\\n\");\n}",
+          "expectedOutput": "ready\nspin loops are defined in C++26",
+          "explanation": "The loop `while (!ready) {}` reads `volatile bool ready` on every iteration — that read is itself an observable side effect, so this particular loop was not UB even before C++26. The pedagogical point is the other direction: `for(;;){}` or `while(true){}` with a literally empty body are now also correct, and the compiler cannot treat them as terminating. Here `volatile` serves as a familiar anchor; in real embedded systems the flag may be set from an interrupt handler without atomic operations."
+        },
+        {
+          "title": "P0963: structured binding as condition",
+          "code": "#include <print>\n\n// P0963: structured binding declaration as the condition in if.\n// The bound object serves as the condition via contextual bool conversion.\n\nstruct Lookup {\n    bool found;\n    int  value;\n    explicit operator bool() const { return found; }\n};\n\nLookup search(int key) {\n    if (key > 0) return {true, key * 10};\n    return {false, 0};\n}\n\nint main() {\n    // C++26: declare and test in one expression.\n    // found and value are accessible in both branches but not outside.\n    if (auto [found, value] = search(5)) {\n        std::print(\"found={} value={}\\n\", found, value);\n    }\n\n    if (auto [found, value] = search(-1)) {\n        std::print(\"should not print\\n\");\n    } else {\n        std::print(\"not found, value={}\\n\", value);\n    }\n}",
+          "expectedOutput": "found=true value=50\nnot found, value=0",
+          "explanation": "First `if`: `search(5)` returns `{true, 50}`, `operator bool()` yields `true` → then branch executes. Second `if`: `search(-1)` → `{false, 0}`, `operator bool()` → `false` → else branch executes. Notice that `value` is accessible in the `else` branch — this is the key advantage over the pre-C++26 approach, where you had to declare the binding before the `if` and could not restrict its scope."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m2-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nstruct Parsed {\n    bool valid;\n    int  num;\n    explicit operator bool() const { return valid; }\n};\n\nParsed try_parse(int n) { return {n > 0, n * 2}; }\n\nint main() {\n    if (auto [valid, num] = try_parse(4)) {\n        std::print(\"num={}\\n\", num);\n    }\n    if (auto [valid, num] = try_parse(-3)) {\n        std::print(\"ok\\n\");\n    } else {\n        std::print(\"fail num={}\\n\", num);\n    }\n}",
+          "answer": "num=8\nfail num=-6",
+          "explanation": "First `if`: `try_parse(4)` → `{true, 8}`, `operator bool()` → `true` → prints `num=8`. Second `if`: `try_parse(-3)` → `{false, -6}`, `operator bool()` → `false` → else branch. `num` is accessible in `else` even though the binding was declared in the condition — the fields are visible in both branches of the `if` statement."
+        },
+        {
+          "id": "m2-l3-e2",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <print>\n\nstruct Result {\n    bool ok;\n    int  value;\n    explicit operator bool() const { return ok; }\n};\n\nResult lookup(int key) { return {key > 0, key * 3}; }\n\nint main() {\n    if (auto [ok, value] = lookup(5)) {\n        std::print(\"found: {}\\n\", value);\n    }\n    std::print(\"value={}\\n\", value);\n}",
+          "answerLine": 15,
+          "explanation": "Line 15: `value` was declared inside the condition of the `if` statement — it is visible in the then-branch (and in the else-branch if one existed), but not outside the `if` statement itself. On line 15, `value` is out of scope, and the compiler reports \"'value' was not declared in this scope\". Fix: declare the binding before the `if` (or remove the `std::print` line outside the statement)."
+        },
+        {
+          "id": "m2-l3-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Before C++26, a loop like `while(true){}` (trivially-empty body, no `volatile`, no `std::atomic`, no I/O) was:\n\n```cpp\nint main() {\n    while (true) {}\n    // code after the loop\n}\n```\n\nWhich statement best describes its behavior in C++23 (and earlier)?",
+          "options": [
+            "Well-defined: the loop spins forever; code after it never executes — exactly as intended",
+            "Undefined behavior: the standard allowed the compiler to assume the loop terminates and execute the code after it without any iterations",
+            "A compile error: compilers are required to diagnose infinite loops",
+            "Defined behavior, but with a warning: compilers emit `-Winfinite-loop` and then execute code after the loop"
+          ],
+          "answerIndex": 1,
+          "explanation": "Under the forward-progress rule in C++11–C++23, a thread with a loop that has no observable side effects violated the requirement to eventually make progress. The behavior was undefined: the compiler was permitted to assume any such loop eventually terminates and generate code as if the loop is absent — real compilers with `-O2` did hoist or delete such loops. C++26 (P2809) removes the UB for trivially-empty iterations: the compiler can no longer make that assumption."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "In C++26, `for(;;){}` (an infinite loop with an empty body, no side effects of any kind) is:",
+            "options": [
+              "Undefined behavior, just like in C++23",
+              "Ill-formed: the compiler must reject such a loop",
+              "Well-defined behavior: the loop runs forever; the compiler may not delete it or hoist code past it",
+              "A warning, but not an error and not UB"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Given:\n```cpp\nstruct Pair {\n    int a, b;\n    explicit operator bool() const { return a > 0; }\n};\nPair make(int x) { return {x, x * 2}; }\n\nif (auto [a, b] = make(3)) {\n    std::print(\"{} {}\\n\", a, b);\n} else {\n    std::print(\"nope\\n\");\n}\n```\nWhat does the program print?",
+            "options": [
+              "3 6",
+              "nope",
+              "Compile error: a structured binding cannot be used as a condition",
+              "Compile error: `operator bool` must be implicit, not `explicit`"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "In `if (auto [ok, val] = f())` — where are `ok` and `val` accessible?",
+            "options": [
+              "Only in the then-branch (when the condition is true)",
+              "In both branches (`then` and `else`), but not outside the `if` statement",
+              "In both branches and throughout the surrounding block after the `if`",
+              "Nowhere: a declaration in an `if` condition does not introduce names into scope"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "P0963 (structured binding as condition) requires that the bound object:",
+            "options": [
+              "Be of type `std::pair<bool, T>` or `std::tuple<bool, T>`",
+              "Support contextual bool conversion (implicit or explicit `operator bool`)",
+              "Have only an implicit `operator bool` — explicit is not supported",
+              "Support iteration (begin/end) for use in `while`"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
     }
   ]
 }
