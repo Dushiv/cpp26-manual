@@ -8,7 +8,600 @@
     {
       "id": "m3-l1",
       "title": "constexpr-исключения (P3068)",
-      "stub": true
+      "prerequisites": [],
+      "background": null,
+      "motivation": "До C++26 `constexpr`-функция не могла использовать `throw`: если выражение `throw` было достижимым в ходе вычисления константного выражения, программа была ill-formed — компилятор отказывался вычислять такую константу. Это создавало неловкую дилемму при написании универсальных `constexpr`-функций с валидацией входных данных.\n\nСтарые альтернативы выглядели так:\n\n```cpp\n// Вариант 1: static_assert — но не подходит, если ограничение нельзя\n// выразить булевым шаблонным параметром\nconstexpr int old_divide(int a, int b) {\n    // throw нельзя — возвращаем «магическое» значение\n    return b == 0 ? INT_MIN : a / b;\n}\n\n// Вариант 2: std::optional — громоздко при цепочках вызовов\nconstexpr std::optional<int> safe_div(int a, int b) {\n    if (b == 0) return std::nullopt;\n    return a / b;\n}\n```\n\nОба варианта смешивали логику и обработку ошибок, делали сигнатуры более сложными и не могли использоваться там, где `constexpr`-функция одновременно вызывается и на этапе компиляции, и в рантайме с разными соглашениями об ошибках.\n\n**P3068** (C++26) снимает это ограничение: `throw` и `try`/`catch` теперь разрешены в `constexpr`-функциях. Выброшенное исключение должно быть поймано внутри того же константного выражения — иначе вычисление завершается с ошибкой компиляции. Рантайм-поведение функции остаётся абсолютно нормальным: там исключения работают как всегда.",
+      "theory": "## Что разрешает P3068\n\nВ C++26 `throw`-выражение и блок `try`/`catch` полностью разрешены внутри `constexpr`-функции. Ключевое правило: **исключение, выброшенное в ходе константного вычисления, должно быть поймано внутри того же константного выражения**. Если оно выходит за его пределы — вычисление завершается ошибкой компиляции (ill-formed), не UB.\n\n```cpp\nconstexpr int validate(int n) {\n    if (n < 0) throw std::invalid_argument(\"negative\");\n    return n;\n}\n\n// OK: исключение поймано внутри константного выражения\nconstexpr int x = []() -> int {\n    try { return validate(-1); }\n    catch (...) { return 0; }\n}();\n\n// Ill-formed: throw не поймано — ошибка компиляции\n// constexpr int y = validate(-1);  // error!\n```\n\n`catch (...)` также работает в `constexpr`-контексте и перехватывает любой тип исключения.\n\n## Типы исключений\n\nТип бросаемого объекта должен быть **constexpr-конструируемым** — то есть конструктор объекта-исключения сам должен быть выполним в константном контексте. Классы стандартной библиотеки `std::exception`, `std::invalid_argument`, `std::out_of_range`, `std::domain_error` и прочие поддерживаются реализациями, хотя формально стандарт не требует их `constexpr`-конструкторов — GCC реализует это на практике. Пользовательский тип подходит, если он является *literal type* с `constexpr`-конструктором.\n\n## Uncaught throw = ill-formed (ошибка компиляции)\n\nЕсли в ходе вычисления константного выражения исключение остаётся непойманным до конца этого вычисления, компилятор выдаёт ошибку — это **не** UB, это диагностируемая ошибка:\n\n```\nerror: uncaught exception of type 'std::invalid_argument'; 'what()': 'negative'\n```\n\nВажно: в рантайм-вызове та же функция работает абсолютно нормально — исключение просто распространяется по стеку вызовов как обычно. Ошибка компиляции возникает только при попытке вычислить `constexpr`-результат.\n\n## Взаимодействие с noexcept\n\n`noexcept` на `constexpr`-функции не влияет на возможность бросать исключения при компиляции — `noexcept` описывает **рантайм**-поведение. Функция без `noexcept` может бросать и при компиляции, и при выполнении. Функция с `noexcept` при рантайм-броске вызовет `std::terminate`, как обычно — P3068 это не меняет.\n\n`noexcept(expr)` при вычислении спецификатора *не* вычисляет выражение — это unevaluated context, так что constexpr-исключение там не возникает.\n\n## Взаимодействие с if consteval\n\nМожно бросать исключения только в компиляционной ветке `if consteval`, оставляя рантайм-ветку чистой от исключений или используя другую стратегию ошибок:\n\n```cpp\nconstexpr int safe_op(int n) {\n    if consteval {\n        if (n < 0) throw std::domain_error(\"negative at compile time\");\n    }\n    // рантайм-ветка: другой подход к ошибке\n    return n < 0 ? 0 : n;\n}\n```\n\n## Unevaluated-контексты\n\nТело `constexpr`-функции с `throw` **само по себе** не является ill-formed: компилятор анализирует throw только при фактическом вычислении константного выражения. В unevaluated-контекстах (`sizeof`, `decltype`, `noexcept(f())`) функция не вызывается, поэтому throw-путь не достигается — ошибки нет.\n\n## SFINAE и шаблоны\n\nUncaught throw в constexpr-вычислении — это **hard error** (ошибка компиляции), а не substitution failure. Оно **не** является основанием для SFINAE/исключения шаблонного кандидата из рассмотрения. Если нужно условно проверить, выбросит ли вычисление исключение, используйте `requires`-выражение с явной проверкой или отдельный constexpr-вычислимый булев флаг.\n\nЕсли шаблонный параметр влияет на то, достигается ли путь с `throw`, константное выражение будет ill-formed при конкретных аргументах, но не как substitution failure — компилятор выдаст ошибку.\n\n## Старые альтернативы vs P3068\n\n| Подход | До C++26 | С P3068 |\n|--------|----------|---------|\n| Возврат `std::optional` | Основной способ | Всё ещё используется; теперь выбор стиля |\n| «Магическое» значение / sentinels | Распространён | Избегать: теряет информацию |\n| `static_assert` | Только для шаблонных условий | Дополняется try/catch |\n| `throw` + `try`/`catch` | Ill-formed в constexpr | **Полноценно работает** |\n\n## Ill-formed vs UB: итог\n\nUncaught throw при константном вычислении → **ошибка компиляции** (ill-formed), не UB. Та же функция при рантайм-вызове работает как обычно. Это принципиально: нет никакого «тихого» нарушения, компилятор всегда диагностирует проблему.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "Базовый: валидация с throw и catch в constexpr",
+          "code": "#include <print>\n#include <stdexcept>\n\nconstexpr int safe_divide(int a, int b) {\n    if (b == 0)\n        throw std::invalid_argument(\"division by zero\");\n    return a / b;\n}\n\nint main() {\n    // Поймано при компиляции — никакого рантайм-исключения\n    constexpr int result = []() -> int {\n        try {\n            return safe_divide(10, 2);\n        } catch (const std::invalid_argument&) {\n            return -1;\n        }\n    }();\n    std::print(\"result = {}\\n\", result);\n\n    // Рантайм-вызов работает как обычно\n    int x = safe_divide(21, 7);\n    std::print(\"runtime: {}\\n\", x);\n}",
+          "expectedOutput": "result = 5\nruntime: 3",
+          "explanation": "Лямбда вычисляется как константное выражение: `safe_divide(10, 2)` не бросает, возвращает `5`. Catch-блок не выполняется. В рантайм-вызове функция работает как обычная — никакой магии: `safe_divide(21, 7) = 3`. Обратите внимание: один и тот же `safe_divide` работает и в constexpr-вычислении, и в рантайме — P3068 не требует двух версий функции."
+        },
+        {
+          "title": "Поглощение ошибки на этапе компиляции: sentinel-значение",
+          "code": "#include <print>\n#include <stdexcept>\n\nconstexpr int parse_positive(int n) {\n    if (n <= 0)\n        throw std::domain_error(\"must be positive\");\n    return n * n;\n}\n\n// Обёртка: ловит исключение компилятора, возвращает sentinel\nconstexpr int checked_square(int n) {\n    try {\n        return parse_positive(n);\n    } catch (const std::domain_error&) {\n        return -1;  // sentinel — сигнал об ошибке\n    }\n}\n\nint main() {\n    constexpr int a = checked_square(5);    // нормальный путь\n    constexpr int b = checked_square(-3);   // исключение поймано -> sentinel\n    std::print(\"a={} b={}\\n\", a, b);\n}",
+          "expectedOutput": "a=25 b=-1",
+          "explanation": "`checked_square(5)`: `parse_positive(5)` возвращает `25` — исключения нет. `checked_square(-3)`: `parse_positive(-3)` бросает `std::domain_error` — catch в `checked_square` ловит его и возвращает `-1`. Всё это происходит на этапе компиляции: в скомпилированном коде нет ни одного `throw`, ни одного `catch` — только `constexpr int a = 25; constexpr int b = -1`."
+        },
+        {
+          "title": "Взаимодействие с noexcept: спецификатор описывает рантайм",
+          "code": "#include <print>\n#include <stdexcept>\n\nconstexpr int bounded(int v, int lo, int hi) {\n    if (v < lo || v > hi)\n        throw std::out_of_range(\"value out of bounds\");\n    return v;\n}\n\n// noexcept(false): функция может бросать в рантайме\nstatic_assert(!noexcept(bounded(0, 0, 1)));\n\nint main() {\n    // Рантайм: исключение распространяется обычно\n    try {\n        int x = bounded(99, 0, 10);\n        std::print(\"x={}\\n\", x);\n    } catch (const std::out_of_range& e) {\n        std::print(\"caught: {}\\n\", e.what());\n    }\n\n    // Compile-time: исключение поймано внутри константного выражения\n    constexpr int y = []() -> int {\n        try {\n            return bounded(5, 0, 10);\n        } catch (...) {\n            return -1;\n        }\n    }();\n    std::print(\"compile-time y={}\\n\", y);\n}",
+          "expectedOutput": "caught: value out of bounds\ncompile-time y=5",
+          "explanation": "`static_assert(!noexcept(bounded(0, 0, 1)))` проверяет: функция `bounded` не объявлена `noexcept`, значит `noexcept(...)` возвращает `false`. Спецификатор относится к рантайм-контракту — P3068 это не меняет. В рантайм-вызове `bounded(99, 0, 10)` бросает и исключение ловится блоком `catch`. В compile-time вызове `bounded(5, 0, 10)` возвращает `5` без исключения. `catch (...)` тоже полноценно работает в `constexpr`-контексте."
+        },
+        {
+          "title": "Пользовательский тип исключения в constexpr",
+          "code": "#include <print>\n\n// Literal type — constexpr-конструируем\nstruct CompileError {\n    const char* msg;\n    constexpr const char* what() const { return msg; }\n};\n\nconstexpr int parse_index(int idx, int size) {\n    if (idx < 0 || idx >= size)\n        throw CompileError{\"index out of range\"};\n    return idx;\n}\n\nconstexpr int safe_get(int idx) {\n    constexpr int arr[] = {10, 20, 30, 40, 50};\n    try {\n        int i = parse_index(idx, 5);\n        return arr[i];\n    } catch (const CompileError& e) {\n        return -1;  // можно было бы и e.what() использовать\n    }\n}\n\nint main() {\n    constexpr int a = safe_get(2);    // допустимый индекс\n    constexpr int b = safe_get(10);   // выход за границу -> sentinel\n    std::print(\"a={} b={}\\n\", a, b);\n}",
+          "expectedOutput": "a=30 b=-1",
+          "explanation": "`CompileError` — это *literal type*: у него `constexpr`-конструктор (агрегатная инициализация), все поля constexpr-совместимы. Это делает его допустимым типом исключения в константном вычислении. `safe_get(2)` → `parse_index(2, 5)` → возвращает `2` → `arr[2] = 30`. `safe_get(10)` → `parse_index(10, 5)` → бросает `CompileError{\"index out of range\"}` → catch в `safe_get` ловит, возвращает `-1`. Стандартные исключения (`std::exception` и наследники) тоже работают — GCC реализует их constexpr-конструкторы."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m3-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <stdexcept>\n\nconstexpr int safe_div(int a, int b) {\n    if (b == 0) throw std::invalid_argument(\"zero\");\n    return a / b;\n}\n\nconstexpr int result = []() -> int {\n    try { return safe_div(10, 0); }\n    catch (const std::invalid_argument&) { return -1; }\n}();\n\nint main() {\n    std::print(\"{}\\n\", result);\n}",
+          "answer": "-1",
+          "explanation": "`safe_div(10, 0)` выбрасывает `std::invalid_argument` при вычислении константного выражения. Блок `catch (const std::invalid_argument&)` ловит его и возвращает `-1`. Это происходит на этапе компиляции — `result` вычисляется в `-1` и программа просто печатает это значение."
+        },
+        {
+          "id": "m3-l1-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <stdexcept>\n\nconstexpr int validate(int n) {\n    if (n < 0) throw std::invalid_argument(\"negative\");\n    return n;\n}\n\nconstexpr int x = validate(-5);\n\nint main() {}",
+          "answerLine": 8,
+          "explanation": "Строка 8: `constexpr int x = validate(-5)` запускает константное вычисление, в котором `validate(-5)` бросает `std::invalid_argument`. Исключение не поймано — оно выходит за пределы константного выражения, что делает его **ill-formed** (ошибка компиляции). GCC сообщает: `error: uncaught exception of type 'std::invalid_argument'`. Исправление: обернуть вычисление в лямбду с `try`/`catch`, или передать валидный аргумент, или применить `validate` только в рантайме."
+        },
+        {
+          "id": "m3-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Что происходит, если `constexpr`-функция с `throw` объявлена с `noexcept`?\n\n```cpp\nconstexpr int f(int n) noexcept {\n    if (n < 0) throw std::invalid_argument(\"neg\");\n    return n;\n}\n\nconstexpr int x = []() -> int {\n    try { return f(-1); }\n    catch (...) { return 0; }\n}();\n```",
+          "options": [
+            "Ошибка компиляции: `noexcept`-функция не может содержать `throw`",
+            "`x` вычисляется в `0` при компиляции; при рантайм-вызове `f(-1)` вызовет `std::terminate`",
+            "`x` вычисляется в `0`; при рантайм-вызове `f(-1)` бросает исключение нормально",
+            "Программа ill-formed: `throw` в `noexcept`-функции всегда ошибка компиляции"
+          ],
+          "answerIndex": 1,
+          "explanation": "`noexcept` описывает **рантайм**-контракт: функция обещает не бросать исключения на этапе выполнения. Нарушение этого контракта вызывает `std::terminate`. При **константном** вычислении P3068 работает независимо от `noexcept`: исключение выбрасывается, ловится `catch (...)`, `x = 0` — всё корректно. Но в рантайме `f(-1)` hit-ает путь с `throw` внутри `noexcept`-функции → `std::terminate`. Компилятор не обязан отвергать такой код (ill-formed только если `noexcept(true)` явно гарантировано спецификацией — здесь `noexcept` без аргумента равно `noexcept(true)`, так что GCC может предупредить, но код компилируется)."
+        },
+        {
+          "id": "m3-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Шаблонная функция использует `constexpr`-вычисление с `throw`:\n\n```cpp\ntemplate <int N>\nconstexpr int check() {\n    if constexpr (N < 0)\n        throw std::domain_error(\"negative\");\n    return N;\n}\n\nconstexpr int a = check<5>();\nconstexpr int b = check<-1>();  // что здесь?\n```\n\nЧто произойдёт при объявлении `b`?",
+          "options": [
+            "SFINAE: шаблонная специализация для `N=-1` исключается из рассмотрения",
+            "Ill-formed: `throw` достигается в константном вычислении и не поймано — ошибка компиляции",
+            "`b` вычисляется в `-1`: `throw` в шаблоне игнорируется при константном вычислении",
+            "UB: бросать исключение в шаблонном constexpr — undefined behavior"
+          ],
+          "answerIndex": 1,
+          "explanation": "Uncaught throw в константном вычислении — это **hard error** (ошибка компиляции), а не substitution failure. SFINAE не применяется. При инстанциировании `check<-1>()` компилятор вычисляет константное выражение: `if constexpr (true)` выполняется, `throw std::domain_error` бросается, catch нет — ошибка компиляции. Чтобы сделать это SFINAE-friendly, нужно обернуть проверку в `requires`-выражение или использовать другой механизм, не полагающийся на то, что uncaught-throw является substitution failure."
+        }
+      ],
+      "challenge": {
+        "prompt": "Реализуй `constexpr`-функцию `lookup(key)`, которая ищет ключ в таблице статических пар «ключ-значение» и **бросает исключение**, если ключ не найден. Напиши `get_or(key, fallback)`, которая использует `lookup` и ловит исключение, возвращая `fallback` при ненайденном ключе — всё на этапе компиляции.\n\nТаблица:\n```cpp\nconstexpr std::array<Entry, 4> table = {{\n    {\"width\",  800},\n    {\"height\", 600},\n    {\"depth\",  32},\n    {\"fps\",    60},\n}};\n```\n\nПрограмма должна вывести:\n```\nwidth=800 height=600 missing=-1\n```",
+        "referenceSolution": "#include <print>\n#include <stdexcept>\n#include <string_view>\n#include <array>\n\nstruct Entry {\n    std::string_view key;\n    int value;\n};\n\nconstexpr std::array<Entry, 4> table = {{\n    {\"width\",  800},\n    {\"height\", 600},\n    {\"depth\",  32},\n    {\"fps\",    60},\n}};\n\nconstexpr int lookup(std::string_view key) {\n    for (const auto& e : table)\n        if (e.key == key) return e.value;\n    throw std::out_of_range(\"key not found\");\n}\n\nconstexpr int get_or(std::string_view key, int fallback) {\n    try {\n        return lookup(key);\n    } catch (const std::out_of_range&) {\n        return fallback;\n    }\n}\n\nint main() {\n    constexpr int w = get_or(\"width\",   0);\n    constexpr int h = get_or(\"height\",  0);\n    constexpr int x = get_or(\"missing\", -1);\n    std::print(\"width={} height={} missing={}\\n\", w, h, x);\n}",
+        "expectedOutput": "width=800 height=600 missing=-1",
+        "godboltUrl": "https://godbolt.org/#z:OYLghAFBqd5QCxAYwPYBMCmBRdBLAF1iAFJAZQBMBXAZwFsBTAQQDoA7AUWIJ35FIBbfAAsAdABoA9AAkAkgGEAsgFFlAJQCCASQDiAFQCqAEQCCAERkBhAJIBpUopUBbZQGF0TenXqMWbDl4MbF4IABF0AEF0MHxOKHo4gBEE5NT0lB9EBEwg1UIQAA8hYVFxSWkZOVd%2FBSVVdU0dXX0jU3Mra1s7BycXN09vX39A4NCgpFDE6NT0zOzc/M6CnqLi0vLuSrpa2vqGpqxWtpZOn3be/sGR0Y2Js7HJmZn52YW1pdKNrb3ag6OI4nM7eC5XEa3cYPN5Pb5/OYPEH3UHZMHQyHQl5w17vRHfFHI37ov6o6FoiGoiE45G4gnI7G4wkE4nEymknFUqm00lwmmMqk8plM%2BmshkM1lsllstlsnns7l83l8hn85mu6m0jlc6VsunM3lC3mCvkiyVSqXiqUy2VyxXymWqxXK1VqxVqxWixXa7W6rWatW67Va3Um6Um/UK/mGuWq1UC7XC3UK4VStUa5UStWazVaxWS5Wq3Wa1W67Xa7UauWGhX6g36iVWsVyg3a11i2UC9XS7Xyl0yuVqs3Km1Kn16v1qvUSs1KsWC4V6gVm30m40W40es1Os0mp0Oq0Gv0Gq0Gq0Gt1Kt2Kp2Kq2Kq2Kp2Kp2Kq2K"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "В C++26 что происходит, если `throw` в `constexpr`-функции **не поймано** в ходе константного вычисления?",
+            "options": [
+              "UB: исключение распространяется непредсказуемо",
+              "Ошибка компиляции (ill-formed): константное вычисление с непойманным исключением отвергается компилятором",
+              "Исключение игнорируется; константа получает нулевое значение",
+              "Предупреждение компилятора, программа компилируется с неопределённым результатом"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой тип можно бросать в `constexpr`-контексте?",
+            "options": [
+              "Только `int` и другие фундаментальные типы",
+              "Только `std::exception` и его подклассы",
+              "Любой тип, который является *literal type* или constexpr-конструируемым (включая `std::invalid_argument`, `std::out_of_range` и пользовательские literal-типы)",
+              "Исключения в `constexpr` запрещены — это C++26 синтаксический сахар над `static_assert`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Как P3068 влияет на `noexcept`-спецификатор `constexpr`-функции?",
+            "options": [
+              "P3068 запрещает `noexcept` на `constexpr`-функциях с `throw`",
+              "`noexcept` описывает рантайм-поведение; P3068 не меняет его семантику. Функция с `noexcept` может бросать при компиляции — но в рантайме `throw` вызовет `std::terminate`",
+              "P3068 делает `noexcept` синонимом `constexpr`: исключения разрешены везде",
+              "`noexcept`-функция не может содержать `throw` даже в C++26 — компилятор отвергает такой код"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Является ли uncaught throw в `constexpr`-вычислении основанием для **SFINAE** (исключения шаблонного кандидата из рассмотрения)?",
+            "options": [
+              "Да: uncaught throw в constant expression — substitution failure в immediate context",
+              "Нет: это hard error (ошибка компиляции), а не substitution failure",
+              "Зависит от того, вложен ли `throw` в `if constexpr`",
+              "Зависит от компилятора: GCC делает substitution failure, Clang — hard error"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m3-l2",
+      "title": "constexpr-контейнеры и адаптеры (P3372)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "До C++26 в арсенале `constexpr`-программирования были лишь `std::vector` и `std::string` — введённые в C++20 как пионеры *транзитного выделения памяти*. Остальные стандартные контейнеры оставались недоступны на этапе компиляции, и метапрограммирование с коллекциями сводилось к ручной возне с массивами или спискам типов через шаблоны.\n\n**P3372** устраняет этот пробел, добавляя `constexpr`-поддержку к оставшимся контейнерам и адаптерам: `std::flat_map`, `std::flat_set`, `std::flat_multimap`, `std::flat_multiset`, `std::bitset`, а также `constexpr`-конструкторы для `std::span` и `std::mdspan`. Контейнерные адаптеры `std::stack`, `std::queue` и `std::priority_queue` тоже объявлены `constexpr` в стандарте — их поддержка в компиляторах дойдёт по мере внедрения.\n\nТеперь можно вычислять на этапе компиляции: таблицы опкодов через `flat_map`, наборы флагов через `bitset`, топологические сортировки через `priority_queue` — и передавать в рантайм только готовый результат как обычный `std::array` или целое число.",
+      "theory": "## Транзитное выделение памяти (transient allocation)\n\nC++20 открыл путь: `std::vector` и `std::string` теперь могут работать внутри `constexpr`-функций. Секрет — правило **транзитного выделения**: `constexpr`-оценка может выделять память через `operator new`, но к моменту завершения оценки вся выделенная память должна быть освобождена. Иными словами, вы не можете «вытащить» `constexpr std::vector<int>` как глобальную константу — её аллокация не выживет вне оценки. Но вы можете создать вектор внутри `constexpr`-функции, выполнить любые операции и вернуть **результат** в виде литерального типа (`int`, `std::array`, пользовательский тип без указателей).\n\n```cpp\n// ОШИБКА: аллокация «вытекает» из оценки\nconstexpr std::vector<int> V = {1, 2, 3};  // ill-formed!\n\n// OK: аллокация транзитная — освобождается при выходе из функции\nconstexpr int sum() {\n    std::vector<int> v = {1, 2, 3};\n    int s = 0;\n    for (int x : v) s += x;\n    return s;  // только int выходит наружу\n}\nconstexpr int S = sum();  // S == 6\n```\n\n## Что добавил P3372\n\nC++26 расширяет поддержку `constexpr` на следующие контейнеры и адаптеры:\n\n| Контейнер / адаптер | Статус в C++26 |\n|---|---|\n| `std::vector`, `std::string` | constexpr с C++20 |\n| `std::flat_map`, `std::flat_set` | **constexpr с C++26 (P3372)** |\n| `std::flat_multimap`, `std::flat_multiset` | **constexpr с C++26 (P3372)** |\n| `std::bitset` | **полностью constexpr с C++26** |\n| `std::span`, `std::mdspan` | **constexpr-конструкторы с C++26** |\n| `std::stack`, `std::queue`, `std::priority_queue` | **constexpr в стандарте C++26** |\n| `std::deque` | constexpr в стандарте C++26 |\n\n**Что по-прежнему НЕ является constexpr в C++26:** `std::list`, `std::map`, `std::set`, `std::unordered_map`, `std::unordered_set` и их `multi`-варианты. Причина — node-based структура (каждый элемент — отдельная аллокация с указателем) конфликтует с ограничениями `constexpr`-оценки на работу с адресами.\n\n## std::flat_map и std::flat_set как constexpr-инструменты\n\n`std::flat_map` и `std::flat_set` (C++23) хранят данные в двух `std::vector`-ах: отдельно ключи, отдельно значения. Именно поэтому они так хорошо ложатся в `constexpr`-мир — лежат на вершине уже constexpr-совместимого `std::vector`. Lookup выполняется бинарным поиском по отсортированному ключевому вектору.\n\n```cpp\nconstexpr int lookup(std::string_view name) {\n    std::flat_map<std::string_view, int> tbl = {\n        {\"alpha\", 1}, {\"beta\", 2}, {\"gamma\", 3}\n    };\n    auto it = tbl.find(name);\n    return (it != tbl.end()) ? it->second : -1;\n}\nconstexpr int a = lookup(\"beta\");  // a == 2\n```\n\nОбратите внимание: `flat_map` сортирует ключи при построении — это происходит на этапе компиляции, обеспечивая полностью нулевые рантайм-издержки.\n\n## std::bitset — полностью constexpr в C++26\n\n`std::bitset<N>` с фиксированным размером шаблонного параметра всегда хранился в стеке (без аллокаций). В C++26 все его методы помечены `constexpr`, что делает `bitset` особенно удобным для компайл-тайм флагового программирования — вычисления масок, подсчёта флагов, проверки условий:\n\n```cpp\nconstexpr auto FLAGS = [] {\n    std::bitset<8> b;\n    b.set(0);   // флаг A\n    b.set(3);   // флаг D\n    b.set(7);   // флаг H\n    return b;\n}();\nstatic_assert(FLAGS.count() == 3);\nstatic_assert(FLAGS.test(3));\n```\n\n## std::span — constexpr-вид без владения\n\n`std::span` никогда не владеет памятью — он лишь хранит указатель и размер. В C++26 его конструкторы объявлены `constexpr`, что позволяет создавать spans на этапе компиляции над `constexpr`-массивами или другими contiguous-диапазонами. Это особенно полезно для передачи compile-time данных в constexpr-функции без копирования:\n\n```cpp\nconstexpr int DATA[] = {10, 20, 30};\nconstexpr std::span<const int> VIEW(DATA);\nconstexpr int FIRST = VIEW.front();  // == 10\n```\n\n## consteval и constexpr-контейнеры\n\n`consteval`-функция гарантированно выполняется только на этапе компиляции — компилятор не выпустит для неё рантайм-код. Это идеальная оболочка для сложных compile-time вычислений с контейнерами: внутри `consteval` можно свободно использовать `flat_map`, `vector`, `bitset` и т. д., а результат возвращать как `std::array` или другой литеральный тип.\n\n## Чек-лист нюансов\n\n- **Транзитное выделение**: `constexpr std::vector<int> V = {…}` на уровне пространства имён — **ill-formed**. Вектор как локальная переменная внутри `constexpr`-функции — OK, если результат функции не содержит указателей.\n- **Адаптеры с `std::deque` по умолчанию**: `std::stack<int>` использует `std::deque<int>` как underlying container. Если `std::deque` ещё не constexpr в вашем компиляторе — используйте явную специализацию: `std::stack<int, std::vector<int>>`. Стандарт уже разрешает это.\n- **`std::list`, `std::map`, `std::set`, `std::unordered_*`** — по-прежнему не constexpr. Попытка использовать их в constexpr-контексте — ошибка компиляции.\n- **Результат должен быть литеральным типом**: чтобы `constexpr`-переменная могла хранить результат функции, тип должен быть литеральным (нет невиртуальных деструкторов, нет указателей на выделенную память). `std::array<T, N>` и пользовательские агрегаты без указателей — подходят; `std::vector` — нет.\n- **Взаимодействие с шаблонами**: передача `constexpr`-вычисленных значений как NTTP (non-type template parameter) требует, чтобы тип был *structural*. `int`, `std::array<int,N>` — structural; `std::vector` — нет.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "std::flat_map как compile-time таблица опкодов",
+          "code": "#include <flat_map>\n#include <string_view>\n#include <print>\n\n// flat_map is used transiently inside a constexpr function.\n// Only a plain int (a literal type) escapes.\nconstexpr int get_opcode(std::string_view name) {\n    std::flat_map<std::string_view, int> opcodes = {\n        {\"NOP\", 0}, {\"ADD\", 1}, {\"SUB\", 2}, {\"MUL\", 3}, {\"DIV\", 4}\n    };\n    auto it = opcodes.find(name);\n    if (it != opcodes.end()) return it->second;\n    return -1;\n}\n\nconstexpr std::size_t count_opcodes() {\n    std::flat_map<std::string_view, int> opcodes = {\n        {\"NOP\", 0}, {\"ADD\", 1}, {\"SUB\", 2}, {\"MUL\", 3}, {\"DIV\", 4}\n    };\n    return opcodes.size();\n}\n\nint main() {\n    constexpr int add_op  = get_opcode(\"ADD\");\n    constexpr int mul_op  = get_opcode(\"MUL\");\n    constexpr int bad_op  = get_opcode(\"JMP\");\n    constexpr std::size_t total = count_opcodes();\n\n    std::print(\"ADD={}\\n\", add_op);\n    std::print(\"MUL={}\\n\", mul_op);\n    std::print(\"JMP={}\\n\", bad_op);\n    std::print(\"total opcodes={}\\n\", total);\n}",
+          "expectedOutput": "ADD=1\nMUL=3\nJMP=-1\ntotal opcodes=5",
+          "explanation": "`std::flat_map` хранит ключи и значения в двух `std::vector`-ах с бинарным поиском. Здесь map создаётся, используется и уничтожается внутри `constexpr`-функции — это транзитное выделение, стандартом разрешённое. Наружу выходит только `int`. Компилятор вычисляет все три значения (`add_op`, `mul_op`, `bad_op`) на этапе компиляции; в рантайме это просто константы."
+        },
+        {
+          "title": "std::bitset — вычисление флагов на этапе компиляции",
+          "code": "#include <bitset>\n#include <print>\n\nenum Feature : std::size_t {\n    SSE2   = 0,\n    AVX    = 1,\n    AVX512 = 2,\n    AES    = 3,\n    SHA    = 4,\n    BMI2   = 5,\n};\n\nconstexpr std::bitset<8> make_mask(bool has_avx, bool has_aes) {\n    std::bitset<8> flags;\n    flags.set(SSE2);               // always present on x86-64\n    if (has_avx) flags.set(AVX);\n    if (has_aes) flags.set(AES);\n    flags.set(BMI2);\n    return flags;\n}\n\n// Both values computed at compile time\nconstexpr auto MODERN_CPU = make_mask(true,  true);\nconstexpr auto BASIC_CPU  = make_mask(false, false);\n\nint main() {\n    std::print(\"modern CPU flags: {}\\n\", MODERN_CPU.to_string());\n    std::print(\"modern has AVX:   {}\\n\", MODERN_CPU.test(AVX));\n    std::print(\"modern has AES:   {}\\n\", MODERN_CPU.test(AES));\n    std::print(\"basic CPU flags:  {}\\n\", BASIC_CPU.to_string());\n    std::print(\"active features:  {}\\n\", MODERN_CPU.count());\n}",
+          "expectedOutput": "modern CPU flags: 00101011\nmodern has AVX:   true\nmodern has AES:   true\nbasic CPU flags:  00100001\nactive features:  4",
+          "explanation": "`std::bitset<N>` хранится в стеке (без аллокаций) — поэтому его `constexpr`-поддержка проще, чем у контейнеров. В C++26 все методы `set`, `flip`, `test`, `count`, `to_string` помечены `constexpr`. `MODERN_CPU` и `BASIC_CPU` — глобальные `constexpr`-константы (в отличие от `std::vector`, чья аллокация была бы транзитной). Вывод `to_string()` читается справа налево: бит 0 — самый правый."
+        },
+        {
+          "title": "consteval с vector: решето Эратосфена на этапе компиляции",
+          "code": "#include <vector>\n#include <array>\n#include <print>\n\n// consteval: the function MUST execute at compile time;\n// the compiler generates no runtime code for it.\nconsteval std::array<int, 5> top5_primes_under(int limit) {\n    // vector as a working buffer — transient allocation\n    std::vector<bool> sieve(static_cast<std::size_t>(limit), true);\n    sieve[0] = sieve[1] = false;\n    for (int i = 2; i < limit; ++i)\n        if (sieve[static_cast<std::size_t>(i)])\n            for (int j = i * 2; j < limit; j += i)\n                sieve[static_cast<std::size_t>(j)] = false;\n\n    std::vector<int> primes;\n    for (int i = limit - 1; i >= 2 && static_cast<int>(primes.size()) < 5; --i)\n        if (sieve[static_cast<std::size_t>(i)])\n            primes.push_back(i);\n\n    // Return std::array — a literal type; no allocation escapes\n    std::array<int, 5> result{};\n    for (int i = 0; i < 5; ++i)\n        result[static_cast<std::size_t>(i)] = primes[static_cast<std::size_t>(i)];\n    return result;\n}\n\nconstexpr auto PRIMES = top5_primes_under(50);\n\nint main() {\n    std::print(\"Top 5 primes under 50 (descending):\\n\");\n    for (int p : PRIMES)\n        std::print(\"  {}\\n\", p);\n}",
+          "expectedOutput": "Top 5 primes under 50 (descending):\n  47\n  43\n  41\n  37\n  31",
+          "explanation": "`consteval` гарантирует, что функция выполняется *исключительно* на этапе компиляции — удобная обёртка для тяжёлых compile-time вычислений. Внутри функции два `std::vector` работают как транзитный буфер: выделяют память, выполняют решето, и освобождают. Наружу выходит только `std::array<int, 5>` — структурный литеральный тип без аллокаций. В рантайме `PRIMES` — просто пять встроенных константных `int`-значений."
+        },
+        {
+          "title": "std::span с constexpr-конструкторами и транзитное выделение",
+          "code": "#include <span>\n#include <vector>\n#include <algorithm>\n#include <print>\n\n// span is a non-owning view; constexpr constructors allow\n// working with it at compile time\nconstexpr int sum_span(std::span<const int> s) {\n    int total = 0;\n    for (int x : s) total += x;\n    return total;\n}\n\n// Transient allocation: vector is created, sorted, result returned\nconstexpr int max_of_sorted(std::initializer_list<int> vals) {\n    std::vector<int> v(vals);        // transient allocation\n    std::sort(v.begin(), v.end());\n    return v.back();                 // only int escapes\n}                                    // vector destroyed, allocation freed\n\nconstexpr int DATA[] = {5, 2, 8, 1, 9, 3};\n\nint main() {\n    constexpr std::span<const int> view(DATA);\n    constexpr int total = sum_span(view);\n    std::print(\"sum = {}\\n\", total);\n\n    constexpr int mx = max_of_sorted({4, 7, 2, 9, 1});\n    std::print(\"max = {}\\n\", mx);\n\n    constexpr std::size_t sz    = view.size();\n    constexpr int         first = view.front();\n    std::print(\"view.size={} view.front={}\\n\", sz, first);\n}",
+          "expectedOutput": "sum = 28\nmax = 9\nview.size=6 view.front=5",
+          "explanation": "`std::span` никогда не владеет памятью — хранит лишь указатель и размер, поэтому не имеет аллокационных проблем. В C++26 его конструкторы `constexpr`; span можно создать над `constexpr`-массивом и передать в `constexpr`-функцию. В `max_of_sorted` показан классический паттерн: `vector` используется как рабочий буфер (транзитная аллокация), наружу выходит только `int`. Это ключевой стиль constexpr-вычислений с C++26-контейнерами."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m3-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <bitset>\n#include <print>\n\nconstexpr std::bitset<4> compute() {\n    std::bitset<4> b;\n    b.set(0);\n    b.set(2);\n    b.flip(1);\n    return b;\n}\n\nconstexpr auto RESULT = compute();\n\nint main() {\n    std::print(\"{}\\n\", RESULT.count());\n    std::print(\"{}\\n\", RESULT.test(0));\n    std::print(\"{}\\n\", RESULT.test(1));\n}",
+          "answer": "3\ntrue\ntrue",
+          "explanation": "`bitset<4>` начинается со всеми нулями. `set(0)` устанавливает бит 0. `set(2)` устанавливает бит 2. `flip(1)` инвертирует бит 1 — он был 0, стал 1. Итого установлены биты 0, 1, 2 — `count() == 3`. `test(0)` и `test(1)` — оба `true`. Всё это вычислено на этапе компиляции и хранится в `RESULT` как глобальная constexpr-константа (`bitset` не требует аллокаций — транзитного правила нет)."
+        },
+        {
+          "id": "m3-l2-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <vector>\n#include <print>\n\nconstexpr std::vector<int> GLOBAL_VEC = {1, 2, 3, 4, 5};\n\nconstexpr int sum_it() {\n    std::vector<int> v = {1, 2, 3, 4, 5};\n    int s = 0;\n    for (int x : v) s += x;\n    return s;\n}\n\nint main() {\n    constexpr int s = sum_it();\n    std::print(\"{}\\n\", s);\n}",
+          "answerLine": 4,
+          "explanation": "Строка 4: `constexpr std::vector<int> GLOBAL_VEC = {1, 2, 3, 4, 5}` — нарушение правила транзитного выделения. Аллокация `std::vector` должна быть освобождена внутри той же `constexpr`-оценки; глобальная `constexpr`-переменная типа `std::vector` означала бы, что аллокация «вытекает» наружу — это ill-formed. Функция `sum_it()` (строки 6–11) написана правильно: vector создаётся и уничтожается внутри функции, наружу выходит только `int`. Исправление строки 4: убрать переменную или заменить её `constexpr`-функцией."
+        },
+        {
+          "id": "m3-l2-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Какой из следующих фрагментов кода является **ill-formed** в C++26?\n\n```cpp\n// A:\nconstexpr int f() {\n    std::vector<int> v = {1, 2, 3};\n    return v[1];\n}\nconstexpr int a = f();\n\n// B:\nconstexpr std::vector<int> V = {1, 2, 3};\n\n// C:\nconstexpr std::bitset<8> B = []{\n    std::bitset<8> b; b.set(0); b.set(7); return b;\n}();\n\n// D:\nconstexpr int g() {\n    std::flat_map<int,int> m = {{1,10},{2,20}};\n    return m[1];\n}\nconstexpr int d = g();\n```",
+          "options": [
+            "A — нельзя использовать std::vector внутри constexpr-функции",
+            "B — constexpr std::vector на уровне пространства имён нарушает правило транзитного выделения",
+            "C — std::bitset не является constexpr в C++26",
+            "D — std::flat_map не поддерживает оператор [] в constexpr-контексте"
+          ],
+          "answerIndex": 1,
+          "explanation": "B — ill-formed. `constexpr std::vector<int> V = {1, 2, 3}` пытается сохранить `vector` как глобальную `constexpr`-переменную. Поскольку `vector` внутренне выделяет память через `operator new`, аллокация «вытекала» бы из `constexpr`-оценки — это запрещено. A — OK: `vector` транзитен внутри функции, наружу выходит только `int`. C — OK: `std::bitset` не использует аллокаций и полностью `constexpr` в C++26. D — OK: `flat_map` транзитен внутри функции, наружу выходит `int`."
+        },
+        {
+          "id": "m3-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Вы хотите создать compile-time таблицу конфигурации в виде словаря. Какой контейнер C++26 лучше всего подходит для этой цели, если результат должен быть возвращён из `constexpr`-функции как значение для `constexpr`-переменной?",
+          "options": [
+            "std::map<std::string, int> — он отсортированный и эффективный",
+            "std::unordered_map<std::string, int> — он самый быстрый по lookup",
+            "std::flat_map<std::string_view, int>, использованный транзитно внутри функции, результат как std::array или литеральный тип",
+            "std::list<std::pair<std::string, int>> — он constexpr в C++26"
+          ],
+          "answerIndex": 2,
+          "explanation": "`std::map` и `std::unordered_map` — node-based контейнеры, не constexpr в C++26 (и ещё долго не будут). `std::list` также не constexpr. `std::flat_map` — правильный выбор: это sorted-контейнер на базе `std::vector`, полностью constexpr в C++26. Используется транзитно (создаётся и уничтожается внутри функции), а наружу возвращается `std::array<std::pair<K,V>, N>` или другой литеральный тип. `std::string_view` предпочтительнее `std::string` в качестве ключа — он не требует аллокаций."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите `consteval`-функцию `char_frequencies(std::string_view s)`, которая считает, сколько раз каждый символ встречается в строке, и возвращает результат в виде `std::array<std::pair<char, int>, 5>`, содержащего (символ, количество) для первых 5 уникальных символов в алфавитном порядке.\n\nИспользуйте `std::flat_map<char, int>` для подсчёта (он выдаст результаты уже отсортированными по ключу). Вычислите частоты для строки `\"abracadabra\"` на этапе компиляции и выведите результат.\n\nОжидаемый вывод:\n```\nFrequencies in \"abracadabra\":\n  'a': 5\n  'b': 2\n  'c': 1\n  'd': 1\n  'r': 2\n```",
+        "referenceSolution": "#include <flat_map>\n#include <array>\n#include <string_view>\n#include <print>\n\nstruct CharCount { char ch; int count; };\n\nconsteval auto char_frequencies(std::string_view s) {\n    std::flat_map<char, int> freq;\n    for (char c : s) freq[c]++;\n\n    std::array<CharCount, 5> result{};\n    std::size_t i = 0;\n    for (auto [ch, n] : freq)\n        if (i < 5) result[i++] = {ch, n};\n    return result;\n}\n\nconstexpr auto FREQ = char_frequencies(\"abracadabra\");\n\nint main() {\n    std::print(\"Frequencies in \\\"abracadabra\\\":\\n\");\n    for (auto [ch, cnt] : FREQ)\n        std::print(\"  '{}': {}\\n\", ch, cnt);\n}",
+        "expectedOutput": "Frequencies in \"abracadabra\":\n  'a': 5\n  'b': 2\n  'c': 1\n  'd': 1\n  'r': 2",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Cflat_map%3E%0A%23include+%3Carray%3E%0A%23include+%3Cstring_view%3E%0A%23include+%3Cprint%3E%0A%0Astruct+CharCount+%7B+char+ch%3B+int+count%3B+%7D%3B%0A%0Aconsteval+auto+char_frequencies(std::string_view+s)+%7B%0A++++std::flat_map%3Cchar,+int%3E+freq%3B%0A++++for+(char+c+:+s)+freq%5Bc%5D%2B%2B%3B%0A%0A++++std::array%3CCharCount,+5%3E+result%7B%7D%3B%0A++++std::size_t+i+%3D+0%3B%0A++++for+(auto+%5Bch,+n%5D+:+freq)%0A++++++++if+(i+%3C+5)+result%5Bi%2B%2B%5D+%3D+%7Bch,+n%7D%3B%0A++++return+result%3B%0A%7D%0A%0Aconstexpr+auto+FREQ+%3D+char_frequencies(%22abracadabra%22)%3B%0A%0Aint+main()+%7B%0A++++std::print(%22Frequencies+in+%5C%22abracadabra%5C%22:%5Cn%22)%3B%0A++++for+(auto+%5Bch,+cnt%5D+:+FREQ)%0A++++++++std::print(%22++'%7B%7D':+%7B%7D%5Cn%22,+ch,+cnt)%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),header:(),k:50,l:'4',m:100,n:'0',o:'',s:0,t:'0'),(g:!((h:executor,i:(argsPanelShown:'1',compilationPanelShown:'0',compiler:gsnapshot,execArgs:'',execStdin:'',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B26+-O2',source:1,tree:'1'),l:'5',n:'0',o:'Executor+x86-64+gcc+(trunk)+%231',t:'0')),k:50,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что означает правило «транзитного выделения» (transient allocation) в контексте `constexpr`?",
+            "options": [
+              "Все `constexpr`-переменные автоматически хранятся в ROM, а не в RAM",
+              "Память, выделённая внутри `constexpr`-оценки, должна быть освобождена до её завершения — результат не может содержать указатели на выделенную память",
+              "Аллокации внутри `constexpr` передаются специальному compile-time аллокатору",
+              "`constexpr`-функции не могут вызывать `operator new` ни при каких условиях"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему `std::flat_map` является `constexpr` в C++26, а `std::map` — нет?",
+            "options": [
+              "Потому что `std::map` не отсортирован, а `flat_map` — да",
+              "`std::flat_map` хранит данные в двух `std::vector`-ах (уже constexpr), тогда как `std::map` использует node-based структуру с отдельными аллокациями на каждый узел",
+              "Это политическое решение; технически оба могли бы быть constexpr",
+              "`std::map` требует `operator<`, который не всегда constexpr"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой из контейнеров C++26 **нельзя** использовать в `constexpr`-контексте?",
+            "options": [
+              "std::vector<int>",
+              "std::flat_set<int>",
+              "std::map<int, int>",
+              "std::bitset<64>"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Функция `consteval f()` возвращает `std::array<int, 5>`. Внутри неё используется `std::vector<int>` как рабочий буфер. Это:",
+            "options": [
+              "Ill-formed: внутри `consteval` аллокации запрещены",
+              "Корректно: вектор — транзитная аллокация, `std::array` — литеральный тип без аллокаций",
+              "Корректно только если вектор объявлен `static`",
+              "Undefined behavior: вектор может быть не полностью инициализирован"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m3-l3",
+      "title": "Время жизни в compile-time: std::is_within_lifetime (P2637)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "В C++, при работе с `union` внутри `constexpr`-кода, компилятор жёстко контролирует, к какому члену вы обращаетесь: обратиться к неактивному члену — это не просто UB, как в рантайме, а **ill-formed** — ошибка компиляции. Это правильно, но создаёт практическую проблему: как написать `constexpr`-версию `std::optional` или похожего «контейнера с nullable-значением» на основе `union`?\n\nДо C++26 единственный способ — вести отдельный `bool`-флаг (`engaged`, `has_value_`), который дублирует информацию о том, какой член активен. Это многословно, подвержено ошибкам рассинхронизации, и, главное, лишает смысла саму идею `union` — хранить взаимоисключающие значения без накладных расходов на дискриминант.\n\n**P2637** («Checking if a union alternative is active») вводит `std::is_within_lifetime` — `consteval`-функцию, которую можно вызвать в compile-time контексте, чтобы спросить: «этот указатель указывает на объект, чьё время жизни в данный момент активно?» Для членов `union` это означает: «является ли этот член сейчас активным?» Проблема дополнительного дискриминанта исчезает — компилятор знает правду сам, нужно лишь спросить.",
+      "theory": "## Сигнатура и заголовок\n\n```cpp\n#include <type_traits>   // или <memory> — в P2637 это <type_traits>\n\ntemplate<typename T>\nconsteval bool std::is_within_lifetime(const T* p) noexcept;\n```\n\n`std::is_within_lifetime` — `consteval`-функция: вызвать её можно только в **constant-evaluated context** (внутри `consteval`-функций, `constexpr`-вычислений, `static_assert` и пр.). Попытка вызвать её в обычной рантайм-функции — **ошибка компиляции**.\n\n## Что возвращает\n\n- **`true`** — `p` указывает на объект, чьё время жизни сейчас активно в данном constant evaluation: обычная живая переменная, активный член `union`, элемент массива и пр.\n- **`false`** — `p` — нулевой указатель, указатель на неактивный член `union`, или объект, чьё время жизни ещё не началось/уже закончилось.\n\n> **Замечание о реализации (2026 г.):** `std::is_within_lifetime` как функция из `std::` ещё не реализована ни в GCC trunk, ни в Clang trunk. Clang trunk предоставляет компиляторный примитив `__builtin_is_within_lifetime` с той же семантикой, который и будет лежать в основе стандартной функции. Примеры в этом уроке используют `__builtin_is_within_lifetime` напрямую; в финальном C++26 код надо будет заменить на `std::is_within_lifetime` из `<type_traits>`.\n\n## Главный сценарий: `union` и активный член\n\nКаждый момент времени у `union` ровно один активный член. Обращение к неактивному члену в `constexpr`-контексте — **ill-formed**. Чтобы безопасно выбрать ветку, нужно сначала узнать, какой член активен. Именно для этого и нужен `is_within_lifetime`:\n\n```cpp\nconsteval bool example() {\n    union { int i; double d; } u;\n    u.i = 42;\n    bool i_active = std::is_within_lifetime(&u.i);  // true\n    bool d_active = std::is_within_lifetime(&u.d);  // false\n    return i_active && !d_active;\n}\nstatic_assert(example());\n```\n\nКогда мы присваиваем `u.i`, `int`-член становится активным; `double`-член перестаёт им быть. `is_within_lifetime` отражает это мгновенно.\n\n## Связь с `constexpr optional` и union-based типами\n\nСтандартный `std::optional<T>` внутри использует `union { T value; char dummy; }` и отдельный `bool` для отслеживания «заполнен ли». С `is_within_lifetime` такой `bool` не нужен — активность члена `union` сам компилятор отслеживает:\n\n```cpp\ntemplate<typename T>\nstruct ConstexprMaybe {\n    union { T value; char empty; };\n    constexpr ConstexprMaybe()      : empty(0) {}\n    constexpr ConstexprMaybe(T val) { std::construct_at(&value, val); }\n\n    consteval bool has_value() const {\n        return std::is_within_lifetime(&value);\n    }\n};\n```\n\n## Правила и ограничения\n\n**Только consteval-контекст.** Поскольку `is_within_lifetime` сама `consteval`, её вызов в обычной функции (`bool f(const int* p) { return std::is_within_lifetime(p); }`) — ошибка компиляции. Это задумано: понятие «объект в пределах своего времени жизни» вообще не имеет смысла как рантайм-запрос через указатель, чьё значение неизвестно на этапе компиляции.\n\n**SFINAE не работает.** `is_within_lifetime` — `consteval`, поэтому ошибка её вызова — жёсткая ошибка (hard error), а не substitution failure. SFINAE через неё не построить.\n\n**Нулевой указатель — ошибка или `false`?** По спецификации P2637, нулевой указатель даёт `false`. Однако текущие реализации (`__builtin_is_within_lifetime` в Clang) генерируют жёсткую compile-time ошибку при передаче `nullptr`. Не передавайте `nullptr` напрямую — проверяйте указатель заранее.\n\n**Указатель «за концом» (one-past-the-end).** Аналогично: по спецификации — `false`, в текущем Clang builtin — ошибка компиляции. Проверяйте индексы до вызова.\n\n**Подобъекты (члены структуры, элементы массива).** Если объект-владелец жив, его члены тоже считаются «в пределах времени жизни»:\n\n```cpp\nconsteval bool test() {\n    struct { int x; int y; } s{1, 2};\n    return std::is_within_lifetime(&s.x) && std::is_within_lifetime(&s.y);\n}\nstatic_assert(test());\n```\n\n## Старые альтернативы и почему is_within_lifetime лучше\n\n| Подход | Проблема |\n|---|---|\n| Ручной `bool` дискриминант | Синхронизировать вручную; лишний байт; забыть обновить — тихий баг |\n| Доступ без проверки | Ill-formed в constexpr; UB в рантайме (type punning) |\n| `std::variant` | Overhead; для `constexpr optional` избыточно |\n| `is_within_lifetime` | Ноль накладных расходов; семантика задаётся компилятором, не программистом |\n\n## Чек-лист нюансов\n\n- **Unevaluated-контексты** (`sizeof`, `decltype`, `noexcept`): в unevaluated-контексте функция не вызывается, поэтому ill-formed не возникает — но и смысла в таком вызове нет.\n- **Constexpr vs consteval**: функция, тело которой содержит вызов `is_within_lifetime`, сама автоматически становится `consteval` (если не была `constexpr` уже). Это изменяет интерфейс класса: метод `has_value()` с `is_within_lifetime` нельзя вызвать в рантайм-контексте.\n- **Старый код с bool-флагом**: он остаётся корректным и полезным для рантайм-контекстов. `is_within_lifetime` расширяет возможности `constexpr`-кода, не заменяя рантайм-паттерны.\n- **GCC trunk (gsnapshot)**: на момент написания урока GCC trunk не имеет ни `std::is_within_lifetime`, ни эквивалентного builtin — используйте Clang trunk (`clang_trunk` на Compiler Explorer).",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_trunk",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "Базовый: живой объект и неактивный член union",
+          "code": "#include <print>\n\n// std::is_within_lifetime will be in <type_traits> in final C++26.\n// Clang trunk currently exposes the same mechanism as __builtin_is_within_lifetime.\n\nconsteval bool live_object_check() {\n    int x = 42;\n    return __builtin_is_within_lifetime(&x);  // x is alive — true\n}\n\nconsteval bool union_check() {\n    union { int i; double d; } u;\n    u.i = 100;\n\n    bool i_alive = __builtin_is_within_lifetime(&u.i);   // i is active — true\n    bool d_alive = __builtin_is_within_lifetime(&u.d);   // d is inactive — false\n\n    u.d = 3.14;  // switch the active member\n    bool i_alive2 = __builtin_is_within_lifetime(&u.i);  // i is now inactive — false\n    bool d_alive2 = __builtin_is_within_lifetime(&u.d);  // d is now active — true\n\n    return i_alive && !d_alive && !i_alive2 && d_alive2;\n}\n\nint main() {\n    static_assert(live_object_check(), \"live variable is within its lifetime\");\n    static_assert(union_check(), \"union member activation is correctly tracked\");\n    std::print(\"is_within_lifetime: OK\\n\");\n}",
+          "expectedOutput": "is_within_lifetime: OK",
+          "explanation": "Два ключевых факта. Первый: `__builtin_is_within_lifetime` на обычную живую переменную возвращает `true` — объект создан, ещё не уничтожен. Второй: для `union` возвращается `true` только для **активного** члена — того, в который последний раз писали. После присваивания `u.i = 100` активен `i`; после `u.d = 3.14` — активен `d`, а `i` перестаёт быть активным. Именно это различие позволяет безопасно решить, какую ветку кода выполнить, не обращаясь к неактивному члену."
+        },
+        {
+          "title": "constexpr optional без ручного bool-дискриминанта",
+          "code": "#include <print>\n#include <memory>\n\ntemplate<typename T>\nstruct ConstexprMaybe {\n    union {\n        T value;\n        char empty;\n    };\n\n    constexpr ConstexprMaybe() : empty(0) {}   // no value: empty is active\n    constexpr ConstexprMaybe(T val) : empty(0) {\n        std::construct_at(&value, val);         // construct value explicitly\n    }\n\n    // C++26: ask the compiler whether value is alive — no manual bool needed!\n    consteval bool has_value() const {\n        return __builtin_is_within_lifetime(&value);\n    }\n\n    consteval T get() const { return value; }\n};\n\nconsteval int sum_maybe(ConstexprMaybe<int> a, ConstexprMaybe<int> b) {\n    if (!a.has_value() || !b.has_value()) return -1;\n    return a.get() + b.get();\n}\n\nint main() {\n    static_assert(sum_maybe(10, 32) == 42);\n    static_assert(sum_maybe(ConstexprMaybe<int>{}, 5) == -1);\n    std::print(\"ConstexprMaybe: OK\\n\");\n}",
+          "expectedOutput": "ConstexprMaybe: OK",
+          "explanation": "Это и есть центральный сценарий P2637. `ConstexprMaybe<T>` использует `union { T value; char empty; }` — классический паттерн `std::optional`. Разница с C++23: здесь **нет** отдельного `bool engaged`. Метод `has_value()` спрашивает `is_within_lifetime(&value)` — если мы вызывали `std::construct_at(&value, ...)`, то `value` стал активным, и функция вернёт `true`. Иначе активен `empty`, и функция вернёт `false`. Нулевых накладных расходов: нет лишнего поля, нет риска рассинхронизации между полем и реальным состоянием `union`."
+        },
+        {
+          "title": "Старый vs новый подход: сравнение с ручным дискриминантом",
+          "code": "#include <print>\n#include <memory>\n\n// Old approach (C++23 and earlier): manual bool flag\nstruct OldTaggedInt {\n    union { int val; char pad; };\n    bool active;  // explicit discriminant required\n\n    constexpr OldTaggedInt()    : pad(0),   active(false) {}\n    constexpr OldTaggedInt(int v) : val(v), active(true)  {}\n    constexpr bool has_val() const { return active; }\n    constexpr int  get_val() const { return val; }\n};\n\n// New approach (C++26): is_within_lifetime instead of bool flag\nstruct NewTaggedInt {\n    union { int val; char pad; };\n\n    constexpr NewTaggedInt()    : pad(0) {}\n    constexpr NewTaggedInt(int v) { std::construct_at(&val, v); }\n\n    consteval bool has_val() const { return __builtin_is_within_lifetime(&val); }\n    consteval int  get_val() const { return val; }\n};\n\nconsteval int old_sum(OldTaggedInt a, OldTaggedInt b) {\n    return (a.has_val() ? a.get_val() : 0) + (b.has_val() ? b.get_val() : 0);\n}\nconsteval int new_sum(NewTaggedInt a, NewTaggedInt b) {\n    return (a.has_val() ? a.get_val() : 0) + (b.has_val() ? b.get_val() : 0);\n}\n\nint main() {\n    static_assert(old_sum(OldTaggedInt{7}, OldTaggedInt{}) == 7);\n    static_assert(new_sum(NewTaggedInt{7}, NewTaggedInt{}) == 7);\n    static_assert(old_sum(OldTaggedInt{3}, OldTaggedInt{4}) == 7);\n    static_assert(new_sum(NewTaggedInt{3}, NewTaggedInt{4}) == 7);\n    std::print(\"Old and new approaches agree: OK\\n\");\n}",
+          "expectedOutput": "Old and new approaches agree: OK",
+          "explanation": "Сравнение «до» и «после» C++26. `OldTaggedInt` хранит явный `bool active` — он занимает лишнее место (минимум 1 байт + выравнивание), и его нужно обновлять вручную при каждом изменении состояния. `NewTaggedInt` вообще не хранит дискриминант: вместо него `consteval bool has_val()` спрашивает компилятор о состоянии `union`. Оба подхода дают одинаковый результат для `constexpr`-вычислений. Ограничение нового подхода: `has_val()` — `consteval`, то есть вызывается только в compile-time контексте. Для рантайм-кода старый `bool`-флаг по-прежнему необходим."
+        },
+        {
+          "title": "Продвинутый: шаблонный Either<L, R> на is_within_lifetime",
+          "code": "#include <print>\n#include <memory>\n\ntemplate<typename L, typename R>\nstruct Either {\n    union { L left; R right; };\n\n    constexpr Either() : left{} {}\n\n    static constexpr Either make_left(L val) {\n        Either e;\n        e.left = val;\n        return e;\n    }\n    static constexpr Either make_right(R val) {\n        Either e;\n        std::construct_at(&e.right, val);\n        return e;\n    }\n\n    // Query the active member — without a manual tag!\n    consteval bool is_left()  const { return __builtin_is_within_lifetime(&left);  }\n    consteval bool is_right() const { return __builtin_is_within_lifetime(&right); }\n\n    consteval L get_left()  const { return left;  }\n    consteval R get_right() const { return right; }\n\n    consteval double visit(auto f, auto g) const {\n        if (is_left())  return f(left);\n        if (is_right()) return g(right);\n        return 0.0;\n    }\n};\n\nconsteval double sum_all() {\n    auto e1 = Either<int, double>::make_left(42);\n    auto e2 = Either<int, double>::make_right(0.5);\n    auto e3 = Either<int, double>::make_left(8);\n\n    auto to_double = [](auto v) -> double { return static_cast<double>(v); };\n    return e1.visit(to_double, to_double)\n         + e2.visit(to_double, to_double)\n         + e3.visit(to_double, to_double);\n}\n\nint main() {\n    constexpr double result = sum_all();\n    static_assert(result == 50.5);\n    std::print(\"Either result = {}\\n\", result);\n}",
+          "expectedOutput": "Either result = 50.5",
+          "explanation": "Шаблонный `Either<L, R>` — обобщение `optional`: вместо «значение или ничего» он хранит «значение типа `L` или значение типа `R`». Без `is_within_lifetime` потребовался бы `bool is_left_` — с ним два метода `is_left()` и `is_right()` читают состояние `union` напрямую. `visit()` — шаблонный паттерн-матчинг: принимает два вызываемых объекта и применяет подходящий. В сумме `42 + 0.5 + 8 = 50.5`. Это демонстрирует, что `is_within_lifetime` масштабируется: работает не только с двумя членами `union`, но и с любым количеством шаблонных аргументов."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m3-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nconsteval bool check() {\n    union { int a; double b; } u;\n    u.a = 10;\n    bool r1 = __builtin_is_within_lifetime(&u.a);\n    bool r2 = __builtin_is_within_lifetime(&u.b);\n    return r1 && !r2;\n}\n\nint main() {\n    static_assert(check());\n    std::print(\"pass\\n\");\n}",
+          "answer": "pass",
+          "explanation": "`u.a = 10` делает `a` активным членом union. `__builtin_is_within_lifetime(&u.a)` возвращает `true` (`r1 = true`), а `__builtin_is_within_lifetime(&u.b)` возвращает `false` (`r2 = false`). Выражение `r1 && !r2` — это `true && !false = true && true = true`. `static_assert(true)` проходит, программа компилируется и печатает `pass`."
+        },
+        {
+          "id": "m3-l3-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <print>\n\nconsteval int read_union() {\n    union U { int a; double b; } u;\n    u.a = 42;\n    return static_cast<int>(u.b);  // access b after writing to a\n}\n\nint main() {\n    constexpr int v = read_union();\n    std::print(\"{}\\n\", v);\n}",
+          "answerLine": 6,
+          "explanation": "Строка 6: `u.b` — чтение **неактивного** члена union в constexpr-контексте. После `u.a = 42` активен `a`; обращение к `b` без предварительного присваивания — ill-formed, ошибка компиляции с сообщением «read of member 'b' of union with active member 'a' is not allowed in a constant expression». Исправление: либо проверить активность через `__builtin_is_within_lifetime(&u.b)` перед чтением, либо сначала присвоить `u.b`, либо читать `u.a`."
+        },
+        {
+          "id": "m3-l3-e3",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <print>\n#include <memory>\n\nstruct Point { int x; int y; };\n\nconsteval bool test_member() {\n    Point p{3, 4};\n    bool x_live = __builtin_is_within_lifetime(&p.x);\n    bool y_live = __builtin_is_within_lifetime(&p.y);\n    return x_live && y_live;\n}\n\nint main() {\n    static_assert(test_member());\n    std::print(\"members: OK\\n\");\n}",
+          "answer": "members: OK",
+          "explanation": "Члены структуры — это подобъекты (`subobjects`) живого объекта `p`. Если `p` жива, то `p.x` и `p.y` тоже считаются «в пределах времени жизни». `__builtin_is_within_lifetime(&p.x)` и `__builtin_is_within_lifetime(&p.y)` оба возвращают `true`. `test_member()` возвращает `true && true = true`. `static_assert` проходит, программа печатает `members: OK`."
+        },
+        {
+          "id": "m3-l3-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Программист пишет:\n```cpp\nbool check_at_runtime(const int* p) {\n    return __builtin_is_within_lifetime(p);\n}\n```\nЧто произойдёт при компиляции?",
+          "options": [
+            "Компилируется нормально: is_within_lifetime можно вызывать везде",
+            "Ошибка компиляции: вызов consteval-функции недопустим вне constant-evaluated context",
+            "Предупреждение компилятора, но компиляция успешна",
+            "Undefined behavior в рантайме при передаче висячего указателя"
+          ],
+          "answerIndex": 1,
+          "explanation": "`__builtin_is_within_lifetime` (и `std::is_within_lifetime`) — `consteval`-функция. Её вызов обязан происходить в constant-evaluated context — то есть внутри `consteval`-функции, `constexpr`-вычисления или `static_assert`. Обычная `bool`-функция с параметром `const int* p` — это рантайм-код: значение `p` неизвестно на этапе компиляции, поэтому вызов `is_within_lifetime` здесь — жёсткая ошибка компиляции (не SFINAE-подавляемая). Понятие «объект в пределах времени жизни» вообще не имеет смысла как рантайм-запрос через произвольный указатель."
+        }
+      ],
+      "challenge": {
+        "prompt": "Реализуйте шаблонный `constexpr`/`consteval` тип `Either<L, R>`, хранящий в `union` значение типа `L` **или** `R`. Без ручного bool-дискриминанта — используйте `__builtin_is_within_lifetime` (или `std::is_within_lifetime` в финальном C++26), чтобы определить активный член. Тип должен:\n- Иметь фабричные методы `make_left(L)` и `make_right(R)`\n- Иметь `consteval bool is_left()` и `consteval bool is_right()`\n- Иметь `consteval L get_left()` и `consteval R get_right()`\n- Корректно суммировать три значения `Either<int, double>` через `consteval`-функцию `sum_all()`: `42 + 0.5 + 8 = 50.5`\n\nПроверьте через `static_assert(sum_all() == 50.5)` и напечатайте результат.",
+        "referenceSolution": "#include <print>\n#include <memory>\n\ntemplate<typename L, typename R>\nstruct Either {\n    union { L left; R right; };\n\n    constexpr Either() : left{} {}\n\n    static constexpr Either make_left(L val) {\n        Either e;\n        e.left = val;\n        return e;\n    }\n    static constexpr Either make_right(R val) {\n        Either e;\n        std::construct_at(&e.right, val);\n        return e;\n    }\n\n    consteval bool is_left()  const { return __builtin_is_within_lifetime(&left);  }\n    consteval bool is_right() const { return __builtin_is_within_lifetime(&right); }\n\n    consteval L get_left()  const { return left;  }\n    consteval R get_right() const { return right; }\n};\n\nconsteval double sum_all() {\n    auto e1 = Either<int, double>::make_left(42);\n    auto e2 = Either<int, double>::make_right(0.5);\n    auto e3 = Either<int, double>::make_left(8);\n\n    double total = 0.0;\n    auto add = [&](auto& e) {\n        if (e.is_left())  total += static_cast<double>(e.get_left());\n        if (e.is_right()) total += e.get_right();\n    };\n    add(e1); add(e2); add(e3);\n    return total;\n}\n\nint main() {\n    constexpr double result = sum_all();\n    static_assert(result == 50.5);\n    std::print(\"Either result = {}\\n\", result);\n}",
+        "expectedOutput": "Either result = 50.5",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,positionColumn:1,positionLineNumber:1,selectionStartColumn:1,selectionStartLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Cprint%3E%0A%23include+%3Cmemory%3E%0A%0Atemplate%3Ctypename+L,+typename+R%3E%0Astruct+Either+%7B%0A++++union+%7B+L+left%3B+R+right%3B+%7D%3B%0A%0A++++constexpr+Either()+:+left%7B%7D+%7B%7D%0A%0A++++static+constexpr+Either+make_left(L+val)+%7B%0A++++++++Either+e%3B+e.left+%3D+val%3B+return+e%3B%0A++++%7D%0A++++static+constexpr+Either+make_right(R+val)+%7B%0A++++++++Either+e%3B%0A++++++++std::construct_at(%26e.right,+val)%3B%0A++++++++return+e%3B%0A++++%7D%0A%0A++++consteval+bool+is_left()+const+%7B+return+__builtin_is_within_lifetime(%26left)%3B++%7D%0A++++consteval+bool+is_right()+const+%7B+return+__builtin_is_within_lifetime(%26right)%3B+%7D%0A%0A++++consteval+L+get_left()+const+%7B+return+left%3B++%7D%0A++++consteval+R+get_right()+const+%7B+return+right%3B+%7D%0A%7D%3B%0A%0Aconsteval+double+sum_all()+%7B%0A++++auto+e1+%3D+Either%3Cint,+double%3E::make_left(42)%3B%0A++++auto+e2+%3D+Either%3Cint,+double%3E::make_right(0.5)%3B%0A++++auto+e3+%3D+Either%3Cint,+double%3E::make_left(8)%3B%0A++++double+total+%3D+0.0%3B%0A++++auto+add+%3D+%5B%26%5D(auto%26+e)+%7B%0A++++++++if+(e.is_left())+total+%2B%3D+static_cast%3Cdouble%3E(e.get_left())%3B%0A++++++++if+(e.is_right())+total+%2B%3D+e.get_right()%3B%0A++++%7D%3B%0A++++add(e1)%3B+add(e2)%3B+add(e3)%3B%0A++++return+total%3B%0A%7D%0A%0Aint+main()+%7B%0A++++constexpr+double+result+%3D+sum_all()%3B%0A++++static_assert(result+%3D%3D+50.5)%3B%0A++++std::print(%22Either+result+%3D+%7B%7D%5Cn%22,+result)%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),k:50,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:executor,i:(argsPanelShown:'1',compilationPanelShown:'0',compiler:clang_trunk,compilerName:'',compilerOutShown:'0',execArgs:'',execStdin:'',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B26+-O2',source:1,stdinPanelShown:'1',tree:'1',wrap:'1'),l:'5',n:'0',o:'Executor+x86-64+clang+(trunk)+(C%2B%2B,+Editor+%231)',t:'0')),k:50,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "В каком контексте можно вызвать `std::is_within_lifetime`?",
+            "options": [
+              "В любом контексте: как в constexpr-функциях, так и в обычных рантайм-функциях",
+              "Только в constant-evaluated context (consteval-функции, static_assert, constexpr-вычисления)",
+              "Только в consteval-функциях — не в constexpr",
+              "Только внутри шаблонных функций при инстанциировании"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что вернёт `std::is_within_lifetime(&u.b)` после `union { int a; double b; } u; u.a = 42;`?",
+            "options": [
+              "true: указатель на член union всегда в пределах времени жизни, пока жив union",
+              "false: b — неактивный член, его время жизни не началось",
+              "Неопределённое значение: в constexpr контексте это UB",
+              "Ошибка компиляции при любом обращении к u.b"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Чем метод `consteval bool has_value() const { return std::is_within_lifetime(&value); }` отличается от `constexpr bool has_value() const { return engaged_; }` (где `engaged_` — ручной bool)?",
+            "options": [
+              "Ничем: оба подхода эквивалентны по возможностям",
+              "Первый не может вызываться в рантайм-контексте, но не требует хранить отдельный флаг и не может рассинхронизироваться с состоянием union",
+              "Первый медленнее: каждый вызов делает системный вызов для проверки памяти",
+              "Второй ill-formed: constexpr-функция не может возвращать bool"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Метод `has_value()`, использующий `std::is_within_lifetime`, автоматически становится...",
+            "options": [
+              "constexpr — может вызываться и в compile-time, и в рантайм",
+              "virtual — компилятор добавляет диспетчеризацию через vtable",
+              "consteval — может вызываться только в constant-evaluated context",
+              "inline — компилятор всегда встраивает его тело"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m3-l4",
+      "title": "constexpr-приведение из void* (P2963)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "В C++ давно можно выделять память в `constexpr`-контексте: начиная с C++20 допустимы транзиентные аллокации — `new`/`delete`, вызов `std::allocator`, `std::vector` и другие контейнеры в константных выражениях. Однако была одна неприятная щель: сырой указатель `void*`, возвращённый аллокатором, нельзя было привести обратно к типизированному указателю внутри константного выражения.\n\nПроблема коренилась в том, что `static_cast<T*>(void_ptr)` при вычислении в `constexpr`-контексте был запрещён, а `reinterpret_cast` запрещён в `constexpr` вообще — и без обходных путей. Реализаторы стандартной библиотеки вынуждены были прибегать к нестандартным расширениям (`__builtin_bit_cast`) или ухищрениям с union'ами, чтобы заставить `constexpr`-аллокаторы работать.\n\n**P2963** устраняет этот пробел: `static_cast<T*>` из `void*` теперь разрешён в константных выражениях — при условии, что указатель действительно ссылается на объект типа `T`. Это небольшое, но принципиальное «сантехническое» исправление, которое даёт стандартным аллокаторам и контейнерам полноценную `constexpr`-поддержку без хаков.",
+      "theory": "**Что изменил P2963.** До C++26 в правилах вычисления константных выражений был явный запрет на `static_cast` из `void*` к типизированному указателю. P2963 снимает этот запрет: `static_cast<T*>(p)`, где `p` имеет тип `void*` или `const void*`, теперь разрешён в `constexpr`-контексте, **если** объект, на который указывает `p`, действительно имеет тип `T` (или тип, совместимый по правилам «similar types»).\n\n**Базовый механизм.** Во время константного вычисления компилятор отслеживает происхождение каждого указателя. Когда `void*` приводится к `T*`, компилятор проверяет: «объект, на который указывает этот `void*`, действительно является `T`?» Если да — приведение законно. Если нет — это **ill-formed**: компилятор обязан выдать ошибку прямо при компиляции.\n\n```cpp\nconstexpr int cast_ok() {\n    int x = 42;\n    void* vp = static_cast<void*>(&x);  // int* -> void*: всегда OK\n    int* ip = static_cast<int*>(vp);    // void* -> int*: P2963, OK (vp указывает на int)\n    return *ip;\n}\nstatic_assert(cast_ok() == 42);  // компилируется\n```\n\n**Ill-formed при неверном типе.** Если `void*` указывает на `int`, а мы приводим к `double*`, компилятор немедленно отвергает код с диагностикой вида: _«cast from 'void*' is not allowed in a constant expression because pointed-to type 'int' is not similar to 'double'»_. Это принципиально лучше, чем рантайм-UB: ошибка выявляется на этапе компиляции.\n\n```cpp\nconstexpr int ill_formed() {\n    int x = 42;\n    void* vp = static_cast<void*>(&x);\n    double* dp = static_cast<double*>(vp); // ошибка компиляции: int ≠ double\n    return static_cast<int>(*dp);\n}\n```\n\n**Что осталось запрещено.** P2963 не меняет правила для `reinterpret_cast` — он по-прежнему полностью запрещён в `constexpr`-контексте. Аналогично запрещены C-стиль приведения, которые сводятся к `reinterpret_cast` (например `(double*)(void*)p` когда `p` указывает на `int`). Новое разрешение касается **только** `static_cast` из `void*`/`const void*`, и только при условии совпадения типа.\n\n**Связь с `constexpr`-аллокаторами.** Практическая цель P2963 — дать стандартной библиотеке возможность реализовать `constexpr std::allocator::allocate()` без нестандартных хаков. Внутри аллокатора память выделяется как «сырые байты», и после этого нужно привести `void*` к `T*` для конструирования объектов. До C++26 реализация использовала специфические для компилятора расширения; теперь это можно написать стандартными средствами. Для пользователя это прозрачно — но именно поэтому `std::vector`, `std::string` и другие контейнеры начинают по-настоящему работать в `constexpr` без нестандартных лазеек.\n\n**Сводная таблица разрешений.**\n\n| Операция | До C++26 | C++26 (P2963) |\n|---|---|---|\n| `static_cast<T*>(void_ptr)` в `constexpr` | Запрещено | Разрешено (если тип совпадает) |\n| `reinterpret_cast` в `constexpr` | Запрещено | Запрещено |\n| C-style cast → `reinterpret_cast` в `constexpr` | Запрещено | Запрещено |\n| `static_cast<T*>(void_ptr)` вне `constexpr` | Разрешено | Разрешено |\n\n**Чек-лист нюансов.**\n- _Проверка типа в constexpr строже, чем в рантайме_: в рантайме неверный `static_cast<double*>(int_void_ptr)` — UB (неопределённое поведение), в `constexpr`-контексте C++26 — **ill-formed** (ошибка компиляции). Константные выражения безопаснее.\n- _`const void*` тоже поддерживается_: `static_cast<const T*>(const_void_ptr)` аналогично разрешён, cv-квалификаторы учитываются по обычным правилам.\n- _Работает только при «транзиентных» аллокациях_: если `void*` получен из аллокации внутри константного выражения, приведение законно. Если `void*` пришёл «снаружи» (из аргумента шаблона, `consteval`-параметра и т.п.), правила те же — тип должен совпадать.\n- _Взаимодействие с `std::launder`_: `std::launder` в `constexpr` не требуется для этого случая — приведение `void*` само по себе даёт корректный указатель, если тип совпадает.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "Базовый: static_cast из void* в constexpr-функции",
+          "code": "#include <cassert>\n\nconstexpr int cast_roundtrip() {\n    int x = 42;\n    void* vp = static_cast<void*>(&x);   // int* -> void*: always allowed\n    int* ip = static_cast<int*>(vp);     // void* -> int*: P2963, allowed in constexpr\n    return *ip;\n}\n\n// Prove this is evaluated at compile time:\nstatic_assert(cast_roundtrip() == 42);\n\nconstexpr bool test_const_void_ptr() {\n    const int x = 99;\n    const void* cvp = static_cast<const void*>(&x);  // const int* -> const void*\n    const int* cip = static_cast<const int*>(cvp);   // const void* -> const int*: OK too\n    return *cip == 99;\n}\n\nstatic_assert(test_const_void_ptr());\n\nint main() {}\n",
+          "expectedOutput": "",
+          "explanation": "Обе `static_assert` проходят на этапе компиляции — `cast_roundtrip()` и `test_const_void_ptr()` полностью вычисляются как константные выражения. До C++26 строки с `static_cast<int*>(vp)` и `static_cast<const int*>(cvp)` вызвали бы ошибку компиляции прямо в этом же месте. P2963 делает оба приведения законными, поскольку `vp` действительно указывает на `int` (а `cvp` — на `const int`). Программа не выводит ничего в stdout: вся логика доказана статически."
+        },
+        {
+          "title": "Продвинутый: constexpr-аллокатор и обход через void*",
+          "code": "#include <print>\n#include <memory>\n\n// Simulates what constexpr std::allocator does internally:\n// allocate raw memory -> get void* -> cast to T* -> work with objects\nconstexpr int sum_via_alloc(int n) {\n    std::allocator<int> alloc;\n    int* p = alloc.allocate(n);  // internally: allocates as void*, casts to int*\n\n    for (int i = 0; i < n; ++i)\n        std::construct_at(p + i, i + 1);\n\n    int result = 0;\n    for (int i = 0; i < n; ++i)\n        result += p[i];\n\n    for (int i = 0; i < n; ++i)\n        std::destroy_at(p + i);\n    alloc.deallocate(p, n);\n    return result;\n}\n\nconstexpr int cast_roundtrip() {\n    int x = 100;\n    void* vp = static_cast<void*>(&x);\n    int* back = static_cast<int*>(vp);  // P2963: void* -> int* in constexpr\n    return *back;\n}\n\nstatic_assert(cast_roundtrip() == 100);\nstatic_assert(sum_via_alloc(5) == 15);\n\nint main() {\n    std::print(\"cast_roundtrip() = {}\\n\", cast_roundtrip());\n    std::print(\"sum_via_alloc(5) = {}\\n\", sum_via_alloc(5));\n}\n",
+          "expectedOutput": "cast_roundtrip() = 100\nsum_via_alloc(5) = 15",
+          "explanation": "Обе функции вычисляются дважды: как константное выражение (проверяется `static_assert` на этапе компиляции) и в рантайме (вывод через `std::print`). `sum_via_alloc` иллюстрирует реальный сценарий: `std::allocator<int>::allocate()` внутри себя работает с сырой памятью, и реализация стандартной библиотеки теперь может корректно приводить `void*` к `int*` внутри `constexpr` без компиляторных хаков. `static_assert(sum_via_alloc(5) == 15)` — доказательство, что вся цепочка (выделение, конструирование, суммирование, уничтожение, освобождение) работает на этапе компиляции."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m3-l4-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что P2963 добавляет в C++26?\n\n```cpp\nconstexpr int* get(void* p) {\n    return static_cast<int*>(p);\n}\n```\n\nЭтот код в C++23 был:\n- (A) допустим в `constexpr`-контексте\n- (B) запрещён в `constexpr`-контексте\n\nЧто верно?",
+          "options": [
+            "В C++23 это было допустимо в constexpr. P2963 ничего не изменил.",
+            "В C++23 это было запрещено в constexpr. P2963 разрешает static_cast из void* при условии, что тип объекта совпадает.",
+            "В C++23 это было запрещено. P2963 разрешает reinterpret_cast из void* в constexpr.",
+            "В C++23 это было допустимо, но P2963 запрещает это для безопасности."
+          ],
+          "answerIndex": 1,
+          "explanation": "До C++26 `static_cast<T*>` из `void*` в `constexpr`-контексте был явно запрещён правилами стандарта. P2963 снимает этот запрет: теперь такое приведение законно при условии, что объект, на который указывает `void*`, действительно имеет тип `T`. Важно: P2963 касается только `static_cast`, а не `reinterpret_cast` — последний по-прежнему запрещён в `constexpr`."
+        },
+        {
+          "id": "m3-l4-e2",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Рассмотрим следующий C++26-код:\n\n```cpp\nconstexpr int f() {\n    int x = 10;\n    void* vp = static_cast<void*>(&x);\n    double* dp = static_cast<double*>(vp);  // (A)\n    return 0;\n}\nstatic_assert(f() == 0);  // (B)\n```\n\nЧто произойдёт при компиляции?",
+          "options": [
+            "Компилируется успешно: P2963 разрешает любой static_cast из void* в constexpr.",
+            "Undefined behavior в рантайме, но компиляция проходит.",
+            "Ошибка компиляции на строке (A): тип объекта int не совместим с double*, что ill-formed в constexpr.",
+            "Ошибка только если static_assert (B) вычисляется на этапе компиляции, иначе UB."
+          ],
+          "answerIndex": 2,
+          "explanation": "P2963 разрешает `static_cast` из `void*` только если тип объекта совпадает с целевым типом. Здесь `vp` указывает на `int`, а целевой тип `double*` — несовместим. В `constexpr`-контексте это **ill-formed**: компилятор обязан выдать ошибку (например, GCC говорит «cast from 'void*' is not allowed in a constant expression because pointed-to type 'int' is not similar to 'double'»). В рантайме аналогичный код был бы UB, но в `constexpr` ошибка поймана на этапе компиляции — это важное преимущество константных вычислений."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что из перечисленного по-прежнему **запрещено** в `constexpr`-контексте даже после P2963?",
+            "options": [
+              "static_cast<int*>(void_ptr), где void_ptr указывает на int",
+              "static_cast<const int*>(const_void_ptr), где const_void_ptr указывает на const int",
+              "reinterpret_cast<int*>(void_ptr)",
+              "static_cast<void*>(int_ptr)"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему P2963 важен для `constexpr`-аллокаторов?",
+            "options": [
+              "Он позволяет вызывать malloc() в constexpr-контексте.",
+              "Аллокаторы внутри работают с сырой памятью через void*, и теперь можно корректно приводить её к типизированному указателю стандартными средствами.",
+              "Он отменяет требование явного вызова std::construct_at в constexpr.",
+              "Он позволяет использовать reinterpret_cast в constexpr для производительности."
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "В `constexpr`-контексте C++26 код `static_cast<double*>(void_ptr)`, где `void_ptr` указывает на `int`, является:",
+            "options": [
+              "Undefined behavior (UB), как и в рантайме.",
+              "Defined behavior: double* получает некий указатель, значение неопределено.",
+              "Ill-formed (ошибка компиляции): компилятор обязан отвергнуть такой код.",
+              "Allowed only if double has the same size as int on the target platform."
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m3-l5",
+      "title": "consteval: нестрогие аргументы (P2738)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "До C++26 у функций `consteval` было неочевидное ограничение: каждый аргумент вызова должен был быть *constant expression* — в том смысле, в котором это проверяет компилятор при разборе аргумента вне какого-либо контекста. На практике это означало: параметры самой `consteval`-функции нельзя передать в другую `consteval`-функцию, хотя логически они «известны на этапе компиляции» — ведь вся функция выполняется при компиляции.\n\nКак следствие, вложенные `consteval`-вызовы требовали обходных путей. Типичный — превращать аргументы в **non-type template parameters** (которые всегда constant expressions): `template<int N> consteval int foo() { ... }`. Но это меняет сигнатуру, делает функции менее удобными и лишает их обычного синтаксиса вызова.\n\n**P2738** решает проблему, уточнив правила: `consteval`-функцию можно вызывать с аргументами, которые сами не являются constant expressions в «классическом» смысле — при условии, что *вызов* происходит в **immediate context** (непосредственном контексте вычисления, то есть там, где требуется константное вычисление). Параметры `consteval`-функций теперь могут свободно передаваться в другие `consteval`-функции, что делает состав `consteval`-вызовов таким же естественным, как и любых других функций.",
+      "theory": "**Что такое immediate context.** `consteval`-функция обязана быть вызвана в *непосредственном контексте* (immediate function context). Это означает: либо её вызывают там, где требуется константное вычисление (`constexpr`-переменная, `static_assert`, template argument, `consteval`-функция), либо она запускается на этапе компиляции компилятором неявно (например, в немедленном вызове). Вне такого контекста вызов `consteval`-функции — **ill-formed**, и компилятор выдаёт ошибку.\n\n**Суть проблемы до P2738.** По правилам C++20/23 параметр функции никогда не считается constant expression — даже если он является параметром `consteval`-функции. Компилятор решает, является ли аргумент constant expression, *до* того, как начинает вычислять тело функции. В результате:\n\n```cpp\nconsteval int double_it(int x) { return x * 2; }\nconsteval int quadruple(int x) {\n    return double_it(x);  // до C++26: ошибка! x — не constant expression\n}\n```\n\nхотя с точки зрения семантики `quadruple` тоже `consteval` и `x` будет известен при компиляции, компилятор отказывал.\n\n**P2738: что изменилось.** C++26 уточнил правило: аргумент `consteval`-вызова не обязан быть constant expression сам по себе — достаточно, чтобы **весь вызов** происходил в immediate context. Параметры `consteval`-функции теперь рассматриваются как *потенциально constant expressions в рамках своей немедленной функции* и могут без ограничений передаваться в другие `consteval`-функции внутри её тела.\n\nПример из мотивации теперь работает:\n\n```cpp\nconsteval int double_it(int x) { return x * 2; }\nconsteval int quadruple(int x) {\n    return double_it(x);  // C++26: ОК, вызов в immediate context\n}\nconstexpr int r = quadruple(7);  // r == 28\n```\n\n**Вызов из не-immediate контекста по-прежнему ill-formed.** P2738 не ослабляет фундаментальное требование: `consteval`-функцию нельзя вызвать в рантайм-контексте. Если попытаться вызвать её с аргументом, значение которого известно только в рантайме — и сам вызов не находится в immediate context — это **ill-formed** (ошибка компиляции, а не undefined behavior). Это осознанная гарантия языка: `consteval` не может случайно «провалиться» в рантайм.\n\n```cpp\nconsteval int double_it(int x) { return x * 2; }\n\nvoid foo(int n) {\n    int r = double_it(n);  // ill-formed: вызов в обычной функции, n — рантайм\n}\n```\n\n**`consteval`-лямбды с `auto`-параметрами.** P2738 также упрощает работу с `consteval`-лямбдами, параметры которых принимают тип через `auto`. Такая лямбда может принимать аргумент, который сам не является constant expression в «классическом» смысле, при условии, что *вызов* лямбды происходит в immediate context:\n\n```cpp\nconsteval auto square = [](auto x) { return x * x; };\nconstexpr int s = square(9);  // ОК: вызов в immediate context\n```\n\n**Старая альтернатива: non-type template parameters.** До P2738 разработчики передавали значения через NTTP:\n\n```cpp\ntemplate <int N>\nconsteval int double_it() { return N * 2; }\ntemplate <int N>\nconsteval int quadruple() { return double_it<N>(); }  // NTTP всегда constant expression\n```\n\nЭто работало, но требовало уродливого синтаксиса вызова (`quadruple<7>()` вместо `quadruple(7)`) и делало функции нешаблонными версиями невозможными. P2738 устраняет необходимость в этом обходе.\n\n**Взаимодействие с `if consteval` (P1938, C++23).** `if consteval` позволяет проверить, находится ли текущий код в immediate context:\n\n```cpp\nconstexpr int maybe_compile(int x) {\n    if consteval {\n        return x * 2;  // compile-time путь\n    } else {\n        return x + 1;  // runtime путь\n    }\n}\n```\n\nС P2738 сочетание `if consteval` и вложенных `consteval`-вызовов становится более естественным: в ветке `if consteval` можно свободно вызывать `consteval`-функции с локальными переменными, передавать параметры дальше — ограничение на «constant expression аргументы» снято именно для тех ситуаций, когда вызов заведомо находится в immediate context.\n\n**Чек-лист нюансов.**\n- *Ill-formed vs UB*: вызов `consteval` вне immediate context — это **ошибка компиляции**, а не runtime-проблема. `consteval` принципиально не может «незаметно» упасть в рантайм.\n- *NTTP по-прежнему valid*: P2738 не запрещает старый подход через template parameters — он просто делает его необязательным для большинства сценариев.\n- *Параметры `consteval` — не «обычные» constant expressions*: в C++26 их можно передавать только внутри другой `consteval`-функции (или аналогичного immediate context). За пределами `consteval`-тела они по-прежнему не являются constant expressions.\n- *`constexpr` не затронуто*: правило относится только к `consteval`. Параметры `constexpr`-функций по-прежнему не являются constant expressions, и передать их в `consteval` нельзя — кроме как через `if consteval`-ветку.\n- *Диагностика*: компиляторы корректно сообщают об ошибке, если `consteval` вызван вне immediate context, — диагностическое сообщение содержит что-то вроде «call to consteval function is not a constant expression».",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "examples": [
+        {
+          "title": "Вложенные consteval-вызовы (суть P2738)",
+          "code": "#include <print>\n\nconsteval int double_it(int x) { return x * 2; }\n\n// Pre-C++26: ill-formed — x is not a constant expression\n// C++26 (P2738): OK — double_it(x) is called in an immediate context\nconsteval int quadruple(int x) { return double_it(x); }\n\nint main() {\n    constexpr int r = quadruple(7);\n    std::print(\"{}\\n\", r);\n}",
+          "expectedOutput": "14",
+          "explanation": "`quadruple(7)` — это немедленный вызов в `constexpr`-контексте, поэтому `x = 7` известно при компиляции. Тело `quadruple` вызывает `double_it(x)`: хотя `x` — параметр функции, а не «самостоятельный» constant expression, P2738 разрешает это, потому что **весь вызов `double_it`** происходит внутри другой `consteval`-функции (immediate context). Результат: `7 * 2 * 2 = 28`... нет, `quadruple` вызывает `double_it` один раз: `double_it(7) = 14`. Всё вычисляется при компиляции."
+        },
+        {
+          "title": "consteval-лямбда внутри consteval-функции",
+          "code": "#include <print>\n\nconsteval auto make_greeting(std::string_view name) {\n    auto length_of = [](std::string_view n) consteval {\n        return n.size();\n    };\n    // P2738: forwarding a consteval-function parameter to a consteval lambda\n    return length_of(name);\n}\n\nint main() {\n    constexpr std::size_t len = make_greeting(\"hello\");\n    std::print(\"{}\\n\", len);\n}",
+          "expectedOutput": "5",
+          "explanation": "`make_greeting` — `consteval`, поэтому `name` является параметром в immediate context. Внутри тела функции определяется `consteval`-лямбда `length_of` и вызывается с аргументом `name`. До P2738 это было ill-formed: `name` — не constant expression. После P2738 — корректно: вызов `length_of(name)` находится внутри `consteval`-тела, то есть в immediate context. Возвращает `5` — длину строки `\"hello\"`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m3-l5-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nconsteval int add(int a, int b) { return a + b; }\n\nconsteval int compute(int x) {\n    return add(x, 10);  // P2738: x is a consteval parameter forwarded to another consteval\n}\n\nint main() {\n    constexpr int r = compute(5);\n    std::print(\"{}\\n\", r);\n}",
+          "answer": "15",
+          "explanation": "`compute(5)` вычисляется при компиляции: `x = 5`, затем `add(5, 10) = 15`. P2738 делает вызов `add(x, 10)` легальным: хотя `x` — параметр функции (а не «самостоятельный» constant expression), он передаётся в `add` внутри `consteval`-тела, то есть в immediate context. До C++26 эта программа не компилировалась бы."
+        },
+        {
+          "id": "m3-l5-e2",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Рассмотрим код:\n\n```cpp\nconsteval int double_it(int x) { return x * 2; }\n\nvoid runtime_func(int n) {\n    int r = double_it(n);  // (A)\n}\n\nconsteval int compile_func(int x) {\n    return double_it(x);   // (B)\n}\n```\n\nКакое из утверждений верно?",
+          "options": [
+            "Оба вызова (A) и (B) корректны в C++26: P2738 снял все ограничения на аргументы consteval",
+            "Вызов (A) — ill-formed (ошибка компиляции), вызов (B) — корректен в C++26 благодаря P2738",
+            "Вызов (A) — undefined behavior, вызов (B) — ill-formed",
+            "Оба вызова (A) и (B) — ill-formed в любой версии C++"
+          ],
+          "answerIndex": 1,
+          "explanation": "P2738 ослабляет правило только для вызовов в **immediate context**. Вызов (B): `double_it(x)` внутри `consteval`-тела — это immediate context, поэтому параметр `x` может быть передан в другую `consteval`-функцию. Корректно. Вызов (A): `double_it(n)` внутри обычной функции — не immediate context, `n` — рантайм-значение. Это **ill-formed** (ошибка компиляции). P2738 не снимает фундаментальное требование: `consteval` не может быть вызвана в рантайм-контексте."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что нового вводит P2738 (C++26) относительно аргументов `consteval`-функций?",
+            "options": [
+              "`consteval`-функции теперь можно вызывать с рантайм-аргументами — они автоматически вычислятся при компиляции",
+              "Параметры `consteval`-функции можно передавать в другие `consteval`-функции внутри её тела, даже если параметр сам по себе не является constant expression",
+              "`consteval`-функции теперь могут принимать параметры типа `auto`, которые выводятся как шаблонные",
+              "P2738 отменяет требование immediate context — `consteval` можно вызывать где угодно"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Каково поведение при вызове `consteval`-функции с рантайм-аргументом в обычной (не-`consteval`) функции в C++26?",
+            "options": [
+              "Undefined behavior: программа компилируется, но поведение не определено",
+              "Erroneous behavior: вызов работает, но помечен как ошибочный",
+              "Ill-formed: ошибка компиляции",
+              "Корректно, если функция помечена `inline`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой обходной путь использовался до P2738 для передачи значений во вложенные `consteval`-функции?",
+            "options": [
+              "Передача через глобальные `constexpr`-переменные",
+              "Использование `if consteval` для каждого вложенного вызова",
+              "Non-type template parameters (NTTP): `template<int N> consteval int foo()`",
+              "Обёртка в `std::integral_constant<int, N>`"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
     }
   ]
 }

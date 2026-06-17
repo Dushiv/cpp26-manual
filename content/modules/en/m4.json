@@ -4,5 +4,11 @@
   "title": "Contracts",
   "significance": "flagship",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    {
+      "id": "m4-l1",
+      "title": "Contract syntax: pre/post/contract_assert",
+      "stub": true
+    }
+  ]
 }
