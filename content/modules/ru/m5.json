@@ -4,5 +4,11 @@
   "title": "Static Reflection",
   "significance": "флагман №1",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    {
+      "id": "m5-l1",
+      "title": "Оператор рефлексии ^ и std::meta::info",
+      "stub": true
+    }
+  ]
 }

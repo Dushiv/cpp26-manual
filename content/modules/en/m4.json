@@ -2,13 +2,801 @@
   "id": "m4",
   "moduleNumber": 4,
   "title": "Contracts",
-  "significance": "flagship",
+  "significance": "флагман",
   "prerequisites": [],
   "lessons": [
     {
       "id": "m4-l1",
-      "title": "Contract syntax: pre/post/contract_assert",
-      "stub": true
+      "title": "Contract syntax: pre, post, contract_assert (P2900)",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before C++26, the only way to express a function's expectations about its arguments was manual checks: `if (!cond) throw ...` or the `assert()` macro. Both approaches have problems: `assert()` compiles differently depending on `NDEBUG`, gets disabled in release builds precisely when bugs are most dangerous, and has no connection to the function's signature. Manual `if`-checks mix defensive code with business logic and provide no unified error-handling semantics.\n\nP2900 introduces **contracts** — three language constructs that express a function's semantics directly in its declaration:\n\n- `pre(condition)` — *precondition*: what must be true before the call.\n- `post(name: condition)` — *postcondition*: what the function guarantees upon return; `name` binds to the return value.\n- `contract_assert(condition)` — *assertion* inside the function body: an invariant at an arbitrary point.\n\nContracts are not just a wrapper around `assert()`. They are part of the language, visible in the declaration, can be checked or ignored depending on the *evaluation semantics* (m4-l2), and a violation invokes a unified handler (m4-l3). This lesson covers the syntax and key rules; behavior on violation is covered in subsequent lessons.",
+      "theory": "## Placement syntax\n\nPreconditions (`pre`) and postconditions (`post`) are placed **after the parameter list and qualifiers, but before the function body**. The order is: parameters → `const`/`noexcept`/trailing return type → contracts → body.\n\n```cpp\nint divide(int a, int b)\n    pre(b != 0)\n{ return a / b; }\n```\n\nMultiple `pre` and `post` can be stacked — they are checked in the order they are written:\n\n```cpp\nint clamp(const int value, const int lo, const int hi)\n    pre(lo <= hi)\n    pre(value != INT_MIN)   // additional constraint\n    post(r: r >= lo)\n    post(r: r <= hi)\n{ ... }\n```\n\n## Precondition `pre`\n\n`pre(condition)` is a Boolean expression that must be true when the function is called. The expression may reference parameters and any names accessible at that point. A precondition violation means the calling code is at fault.\n\n```cpp\nint safe_at(const std::vector<int>& v, std::size_t idx)\n    pre(idx < v.size())\n{ return v[idx]; }\n```\n\n## Postcondition `post`\n\n`post(result_name: condition)` is an expression that must be true when the function returns. The identifier `result_name` binds to the return value and is only accessible inside the condition.\n\n```cpp\nint abs_val(const int x)\n    post(r: r >= 0)\n{ return x < 0 ? -x : x; }\n```\n\n**The `const` rule for parameters in `post`.** Parameters passed by value (not by reference) may be moved or modified before the postcondition is checked. Therefore the standard requires: if a by-value parameter is used in a `post` condition, it must be declared `const`. Violation is **ill-formed** — a compilation error:\n\n```cpp\n// ERROR: x is not const but is used in post\nint bad(int x)\n    post(r: r > x)   // ill-formed: x must be const\n{ return x + 1; }\n\n// CORRECT:\nint good(const int x)\n    post(r: r > x)   // OK\n{ return x + 1; }\n```\n\n## Assertion `contract_assert`\n\n`contract_assert(condition)` is a statement inside the function body; analogous to `assert()`, but integrated into the contracts mechanism. A violation invokes the same handler as a `pre`/`post` violation.\n\n```cpp\nvoid process(const char* src, char* dst, int cap)\n    pre(src != nullptr)\n    pre(dst != nullptr)\n    pre(cap > 0)\n{\n    int len = std::strlen(src);\n    contract_assert(len < cap);  // invariant mid-body\n    std::memcpy(dst, src, len + 1);\n}\n```\n\n**Difference from `assert()` and `static_assert`.**\n\n| | `assert()` | `contract_assert` | `static_assert` |\n|---|---|---|---|\n| Location | function body | function body | compile-time |\n| In release | disabled (`NDEBUG`) | depends on semantics (m4-l2) | N/A |\n| Violation handler | `abort()` | violation handler (configurable) | compile error |\n| Expression | runtime | runtime | compile-time constant |\n| Language feature | no (macro) | yes | yes |\n\n## Declaration and definition consistency\n\nIf a function is declared in a header and defined in a `.cpp` file, the contracts must be **identical** in both places. Having contracts on the declaration but none on the definition — or vice versa — is **ill-formed**. The safest approach is to specify contracts in the declaration and repeat them in the definition.\n\n## Interaction with `noexcept`\n\n`noexcept` comes before contracts:\n\n```cpp\nvoid f(int x)\n    noexcept\n    pre(x > 0)\n{ ... }\n```\n\nWhat happens when a contract violation occurs inside a `noexcept` function is covered in m4-l3.\n\n## Contracts in templates\n\nContracts work fully in template functions and may reference template parameters:\n\n```cpp\ntemplate<typename T>\nT safe_at(const std::vector<T>& v, const std::size_t idx)\n    pre(idx < v.size())\n{ return v[idx]; }\n```\n\n## What contracts do NOT do (in this lesson)\n\n- They do not specify what happens on violation — that is covered in m4-l2 (semantics) and m4-l3 (violation handler).\n- They do not fully replace documentation, but serve as a machine-checkable part of it.\n- Conditions in `pre`/`post` should be **pure** (no side effects) — details in m4-l5.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "Basic: precondition pre()",
+          "code": "#include <print>\n\nint divide(int a, int b)\n    pre(b != 0)\n{ return a / b; }\n\nint main() {\n    std::print(\"divide(10, 2) = {}\\n\", divide(10, 2));\n    std::print(\"divide(9, 3)  = {}\\n\", divide(9, 3));\n    std::print(\"divide(-8, 4) = {}\\n\", divide(-8, 4));\n}",
+          "expectedOutput": "divide(10, 2) = 5\ndivide(9, 3)  = 3\ndivide(-8, 4) = -2",
+          "explanation": "`pre(b != 0)` is placed between the parameter list and the function body. As long as the condition holds (non-zero divisor), the function runs normally — contracts are invisible on the happy path. Violating the precondition (`divide(10, 0)`) would invoke the contract violation handler — a topic covered in m4-l2."
+        },
+        {
+          "title": "Postcondition post() and the const-parameter rule",
+          "code": "#include <print>\n\n// Parameter x must be const to use it in post()\nint abs_val(const int x)\n    post(r: r >= 0)\n{ return x < 0 ? -x : x; }\n\n// The result name in post() is arbitrary\ndouble ratio(const int numerator, const int denominator)\n    pre(denominator != 0)\n    post(result: result > -1000.0 && result < 1000.0)\n{ return static_cast<double>(numerator) / denominator; }\n\nint main() {\n    std::print(\"abs_val(-5) = {}\\n\", abs_val(-5));\n    std::print(\"abs_val(7)  = {}\\n\", abs_val(7));\n    std::print(\"abs_val(0)  = {}\\n\", abs_val(0));\n    std::print(\"ratio(3, 4) = {}\\n\", ratio(3, 4));\n}",
+          "expectedOutput": "abs_val(-5) = 5\nabs_val(7)  = 7\nabs_val(0)  = 0\nratio(3, 4) = 0.75",
+          "explanation": "`post(r: r >= 0)` binds the name `r` to the return value and checks the condition after `return`. Key rule: parameter `x` is declared `const` — this is required whenever a by-value parameter is used in `post()`. Without `const` it is a compilation error. The result name (`r` or `result`) is chosen freely."
+        },
+        {
+          "title": "Stacked pre/post and contract_assert inside the body",
+          "code": "#include <print>\n#include <cstring>\n\nvoid safe_copy(char* dst, const char* src, const int capacity)\n    pre(dst != nullptr)\n    pre(src != nullptr)\n    pre(capacity > 0)\n{\n    const int src_len = static_cast<int>(std::strlen(src));\n    contract_assert(src_len < capacity);  // invariant inside the body\n    std::memcpy(dst, src, src_len + 1);\n}\n\nint clamp(const int value, const int lo, const int hi)\n    pre(lo <= hi)\n    post(r: r >= lo)\n    post(r: r <= hi)\n{\n    if (value < lo) return lo;\n    if (value > hi) return hi;\n    return value;\n}\n\nint main() {\n    char buf[64];\n    safe_copy(buf, \"hello, world\", 64);\n    std::print(\"copied: {}\\n\", buf);\n\n    std::print(\"clamp(15, 0, 10)  = {}\\n\", clamp(15, 0, 10));\n    std::print(\"clamp(-5, 0, 10)  = {}\\n\", clamp(-5, 0, 10));\n    std::print(\"clamp(7,  0, 10)  = {}\\n\", clamp(7, 0, 10));\n}",
+          "expectedOutput": "copied: hello, world\nclamp(15, 0, 10)  = 10\nclamp(-5, 0, 10)  = 0\nclamp(7,  0, 10)  = 7",
+          "explanation": "`safe_copy` stacks three `pre` — all are checked upon the call in the order they are written. `contract_assert` is a statement inside the body, checking an invariant mid-execution. `clamp` demonstrates stacking `pre` with two `post` — postconditions are checked at every `return`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nint add(const int a, const int b)\n    pre(a >= 0)\n    pre(b >= 0)\n    post(r: r >= a)\n{ return a + b; }\n\nint main() {\n    std::print(\"{}\\n\", add(3, 4));\n    std::print(\"{}\\n\", add(0, 10));\n}",
+          "answer": "7\n10",
+          "explanation": "Both calls pass non-negative arguments — preconditions `pre(a >= 0)` and `pre(b >= 0)` are satisfied. The return values (7 and 10) satisfy the postcondition `r >= a`. Contracts are invisible on the happy path: the function simply adds the numbers."
+        },
+        {
+          "id": "m4-l1-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <print>\n\nint next_positive(int x)\n    pre(x >= 0)\n    post(r: r > x)\n{ return x + 1; }\n\nint main() {\n    std::print(\"{}\\n\", next_positive(5));\n}",
+          "answerLine": 3,
+          "explanation": "Line 3: parameter `x` is declared without `const`, but is used in the postcondition `post(r: r > x)`. C++26 requires that any by-value parameter referenced in `post()` must be `const` — otherwise it is ill-formed. GCC reports: `a value parameter used in a postcondition must be const`. Fix: `int next_positive(const int x)`."
+        },
+        {
+          "id": "m4-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Where in a function declaration may `pre()` and `post()` appear?\n\n```cpp\nint f(int x) pre(x > 0) { return x; }   // A: after parameters, before body\nint f pre(x > 0) (int x) { return x; }  // B: before the parameter list\nint pre(x > 0) f(int x) { return x; }  // C: before the return type\nint f(int x) { pre(x > 0); return x; } // D: as the first statement in the body\n```",
+          "options": [
+            "A — after the parameter list, before the opening brace of the body",
+            "B — before the parameter list (after the function name)",
+            "C — before the return type",
+            "D — as the first statement in the body (like contract_assert)"
+          ],
+          "answerIndex": 0,
+          "explanation": "`pre`/`post` are part of the function *declarator* and must appear **after the parameter list and qualifiers (const, noexcept), but before the body**. Options B and C are syntactically invalid. Option D is where `contract_assert` belongs — it is a body statement, not part of the declaration."
+        },
+        {
+          "id": "m4-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "How does `contract_assert(cond)` differ from the `assert(cond)` macro from `<cassert>`?",
+          "options": [
+            "`contract_assert` is disabled in NDEBUG builds, just like `assert()`",
+            "`contract_assert` is a language feature; its behavior is governed by the contract evaluation semantics and invokes a configurable violation handler; `assert()` is a macro that calls `abort()` and is completely removed via NDEBUG",
+            "They do the same thing — `contract_assert` is just new syntax for `assert()`",
+            "`contract_assert` is checked at compile time; `assert()` is runtime-only"
+          ],
+          "answerIndex": 1,
+          "explanation": "`assert()` is a preprocessor macro: when `#define NDEBUG` is active it vanishes entirely; on violation it calls `abort()`. `contract_assert` is a language construct: its behavior on violation depends on the *evaluation semantics* (ignore/observe/enforce — m4-l2), and the violation handler is configurable by the programmer (m4-l3). `contract_assert` cannot be accidentally silenced by a single compiler flag without explicitly choosing a semantics."
+        }
+      ],
+      "challenge": {
+        "prompt": "Implement `binary_search_idx`, which searches for `target` in a sorted vector `v` and returns its index (or -1 if not found). Annotate the function with full contracts:\n\n- `pre`: the vector is non-empty\n- `post`: the return value is either -1 or a valid index; if not -1, then `v[r] == target`\n- `contract_assert` inside the loop: `mid` stays within valid bounds\n\nTest on the vector `{1, 3, 5, 7, 9, 11, 13}` with queries 7, 1, 13, 6.",
+        "referenceSolution": "#include <print>\n#include <vector>\n\nint binary_search_idx(const std::vector<int>& v, const int target)\n    pre(!v.empty())\n    post(r: r == -1 || (r >= 0 && r < static_cast<int>(v.size())))\n    post(r: r == -1 || v[r] == target)\n{\n    int lo = 0;\n    int hi = static_cast<int>(v.size()) - 1;\n    while (lo <= hi) {\n        const int mid = lo + (hi - lo) / 2;\n        contract_assert(mid >= 0 && mid < static_cast<int>(v.size()));\n        if (v[mid] == target) return mid;\n        if (v[mid] < target)  lo = mid + 1;\n        else                  hi = mid - 1;\n    }\n    return -1;\n}\n\nint main() {\n    const std::vector<int> v{1, 3, 5, 7, 9, 11, 13};\n    std::print(\"search 7:  index {}\\n\", binary_search_idx(v, 7));\n    std::print(\"search 1:  index {}\\n\", binary_search_idx(v, 1));\n    std::print(\"search 13: index {}\\n\", binary_search_idx(v, 13));\n    std::print(\"search 6:  index {}\\n\", binary_search_idx(v, 6));\n}",
+        "expectedOutput": "search 7:  index 3\nsearch 1:  index 0\nsearch 13: index 6\nsearch 6:  index -1",
+        "godboltUrl": "https://godbolt.org/#z:OYLghAFBqd5TKALEBjA9gEwKYFFMCWALugE4A0BIEAZgQDbYB2AhgLbYgDkAjF%2BTXRMiAZVQtGIHgBYBQogFUAztgAKAD24AGfgCsp5eiyahUAV0wtyKACZIAzJYBGmAN5dSAWgBcpPQKoAB6YEK7YAA5gXgDkAMJMAFSuIEzu%2BJiokMluXh5ePPxCIuJSsvLKarb2jiU6egaGkS3xicmpAKIAFABKkQBKkQCUkQBUkQCUkQBUkQDUkQCMkQBkkQCUkQCUkQCUkQD0kQBkAHT%2BAGA"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Where in a function declaration are `pre()` and `post()` placed?",
+            "options": [
+              "Before the parameter list, immediately after the function name",
+              "After the parameter list and qualifiers, before the function body",
+              "As the first statements inside the function body",
+              "In a separate `[[contracts]]` block before the declaration"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "A function is declared as:\n```cpp\nint f(int x)\n    post(r: r > x)\n{ return x + 1; }\n```\nWhat is wrong with this code?",
+            "options": [
+              "`x` cannot be used in a postcondition — only constants are allowed",
+              "Parameter `x` is passed by value without `const`, but is used in `post()` — this is ill-formed",
+              "The result name `r` is reserved — you must use `result`",
+              "The code is correct in C++26"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How does `contract_assert(cond)` differ from `assert(cond)` when built with `-DNDEBUG`?",
+            "options": [
+              "Both are disabled with `-DNDEBUG`",
+              "`contract_assert` disappears entirely; `assert()` remains",
+              "`assert()` disappears entirely with `NDEBUG`; `contract_assert` behavior is determined by the contract evaluation semantics, not by the `NDEBUG` flag",
+              "Both are always active regardless of `NDEBUG`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Can multiple `pre` and `post` be stacked on a single function?",
+            "options": [
+              "No, only one `pre` and one `post` are allowed",
+              "Yes, any number; they are checked in the order written",
+              "Yes, but only one `pre` — multiple `post` are allowed",
+              "Yes, but only in template functions"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m4-l2",
+      "title": "Evaluation semantics: ignore, observe, enforce, quick_enforce (P2900)",
+      "prerequisites": [
+        "m4-l1"
+      ],
+      "background": null,
+      "motivation": "In C++23 and earlier, the only \"contract-like\" tool available was the `assert()` macro. It worked in exactly two modes: full checking (`NDEBUG` not defined) or complete silence (`NDEBUG` defined). No middle ground: you couldn't \"log violations without stopping the program\" or \"check contracts cheaply while trusting they hold\".\n\nC++26 (P2900) introduces four **evaluation semantics** — formal rules defining exactly what happens when a contract is encountered in code:\n\n- `ignore` — predicate is not evaluated at all. Zero overhead. For production builds.\n- `observe` — predicate is evaluated; if false, the violation handler is called and **execution continues**. For monitoring and telemetry.\n- `enforce` — predicate is evaluated; if false, the handler is called and **must terminate** the program. If it returns — the runtime calls `std::terminate()`. Assert-like semantics.\n- `quick_enforce` — like `enforce`, but the compiler may use a cheaper implementation of the check (e.g., skip the handler call). For hot paths.\n\nThe key difference from `assert()`: **the semantic is set via a compiler flag for the entire build**, not per-contract in source. This allows smoothly adjusting the \"check cost vs. guarantee coverage\" balance through build configuration.",
+      "theory": "## The four contract evaluation semantics\n\n### `ignore`\n\nThe predicate **is not evaluated**. No checking instructions are emitted — zero overhead. This is the mode for production builds where performance is critical and contracts are assumed to hold.\n\n**Important consequence:** if the predicate contains calls with side effects, those effects do not occur under `ignore`. This is precisely why contract predicates must be **pure functions** — observing state only, not changing it. Code that behaves differently under `ignore` vs. `enforce` violates this rule and is a source of hard-to-track bugs.\n\n### `observe`\n\nThe predicate **is evaluated**. If false, the violation handler (`handle_contract_violation`) is called, after which **execution continues**. This is the monitoring mode: \"notice violations, but don't stop the program\".\n\nCritical constraint: under `observe`, the violation handler **must return normally** (no throwing exceptions, no calling `std::abort`/`std::terminate`). If the handler terminates the program under `observe` — that is **undefined behavior**. A handler written for `observe` must only log/collect metrics and return.\n\n### `enforce`\n\nThe predicate **is evaluated**. If false, the handler is called and **must terminate the program** (via `std::abort()`, `std::terminate()`, `std::exit()`, or by throwing an exception caught by a wrapper). If the handler returns normally — the runtime **automatically calls `std::terminate()`**. This is the analog of `assert()` with a full-featured handler.\n\nGCC with `-fcontracts` uses `enforce` semantics by default.\n\n### `quick_enforce`\n\nLike `enforce`, but the compiler gets **additional license to optimize** the implementation of the check. Specifically, it may:\n- not call the violation handler (and use `trap` directly)\n- drop parts of the check that can be inferred from other guarantees\n- use `__builtin_unreachable()` as an optimizer hint\n\nSemantics: if a contract is violated, the program terminates. But the **details** of that termination (whether the handler is called, what data is passed) are not guaranteed. Used for hot paths where the cost of full checking is unacceptable.\n\n## How semantics are selected\n\nIn C++26, semantics are **set by the compiler**, not in source code. The standard intentionally leaves the mechanism implementation-defined. For GCC:\n\n- `-fcontracts` — enables contracts (default semantic: `enforce`)\n- `-fcontract-evaluation-semantic=observe` — switch to `observe`\n- `-fcontract-evaluation-semantic=ignore` — switch to `ignore`\n- `-fcontract-evaluation-semantic=quick_enforce` — switch to `quick_enforce`\n\nAll four semantics apply **globally** to a translation unit — you cannot set different semantics for different contracts in one file. Typical project configuration:\n\n| Build type | Semantic |\n|---|---|\n| Development / debug | `enforce` |\n| Staging / monitoring | `observe` |\n| Production | `ignore` or `quick_enforce` |\n\n## The violation handler `handle_contract_violation`\n\nA user-defined violation handler is a function with the signature:\n\n```cpp\nvoid handle_contract_violation(const std::contracts::contract_violation& v) noexcept;\n```\n\nThe `std::contracts::contract_violation` object provides:\n- `v.comment()` — the predicate text as written in source (`const char*`)\n- `v.location()` — `std::source_location`: file, line number, function\n- `v.semantic()` — the active evaluation semantic (`std::contracts::evaluation_semantic`)\n\nIf no user handler is defined, the built-in default is used: it prints violation information to stderr and calls `std::terminate()`.\n\n## Interaction with side effects in predicates\n\nBecause the semantic is set globally, code whose behavior depends on whether the predicate is evaluated will behave **differently in different builds**. This is the classic \"works in debug, broken in release\" bug — now formalized. The solution: predicates must be **observational-pure** — reading state, not mutating it.\n\n## Interaction with noexcept and exceptions\n\nThe violation handler is called even inside `noexcept` functions — as long as the semantic is not `ignore`. If the handler throws an exception in a `noexcept` context, `std::terminate()` is called. Detailed interaction with `noexcept` is covered in the next lesson (m4-l3).\n\n## The old alternative: `assert()`\n\nBefore C++26:\n\n```cpp\n#include <cassert>\nassert(b != 0);  // either checks (NDEBUG not defined) or silent (NDEBUG defined)\n```\n\nLimitations of `assert()` compared to C++26 contracts:\n- Only two modes: on/off — no `observe`, no `quick_enforce`\n- No structured violation object — only a string via `stderr`\n- No distinction between `pre`/`post`/`contract_assert` — all \"asserts\"\n- No postconditions\n- No standard handler for customizing behavior without replacing the entire mechanism\n\nContracts in C++26 don't fully replace `assert()`: for internal checks inside a function that don't need contract semantics, `assert()` is still appropriate. The distinction: contracts are an **interface specification**, `assert()` is an **internal implementation invariant**.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "enforce semantics (default): contracts satisfied — normal execution",
+          "code": "#include <print>\n\n// pre: divisor is non-zero\nint divide(int a, const int b)\n    pre(b != 0)\n{\n    return a / b;\n}\n\n// pre: valid range; post: result clamped to [lo, hi]\nint clamp_value(const int value, const int lo, const int hi)\n    pre(lo <= hi)\n    post(result: result >= lo && result <= hi)\n{\n    if (value < lo) return lo;\n    if (value > hi) return hi;\n    return value;\n}\n\nint main() {\n    std::print(\"divide(10, 2) = {}\\n\", divide(10, 2));\n    std::print(\"clamp(3, 1, 5) = {}\\n\", clamp_value(3, 1, 5));\n    std::print(\"clamp(7, 1, 5) = {}\\n\", clamp_value(7, 1, 5));\n    std::print(\"clamp(-2, 1, 5) = {}\\n\", clamp_value(-2, 1, 5));\n}",
+          "expectedOutput": "divide(10, 2) = 5\nclamp(3, 1, 5) = 3\nclamp(7, 1, 5) = 5\nclamp(-2, 1, 5) = 1",
+          "explanation": "Compiled with `-fcontracts` (default `enforce` semantic). All predicates are evaluated on every call. All preconditions and postconditions hold — no violations, program runs normally. The postcondition `result >= lo && result <= hi` in `clamp_value` is also evaluated after the return value is produced and verifies the implementation's correctness. Note: parameters `lo` and `hi` in the postcondition are marked `const` — this is a GCC requirement: by-value parameters used in `post` must be `const` to avoid undefined behavior if they were modified inside the function."
+        },
+        {
+          "title": "Side effects in predicates: why predicates must be pure",
+          "code": "#include <print>\n\n// DEMONSTRATION: predicate with a side effect\n// Under 'enforce': predicate is evaluated → counter grows\n// Under 'ignore':  predicate not evaluated → counter unchanged\nint eval_count = 0;\n\nbool is_positive(int x) {\n    ++eval_count;   // side effect inside predicate!\n    return x > 0;\n}\n\nint double_if_valid(int x)\n    pre(is_positive(x))\n{\n    return x * 2;\n}\n\nint main() {\n    std::print(\"eval_count before: {}\\n\", eval_count);\n    int a = double_if_valid(5);\n    int b = double_if_valid(3);\n    // Under enforce: predicate evaluated twice → eval_count = 2\n    // Under ignore:  predicate not evaluated → eval_count = 0\n    std::print(\"double_if_valid(5) = {}\\n\", a);\n    std::print(\"double_if_valid(3) = {}\\n\", b);\n    std::print(\"eval_count after (enforce): {}\\n\", eval_count);\n}",
+          "expectedOutput": "eval_count before: 0\ndouble_if_valid(5) = 10\ndouble_if_valid(3) = 6\neval_count after (enforce): 2",
+          "explanation": "Under `enforce`, the predicate `is_positive(x)` is evaluated on every call to `double_if_valid` → `eval_count` increments twice. If the same binary were compiled with `-fcontract-evaluation-semantic=ignore`, the predicate would never execute → `eval_count` would remain zero. Program behavior differs depending on the build semantic — this is exactly what to avoid. **Rule:** contract predicates must be observational-pure: only read state, never mutate it. Move any side-effecting code out of predicates and into the function body."
+        },
+        {
+          "title": "observe semantics: handler returns normally, execution continues",
+          "code": "#include <print>\n#include <contracts>\n\n// Under observe: the handler MUST return normally.\n// Execution continues after calling a function with a violated contract.\n// Under enforce: if the handler returns — the runtime calls std::terminate().\nvoid handle_contract_violation(const std::contracts::contract_violation& v) noexcept {\n    std::print(\"[OBSERVE] violated: \\\"{}\\\"\\n\", v.comment());\n    // return normally — observe requires this\n}\n\nint square_nonneg(const int x)\n    pre(x >= 0)\n{\n    return x * x;\n}\n\nint main() {\n    std::print(\"square_nonneg(4)  = {}\\n\", square_nonneg(4));   // precondition holds\n    std::print(\"square_nonneg(-3) = {}\\n\", square_nonneg(-3));  // violated, continues\n    std::print(\"program still running\\n\");\n}",
+          "expectedOutput": "square_nonneg(4)  = 16\n[OBSERVE] violated: \"x >= 0\"\nsquare_nonneg(-3) = 9\nprogram still running",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe`. The predicate `x >= 0` is evaluated; when `square_nonneg(-3)` is called it is false → `handle_contract_violation` is called. Our handler logs the violation and returns normally. Under `observe`, the runtime continues execution inside the function — `square_nonneg(-3)` returns `9`. The program does not abort. This is the pattern for production monitoring: \"notice violations, but don't bring the service down\". **Caution:** computing `(-3) * (-3) = 9` is mathematically correct, but the semantic of \"non-negative square\" has been violated. Code past a violated precondition is in UB territory — it just has detectable symptoms instead of a crash."
+        },
+        {
+          "title": "contract_violation metadata: inspecting violations in a custom handler",
+          "code": "#include <cstdio>\n#include <cstdlib>\n#include <contracts>\n\n// std::contracts::contract_violation provides:\n//   comment()  — predicate text as written in source (const char*)\n//   location() — std::source_location: file, line, function\n//   semantic() — active semantic (evaluation_semantic: 1=ignore 2=observe 3=enforce 4=quick_enforce)\nvoid handle_contract_violation(const std::contracts::contract_violation& v) noexcept {\n    printf(\"[handler] predicate: \\\"%s\\\"\\n\", v.comment());\n    printf(\"[handler] location:  %s:%u\\n\", v.location().file_name(), v.location().line());\n    printf(\"[handler] semantic:  %d (enforce=3)\\n\", static_cast<int>(v.semantic()));\n    fflush(stdout);\n    std::abort();\n}\n\nint index_checked(const int* arr, const int size, const int i)\n    pre(i >= 0 && i < size)\n{\n    return arr[i];\n}\n\nint main() {\n    int data[] = {10, 20, 30, 40, 50};\n    printf(\"data[2] = %d\\n\", index_checked(data, 5, 2));  // precondition holds\n    fflush(stdout);\n    index_checked(data, 5, -1);  // precondition violated → handler called\n}",
+          "expectedOutput": "data[2] = 30\n[handler] predicate: \"i >= 0 && i < size\"\n[handler] location:  /app/example.cpp:22\n[handler] semantic:  3 (enforce=3)",
+          "explanation": "The handler `handle_contract_violation` receives a `contract_violation` with three useful fields. `comment()` returns the predicate verbatim as written in `pre(...)` — a string literal stored in the program's data segment. `location()` gives a `std::source_location`: here line 22 is the `pre(...)` line. `semantic()` returns `evaluation_semantic::enforce` (value 3). Note: `std::contracts::evaluation_semantic` is an enum with four values: `ignore=1`, `observe=2`, `enforce=3`, `quick_enforce=4`. The handler is marked `noexcept` — this is required. After logging, it calls `std::abort()`, as required under `enforce`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <print>\n\nbool in_range(const int x, const int lo, const int hi)\n    pre(lo <= hi)\n{\n    return x >= lo && x <= hi;\n}\n\nint main() {\n    std::print(\"{}\\n\", in_range(5, 1, 10));\n    std::print(\"{}\\n\", in_range(0, 1, 10));\n    std::print(\"{}\\n\", in_range(10, 1, 10));\n}",
+          "answer": "true\nfalse\ntrue",
+          "explanation": "All three calls satisfy the precondition `lo <= hi` (1 <= 10). Under `enforce`, the predicate is evaluated with no violations. Results: `5 >= 1 && 5 <= 10` → `true`; `0 >= 1` → `false`; `10 >= 1 && 10 <= 10` → `true`. The boundary value `10` falls inside the closed interval — important for both `x = 10` and `hi = 10`, both of which behave correctly."
+        },
+        {
+          "id": "m4-l2-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <print>\n#include <contracts>\n\n// Handler written for observe mode,\n// but used in a build with enforce semantics.\nvoid handle_contract_violation(const std::contracts::contract_violation& v) noexcept {\n    std::print(\"[log] violation: {}\\n\", v.comment());\n    // intent: continue execution\n}\n\nint process(const int x)\n    pre(x > 0)\n{\n    return x * 10;\n}\n\nint main() {\n    std::print(\"{}\\n\", process(5));\n    std::print(\"{}\\n\", process(-1));\n}",
+          "answerLine": 8,
+          "explanation": "Line 8 — the absence of a terminating call in the handler. Under `enforce` semantics, if the violation handler **returns normally**, the runtime automatically calls `std::terminate()`. A handler written for `observe` (just logs and returns) cannot be used in an `enforce` build unchanged. Fix: either add `std::abort()` at the end of the handler for enforce builds, or switch the build to `-fcontract-evaluation-semantic=observe`. This is a common mistake when changing semantics between environments without adapting the handler."
+        },
+        {
+          "id": "m4-l2-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A program uses a predicate with a side effect:\n```cpp\nint counter = 0;\n\nbool check(int x) {\n    ++counter;\n    return x > 0;\n}\n\nint f(int x) pre(check(x)) { return x; }\n\nint main() {\n    f(5); f(3); f(7);\n    std::print(\"{}\\n\", counter);\n}\n```\nWhat value will the program print when compiled with `-fcontract-evaluation-semantic=ignore`?",
+          "options": [
+            "3 — the predicate is evaluated three times, just like under enforce",
+            "0 — under ignore, predicates are not evaluated, no side effect occurs",
+            "1 — the predicate is evaluated only on the first call for initialization",
+            "The program won't compile: predicates with side effects are forbidden"
+          ],
+          "answerIndex": 1,
+          "explanation": "Under `ignore` semantics, contract predicates **are not evaluated at all** — no corresponding instructions exist in the binary. The call to `check(x)` never happens → `++counter` never executes → `counter` stays `0`. The same code under `enforce` would print `3`. This is the side-effect problem in predicates: program behavior depends on the chosen build semantic. The compiler is not required to reject such code (it's not ill-formed) — but it may emit a warning."
+        },
+        {
+          "id": "m4-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Which of the following statements about `quick_enforce` semantics is correct?",
+          "options": [
+            "`quick_enforce` differs from `enforce` only in that the predicate is evaluated asynchronously",
+            "Under `quick_enforce`, the compiler guarantees that the user violation handler is called, just like under `enforce`",
+            "Under `quick_enforce`, the compiler may use a cheaper implementation of the check, including skipping the handler call — if a contract is violated the program terminates, but the details of termination are implementation-defined",
+            "`quick_enforce` is identical to `ignore` but with an additional compiler warning"
+          ],
+          "answerIndex": 2,
+          "explanation": "`quick_enforce` is the semantic \"terminate on violation, but how — at the compiler's discretion\". The compiler may replace the check with `__builtin_trap()` without calling the violation handler, or drop parts of the check based on other guarantees. One thing is guaranteed: if a contract is violated, normal execution does not continue. This makes `quick_enforce` suitable for hot paths where calling the handler and `std::terminate()` would be too expensive. Unlike `ignore`, the predicate is still evaluated (or used for optimization hints) rather than completely skipped."
+        }
+      ],
+      "challenge": {
+        "prompt": "Build a \"contract telemetry\" system: a custom violation handler that works under `observe` semantics. The handler must:\n1. Collect violations in a global vector (predicate text + line number).\n2. Return normally (not terminate the program) — this is mandatory for `observe`.\n\nWrite a few functions with preconditions, call them with both valid and invalid arguments, then print a violation summary. Compile with `-fcontract-evaluation-semantic=observe`.",
+        "referenceSolution": "#include <print>\n#include <contracts>\n#include <vector>\n#include <string>\n#include <cstdio>\n\nstruct ViolationRecord {\n    std::string predicate;\n    unsigned line;\n};\n\nstd::vector<ViolationRecord> violations;\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) noexcept {\n    violations.push_back({v.comment(), v.location().line()});\n    // return normally — observe requires this\n}\n\nint sqrt_floor(const int n)\n    pre(n >= 0)\n{\n    int r = 0;\n    while ((r + 1) * (r + 1) <= n) ++r;\n    return r;\n}\n\ndouble reciprocal(const double x)\n    pre(x != 0.0)\n{\n    return 1.0 / x;\n}\n\nint main() {\n    std::print(\"sqrt_floor(9) = {}\\n\",  sqrt_floor(9));\n    std::print(\"sqrt_floor(-1) = {}\\n\", sqrt_floor(-1));   // violation\n    std::print(\"reciprocal(2.0) = {}\\n\", reciprocal(2.0));\n    std::print(\"reciprocal(0.0) = {}\\n\", reciprocal(0.0)); // violation\n    std::print(\"sqrt_floor(16) = {}\\n\", sqrt_floor(16));\n\n    std::print(\"\\n--- violation summary ({} total) ---\\n\", violations.size());\n    for (const auto& v : violations)\n        std::print(\"  line {}: \\\"{}\\\"\\n\", v.line, v.predicate);\n}",
+        "expectedOutput": "sqrt_floor(9) = 3\nsqrt_floor(-1) = 0\nreciprocal(2.0) = 0.5\nreciprocal(0.0) = inf\nsqrt_floor(16) = 4\n\n--- violation summary (2 total) ---\n  line 22: \"n >= 0\"\n  line 28: \"x != 0.0\"",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,positionColumn:1,positionLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Cprint%3E%0A%23include+%3Ccontracts%3E%0A%23include+%3Cvector%3E%0A%23include+%3Cstring%3E%0A%0Astruct+ViolationRecord+%7B%0A++++std::string+predicate%3B%0A++++unsigned+line%3B%0A%7D%3B%0A%0Astd::vector%3CViolationRecord%3E+violations%3B%0A%0Avoid+handle_contract_violation(const+std::contracts::contract_violation%26+v)+noexcept+%7B%0A++++violations.push_back(%7Bv.comment(),+v.location().line()%7D)%3B%0A%7D%0A%0Aint+sqrt_floor(const+int+n)+pre(n+%3E%3D+0)+%7B%0A++++int+r+%3D+0%3B%0A++++while+((r+%2B+1)*(r+%2B+1)+%3C%3D+n)+++r%3B%0A++++return+r%3B%0A%7D%0A%0Adouble+reciprocal(const+double+x)+pre(x+!%3D+0.0)+%7B%0A++++return+1.0+/+x%3B%0A%7D%0A%0Aint+main()+%7B%0A++++std::print(%22sqrt_floor(9)+%3D+%7B%7D%5Cn%22,+sqrt_floor(9))%3B%0A++++std::print(%22sqrt_floor(-1)+%3D+%7B%7D%5Cn%22,+sqrt_floor(-1))%3B%0A++++std::print(%22reciprocal(2.0)+%3D+%7B%7D%5Cn%22,+reciprocal(2.0))%3B%0A++++std::print(%22reciprocal(0.0)+%3D+%7B%7D%5Cn%22,+reciprocal(0.0))%3B%0A++++std::print(%22sqrt_floor(16)+%3D+%7B%7D%5Cn%22,+sqrt_floor(16))%3B%0A++++std::print(%22%5Cn---+%7B%7D+violations+----%5Cn%22,+violations.size())%3B%0A++++for+(const+auto%26+v+:+violations)%0A++++++++std::print(%22++line+%7B%7D:+%5C%22%7B%7D%5C%22%5Cn%22,+v.line,+v.predicate)%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),k:50,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:executor,i:(argsPanelShown:'1',compilationPanelShown:'0',compiler:gsnapshot,compilerName:'',compilerOutShown:'0',execArgs:'',execStdin:'',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B26+-O0+-fcontracts+-fcontract-evaluation-semantic%3Dobserve',source:1,stdinPanelShown:'1',tree:0,wrap:'1'),l:'5',n:'0',o:'Executor+x86-64+gcc+(trunk)+%231',t:'0')),k:50,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Under which semantic is the contract predicate **not evaluated at all** — no checking instructions emitted in the binary?",
+            "options": [
+              "`observe` — predicate is evaluated, but violations are only logged",
+              "`enforce` — predicate is evaluated and program terminates on violation",
+              "`ignore` — predicate not evaluated, zero overhead",
+              "`quick_enforce` — predicate is evaluated, but the handler may not be called"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What happens if the user violation handler `handle_contract_violation` **returns normally** (without abort/terminate) under `enforce` semantics?",
+            "options": [
+              "Execution continues normally — just like in observe mode",
+              "The runtime automatically calls `std::terminate()` after the handler returns",
+              "Behavior is unspecified by the standard — depends on the compiler",
+              "The compiler prevents handler return via static analysis"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How is the contract evaluation semantic (`ignore`/`observe`/`enforce`/`quick_enforce`) selected in C++26?",
+            "options": [
+              "Each contract is annotated in source: `pre enforce(x > 0)`",
+              "The semantic is set via a function-level attribute: `[[contract::enforce]]`",
+              "The semantic is set via a compiler flag and applies to all contracts in the translation unit",
+              "The semantic is fixed by the standard: always `enforce` with no way to change it"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "A contract predicate calls a function with a side effect: `pre(log_and_check(x))`. The programmer noticed that the release build (with `ignore`) behaves differently from the debug build (with `enforce`). What is the correct response?",
+            "options": [
+              "This is expected and acceptable: different semantics guarantee different behavior",
+              "Switch the release build to `observe` so the predicate is evaluated everywhere",
+              "The predicate violates observational-purity — the side effect must be removed from the predicate and moved to the function body",
+              "This is a compiler bug: the standard forbids different behavior under different semantics"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m4-l3",
+      "title": "Contract violation handler & exceptions (P2900)",
+      "prerequisites": [
+        "m4-l1",
+        "m4-l2"
+      ],
+      "background": null,
+      "motivation": "Before C++26, the only tools for reacting to invalid states inside a program were `assert()` (which just calls `abort()`) and hand-rolled macros using `__FILE__`/`__LINE__`. Both approaches are limited: `assert` cannot be customized — you can only suppress it with `-DNDEBUG` or redefine the macro; hand-rolled macros require usage discipline and are not integrated with the language.\n\nWith contracts (P2900) in C++26 comes the question: **what happens when a contract is violated?** In `enforce` mode a violated precondition or postcondition is a serious error. In `observe` mode you want to log it and continue. Both scenarios need a **single interception point** that can be configured without recompiling the whole program.\n\nP2900 solves this with a **replaceable violation handler** — the function `handle_contract_violation`. Like `operator new`, it is defined by default in the standard library, but a single user-provided definition replaces it everywhere. The handler receives a `std::contracts::contract_violation` object with all information about the violation — the predicate text, the contract kind, the source location — and decides what to do: terminate, log, throw.",
+      "theory": "## The replaceable violation handler\n\nWhen a contract is violated under `observe` or `enforce` semantics, the runtime calls the **contract violation handler**. The default is `std::contracts::invoke_default_contract_violation_handler` — it prints a diagnostic to stderr and calls `std::terminate()` (for `enforce`).\n\nThe user replaces the handler by defining:\n\n```cpp\nvoid handle_contract_violation(const std::contracts::contract_violation& v);\n```\n\nThis is a **replaceable function** — the same mechanism as `operator new`: a single definition anywhere in the program replaces the default handler globally. Multiple definitions result in a linker error (ODR violation).\n\n## `std::contracts::contract_violation`\n\nThe object `v` passed to the handler provides:\n\n- `v.comment()` — the predicate text as `const char*` (in GCC's implementation; the standard specifies `std::string_view`)\n- `v.location()` — a `std::source_location` with file, line, and column of the contract\n- `v.kind()` — the contract kind: `1`=`pre`, `2`=`post`, `3`=`contract_assert` (an integer type `std::contracts::contract_kind`; GCC trunk does not yet export the enumerator names, so use `static_cast<int>`)\n- `v.semantic()` — the active evaluation semantic: `2`=`observe`, `3`=`enforce`\n\n**Note on GCC trunk:** The handler name `handle_contract_violation` is picked up correctly by the current GCC `-fcontracts` implementation. However, `std::contracts::contract_kind::pre` and the other named enumerators are not yet declared — compare using `static_cast<int>(v.kind())`.\n\n## `enforce` semantics: the handler and termination\n\nUnder `enforce` semantics, after calling the handler the runtime **terminates the program regardless** — the handler must not return. In practice: if the handler returns, behavior is undefined or `std::terminate()` is forced by the runtime.\n\nIf the handler **throws an exception**, and the violating function is declared `noexcept`, the exception cannot cross the `noexcept` boundary, so `std::terminate()` is called automatically (the standard C++ rule for exceptions escaping `noexcept` functions). If the function is not `noexcept`, the exception from the handler **can propagate** to the caller.\n\n```cpp\nvoid handle_contract_violation(const std::contracts::contract_violation&) {\n    throw std::runtime_error(\"contract violated\");\n}\n\nint f(const int x) noexcept pre(x > 0) { return x; }\n// f(-1) → violation → handler throws → noexcept → std::terminate\n```\n\n## `observe` semantics: the handler must return\n\nUnder `observe` semantics the goal is to log the violation and **continue execution**. The handler must return; terminating the program or throwing inside an `observe` handler is **UB**. Execution continues as if the contract had not been violated.\n\n## Postconditions and exceptions\n\nThe key rule: a postcondition (`post`) is evaluated **only on the normal return path**. If the function exits via an exception, the postcondition is not evaluated at all:\n\n```cpp\nint f(bool fail) post(r: r > 0) {\n    if (fail) throw std::runtime_error(\"error\");  // post NOT checked\n    return -1;  // post IS checked → violation\n}\n```\n\nThis is logical: a postcondition makes a claim about the return value — if there is no return value (exception), there is nothing to check.\n\n## Interaction with destructors\n\nIf a violation occurs during a `post` check and the handler throws an exception, the stack unwinds normally: destructors of the function's local objects are called as usual.\n\n## Nuance checklist\n\n- **Old alternatives:** `assert()` from `<cassert>` — terminates via `abort()`, no context. Hand-rolled `ASSERT(cond, msg)` macros with `__FILE__`/`__LINE__` — not language-integrated, cannot distinguish pre/post/assert.\n- **Ill-formed vs UB:** Throwing from an `observe` handler is UB. Throwing from an `enforce` handler when the function is `noexcept` calls `std::terminate()` (defined behavior, not UB).\n- **Interaction with destructors:** When the handler throws, the stack unwinds normally.\n- **Templates:** Contracts behave identically in templated and non-templated functions — handler semantics do not depend on template parameters.\n- **`noexcept` on the handler itself:** The standard does not require `noexcept` on `handle_contract_violation`, but marking it `noexcept` ensures that any exception thrown inside immediately calls `std::terminate()` instead of propagating.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "Basic: custom violation handler",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\n// Defining handle_contract_violation replaces the default handler globally\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    // v.kind(): 1=pre, 2=post, 3=contract_assert (GCC: use int comparison)\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    std::printf(\"[%s] violated: %s\\n\", kind_str, v.comment());\n    std::fflush(stdout);\n    exit(1);  // enforce handler must terminate, not return\n}\n\nint divide(int a, const int b)\n    pre(b != 0)\n{\n    return a / b;\n}\n\nint main() {\n    std::printf(\"10/2 = %d\\n\", divide(10, 2));  // OK\n    divide(5, 0);                                 // violates pre(b != 0)\n    std::printf(\"unreachable\\n\");\n}",
+          "expectedOutput": "10/2 = 5\n[pre] violated: b != 0",
+          "explanation": "The function `handle_contract_violation` with the exact signature replaces the default handler — like `operator new`. The standard library registers the violation and calls our function. The object `v` provides: `v.comment()` — the predicate text (`\"b != 0\"`), `v.kind()` — the contract kind (`1` = `pre`). The handler calls `exit(1)` — under `enforce` semantics the handler must not return. In GCC trunk the `std::contracts::contract_kind::pre` enumerator is not yet declared, so we compare via `static_cast<int>`."
+        },
+        {
+          "title": "noexcept + contracts: exception from handler → std::terminate",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <stdexcept>\n#include <exception>\n\nvoid handle_contract_violation(const std::contracts::contract_violation&) {\n    std::printf(\"handler: throwing\\n\");\n    std::fflush(stdout);\n    throw std::runtime_error(\"contract violated\");\n}\n\n// noexcept + pre: exception from handler cannot cross the noexcept boundary\nint safe_divide(int a, const int b) noexcept pre(b != 0) {\n    return a / b;\n}\n\nint main() {\n    std::set_terminate([] {\n        std::printf(\"std::terminate called!\\n\");\n        std::fflush(stdout);\n        std::abort();\n    });\n\n    // Violation → handler throws → noexcept → std::terminate\n    safe_divide(5, 0);\n}",
+          "expectedOutput": "handler: throwing\nstd::terminate called!",
+          "explanation": "The chain of events: `safe_divide(5, 0)` violates `pre(b != 0)` → our handler is called → handler throws `std::runtime_error` → the exception tries to escape a `noexcept` function → C++ automatically calls `std::terminate()` → our terminate handler prints the message and aborts. The rule comes from the standard: `noexcept` + escaping exception = `std::terminate` — the same mechanism as for ordinary functions. If `safe_divide` were not `noexcept`, the exception could propagate to `main`."
+        },
+        {
+          "title": "Postconditions and exceptions: post is not checked on exception exit",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <stdexcept>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[violation] %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// post: result must be positive\n// But if the function throws, post is NOT checked!\nint parse_positive(bool should_throw, const int value)\n    post(r: r > 0)\n{\n    if (should_throw) {\n        throw std::runtime_error(\"parse failed\");\n    }\n    return value;\n}\n\nint main() {\n    // Case 1: normal return, post passes\n    int a = parse_positive(false, 42);\n    std::printf(\"a = %d\\n\", a);\n\n    // Case 2: exception exit — post NOT evaluated\n    try {\n        parse_positive(true, -99);\n    } catch (const std::exception& e) {\n        std::printf(\"caught: %s\\n\", e.what());\n    }\n    std::printf(\"post was not checked on exception exit\\n\");\n\n    // Case 3: normal return with invalid result — post IS checked, violated\n    int c = parse_positive(false, -5);\n    std::printf(\"c = %d\\n\", c);  // unreachable\n}",
+          "expectedOutput": "a = 42\ncaught: parse failed\npost was not checked on exception exit\n[violation] r > 0",
+          "explanation": "Three cases demonstrate the rule: **postconditions are only checked on normal return**. Case 1: `parse_positive(false, 42)` returns `42 > 0` — `post` satisfied. Case 2: exits via exception — `post` is not evaluated at all; the caller catches the exception and continues. Case 3: normal return of `-5` — `post(r: r > 0)` is checked and violated, the handler fires. The reasoning is clear: `post` makes a claim about the return value — if there is no return value (exception), there is nothing to check."
+        },
+        {
+          "title": "Advanced: full handler with observe semantics",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    // Determine kind and semantic from integer values\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    const char* sem_str =\n        (static_cast<int>(v.semantic()) == 2) ? \"observe\" : \"enforce\";\n    std::printf(\"[%s/%s] \\\"%s\\\"\\n\", kind_str, sem_str, v.comment());\n    std::fflush(stdout);\n    // In observe mode: return — execution continues\n    // In enforce mode: returning is UB / forced terminate\n}\n\nint clamp(const int x, const int lo, const int hi)\n    pre(lo <= hi)\n    post(r: r >= lo && r <= hi)\n{\n    return (x < lo) ? lo : (x > hi) ? hi : x;\n}\n\nint main() {\n    // Violates pre(lo <= hi): 10 > 1\n    int r1 = clamp(5, 10, 1);\n    std::printf(\"clamp(5,10,1) = %d\\n\", r1);\n\n    int r2 = clamp(7, 3, 9);  // OK\n    std::printf(\"clamp(7,3,9) = %d\\n\", r2);\n\n    contract_assert(r2 > 100);  // violates assert\n    std::printf(\"done\\n\");\n}",
+          "expectedOutput": "[pre/observe] \"lo <= hi\"\n[post/observe] \"r >= lo && r <= hi\"\nclamp(5,10,1) = 10\nclamp(7,3,9) = 7\n[assert/observe] \"r2 > 100\"\ndone",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe` (GCC flag to enable observe semantics). Under `observe` the handler receives control, logs the violation, and **returns** — execution continues as if nothing happened. So `clamp(5, 10, 1)` triggers both `pre(lo <= hi)` and `post` (result `10` is outside `[10,1]`) — both violations are logged. Key nuance: under `observe` returning from the handler is correct; under `enforce` it is UB. `v.semantic()` lets the handler determine which mode it was invoked in and choose a response strategy."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"caught: %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(0);\n}\n\nint clamp(int x, const int lo, const int hi)\n    pre(lo <= hi)\n{\n    if (x < lo) return lo;\n    if (x > hi) return hi;\n    return x;\n}\n\nint main() {\n    std::printf(\"%d\\n\", clamp(5, 1, 10));\n    std::printf(\"%d\\n\", clamp(5, 10, 1));\n    std::printf(\"unreachable\\n\");\n}",
+          "answer": "5\ncaught: lo <= hi",
+          "explanation": "First call `clamp(5, 1, 10)`: precondition `lo <= hi` holds (`1 <= 10`), function returns `5`, we print `5`. Second call `clamp(5, 10, 1)`: precondition `lo <= hi` is violated (`10 > 1`), our handler is called, which prints `caught: lo <= hi` and calls `exit(0)`. The line `unreachable` is never reached."
+        },
+        {
+          "id": "m4-l3-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <stdexcept>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"caught: %s\\n\", v.comment());\n    std::fflush(stdout);\n    throw std::runtime_error(\"contract violated\");\n}\n\nint safe_sqrt(const int x) noexcept pre(x >= 0) {\n    int r = 0;\n    while ((r + 1) * (r + 1) <= x) ++r;\n    return r;\n}\n\nint main() {\n    try {\n        int r = safe_sqrt(-4);\n        std::printf(\"sqrt = %d\\n\", r);\n    } catch (const std::exception& e) {\n        std::printf(\"caught exception: %s\\n\", e.what());\n    }\n}",
+          "answerLine": 11,
+          "explanation": "Line 11: `int safe_sqrt(const int x) noexcept pre(x >= 0)`. The function is declared `noexcept`, but the contract violation handler throws an exception. When `pre(x >= 0)` is violated, the handler throws `std::runtime_error`. The exception tries to escape a `noexcept` function → C++ automatically calls `std::terminate()`. The `try/catch` in `main` will never catch the exception. Fix: remove `noexcept` from `safe_sqrt`, or make the handler `noexcept` (do not throw)."
+        },
+        {
+          "id": "m4-l3-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A function is declared with a postcondition and sometimes throws:\n```cpp\nint parse(bool fail) post(r: r > 0) {\n    if (fail) throw std::runtime_error(\"error\");\n    return -5;\n}\n```\nWhat happens when `parse(true)` is called (with a handler that calls `exit`)?\n\nA. Postcondition is checked before throw: violation → handler\nB. The exception propagates to the caller; postcondition is not checked\nC. The compiler forbids throw inside a function with post\nD. std::terminate is called automatically on exception exit",
+          "options": [
+            "Postcondition is checked before throw: violation → handler",
+            "The exception propagates to the caller; postcondition is not checked",
+            "The compiler forbids throw inside a function with post",
+            "std::terminate is called automatically on exception exit"
+          ],
+          "answerIndex": 1,
+          "explanation": "A postcondition (`post`) is evaluated **only on the normal return path**. When the function exits via exception, the postcondition is not evaluated at all — it makes a claim about the return value, and there is no return value when an exception is thrown. `parse(true)` throws an exception that propagates to the caller, which can catch it with `try/catch`. A (checking before throw is impossible — throw fires before the normal exit path), C (throw is not forbidden), and D (terminate is not called — the exception propagates normally) are all wrong."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a **violation counter** — a custom handler that counts how many times each contract kind fires (`pre`, `post`, `contract_assert`), then at the end of `main` prints a summary. Use at least two functions with preconditions, call them so that all counters become non-zero. Run with `-fcontract-evaluation-semantic=observe` so the handler can return and execution continues.",
+        "referenceSolution": "#include <contracts>\n#include <cstdio>\n\nstatic int violation_count = 0;\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    ++violation_count;\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    std::printf(\"[%d] %s violated: %s\\n\",\n        violation_count, kind_str, v.comment());\n    std::fflush(stdout);\n    // observe mode: return, execution continues\n}\n\nint divide(int a, const int b) pre(b != 0) { return a / b; }\nint positive(const int x)     pre(x > 0)   { return x * 2; }\n\nint main() {\n    divide(10, 2);   // OK\n    divide(5, 0);    // pre violated\n    positive(3);     // OK\n    positive(-1);    // pre violated\n    positive(0);     // pre violated\n\n    contract_assert(violation_count == 3);  // self-check\n\n    std::printf(\"total violations: %d\\n\", violation_count);\n}",
+        "expectedOutput": "[1] pre violated: b != 0\n[2] pre violated: x > 0\n[3] pre violated: x > 0\ntotal violations: 3",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Ccontracts%3E%0A%23include+%3Ccstdio%3E%0A%0Astatic+int+violation_count+%3D+0%3B%0A%0Avoid+handle_contract_violation(const+std::contracts::contract_violation%26+v)+%7B%0A++++%2B%2Bviolation_count%3B%0A++++const+char*+kind_str+%3D%0A+++++++++(static_cast%3Cint%3E(v.kind())+%3D%3D+1)+%3F+%22pre%22++%3A%0A+++++++++(static_cast%3Cint%3E(v.kind())+%3D%3D+2)+%3F+%22post%22+%3A+%22assert%22%3B%0A++++std::printf(%22[%25d]+%25s+violated:+%25s%5Cn%22,+violation_count,+kind_str,+v.comment())%3B%0A++++std::fflush(stdout)%3B%0A%7D%0A%0Aint+divide(int+a,+const+int+b)+pre(b+!%3D+0)+%7B+return+a+/+b%3B+%7D%0Aint+positive(const+int+x)+++++pre(x+%3E+0)+++%7B+return+x+*+2%3B+%7D%0A%0Aint+main()+%7B%0A++++divide(10,+2)%3B%0A++++divide(5,+0)%3B%0A++++positive(3)%3B%0A++++positive(-1)%3B%0A++++positive(0)%3B%0A++++contract_assert(violation_count+%3D%3D+3)%3B%0A++++std::printf(%22total+violations:+%25d%5Cn%22,+violation_count)%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),header:(),k:100,l:'4',m:100,n:'0',o:'',s:0,t:'0')),k:100,l:'3',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What happens if the custom handler `handle_contract_violation` throws an exception and the violating function is declared `noexcept`?",
+            "options": [
+              "The exception is caught by the contracts machinery and converted into a postcondition violation",
+              "The exception propagates to the caller — noexcept does not affect the handler",
+              "`std::terminate()` is called — the exception cannot cross the noexcept function boundary",
+              "The handler is invoked a second time with information about the exception"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "A function has postcondition `post(r: r > 0)` and throws an exception for certain inputs. Which statement is correct?",
+            "options": [
+              "The postcondition is checked before the throw — violation → handler",
+              "The postcondition is checked after exception exit — violation → terminate",
+              "The postcondition is not checked on exception exit — only on normal return",
+              "The compiler forbids throw inside a function with post"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "The handler `handle_contract_violation` under `observe` semantics should:",
+            "options": [
+              "Call `std::terminate()` — otherwise the program continues in an invalid state",
+              "Throw an exception — the only correct way to interrupt observe-mode processing",
+              "Return from the function — execution continues past the violation point",
+              "Call `std::abort()` — the only safe way to end an observe-mode violation"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "How can `handle_contract_violation` determine which contract kind was violated (`pre`, `post`, or `contract_assert`)?",
+            "options": [
+              "By the parameter type — each kind has its own class derived from `contract_violation`",
+              "Through `v.kind()` — returns a value corresponding to the contract kind",
+              "Through `v.comment()` — the string always begins with \"pre:\", \"post:\", or \"assert:\"",
+              "It cannot — the handler has no way of knowing which contract kind fired"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m4-l4",
+      "title": "Contracts on virtual functions",
+      "prerequisites": [
+        "m4-l1",
+        "m4-l2"
+      ],
+      "background": null,
+      "motivation": "Virtual functions are the foundation of polymorphism in C++. When a class declares a virtual function with preconditions and postconditions, and subclasses override it, an important question arises: **whose contracts are checked when calling through a pointer or reference to the base class?**\n\nBefore C++26, the only way to protect a virtual function call was through manual checks inside the body or a separate `assert`. Neither C++17 nor C++20 provided a way to declaratively attach preconditions to virtual interfaces and guarantee they would be enforced regardless of the calling pattern.\n\nP2900 establishes rules for contracts on virtual functions: which contracts are checked under static vs. dynamic dispatch, how derived classes can add their own `contract_assert` to overrides, and why the **NVI (Non-Virtual Interface) pattern** becomes the natural solution for \"contractual\" polymorphism.",
+      "theory": "## The Static Dispatch Rule (P2900)\n\nP2900 establishes a key rule: **contracts (`pre`/`post`) are checked based on the static type of the call**, not the dynamic type.\n\n- Calling `base_ptr->f()` → base class contracts are checked\n- Calling `derived.f()` directly → derived class contracts are checked\n- This means: calling through a base class pointer does NOT check the override's contracts\n\nThe rule is intuitive: at the call site, the compiler only knows the static type, and that type determines the contractual guarantees. This directly corresponds to the contract programming principle — \"the interface defines the contract\".\n\n**Important: GCC trunk (the current `-fcontracts` implementation)** does not yet support `pre`/`post` on virtual functions — attempting to use them causes a compile error: `contracts cannot be added to virtual functions`. This is a known implementation gap; the P2900 specification permits it. The examples in this lesson use `contract_assert` inside virtual function bodies and the NVI pattern — both of which compile today.\n\n## Contracts and Virtual Overrides\n\nPer P2900, an overriding function either declares its **own contracts** or declares none at all. Contracts are **not inherited**: each call checks the contracts of the function visible at the call site.\n\n```cpp\nclass Base {\npublic:\n    virtual void f(const int x) pre(x >= 0);    // base contract\n};\n\nclass Derived : public Base {\npublic:\n    void f(const int x) override pre(x >= 10);  // stricter derived contract\n};\n\nDerived d;\nBase* p = &d;\np->f(5);   // Base::pre(x >= 0) is checked — 5 >= 0, OK\nd.f(5);    // Derived::pre(x >= 10) is checked — violation!\n```\n\nThis might appear to violate the Liskov Substitution Principle (LSP): the derived class imposes a stricter precondition. But this is exactly why the static dispatch rule is designed this way: the caller must satisfy the interface contract (the base class), not know about the derived implementation's details.\n\n## Practical Approach: contract_assert Inside Virtual Functions\n\nWhile GCC hasn't yet implemented `pre`/`post` on virtual functions, `contract_assert` inside the body is a fully capable alternative. The key difference:\n\n- `contract_assert(cond)` inside a virtual function body **always executes** when that function is called — regardless of whether the call goes through a base or derived type\n- `pre`/`post` on a function declaration are checked at the **call site** based on the static type\n\n```cpp\nclass Derived : public Base {\npublic:\n    void f(const int x) override {\n        contract_assert(x >= 10); // checked ALWAYS, regardless of calling type\n        // ...\n    }\n};\n```\n\nCalling `p->f(5)` through `Base*` will dynamically dispatch to `Derived::f`, and `contract_assert` will fire. This behavior differs from the P2900 spec (`pre` would not be checked), but for most practical purposes it achieves the desired effect.\n\n## The NVI (Non-Virtual Interface) Pattern — Recommended Approach\n\nThe NVI pattern elegantly solves the problem of contracts on virtual functions: a public non-virtual wrapper function carries the contracts, while a protected virtual hook contains the implementation.\n\n```cpp\nclass Shape {\npublic:\n    // Public non-virtual: contract is ALWAYS checked,\n    // regardless of how it's called or the object's type\n    double area(const double scale) const\n        pre(scale > 0.0)\n        post(r: r >= 0.0)\n    {\n        return do_area() * scale;\n    }\nprotected:\n    virtual double do_area() const = 0; // virtual hook without contract\n};\n```\n\nAdvantages of NVI:\n- Contracts live on non-virtual functions — no dispatch dependency\n- Derived classes cannot bypass the base class contract\n- Aligns with the principle that \"contracts are part of the interface, not the implementation\"\n\n## Virtual Destructors\n\nVirtual destructors can contain `contract_assert` in their body — useful for \"object is destroyed in a valid state\" invariants:\n\n```cpp\nvirtual ~Resource() {\n    contract_assert(data_ != nullptr); // guard against double-delete\n    delete data_;\n}\n```\n\nPer P2900, `pre`/`post` on virtual destructors are permitted (but GCC hasn't implemented this yet). The derived class destructor is called before the base class destructor — each `contract_assert` runs in its own body in the normal destruction order.\n\n## Object Slicing and Contracts\n\nA special case: if a derived object is passed by value where a base is expected — slicing occurs. The sliced object has type Base, so the Base version of the virtual function is called, and the derived class's `contract_assert` is never reached.\n\n```cpp\nvoid run(Processor p, int x) { // by value = slicing!\n    p.process(x);               // always Processor::process, not SafeProcessor::process\n}\n```\n\nThis compiles and runs without warnings, but the derived class's contractual protection is silently disabled. Use `const Processor&` or `Processor*` — no slicing will occur.\n\n## Nuance Checklist\n\n- **Unevaluated contexts.** `contract_assert` inside a virtual function is an ordinary assertion expression; in unevaluated contexts (`sizeof`, `decltype`) contracts are not present at all.\n- **Templates.** If a virtual function in a template class contains `contract_assert`, the semantics are the same — no dependency on template arguments. An NVI wrapper with `pre`/`post` works in templates without restriction.\n- **Ill-formed vs UB.** Attempting `pre`/`post` on a virtual function in GCC trunk is a **compile error** (ill-formed). The P2900 specification permits it; the implementation will catch up with the standard.\n- **Old alternatives.** Before C++26: `assert()` inside the function body (non-declarative, no pre/post distinction, terminates via `abort()`), manual checks at the start of the body, `[[expects]]` from the TS (not adopted in C++20). The NVI pattern existed independently of contracts and remains a best practice.\n- **Interaction with `override` and `final`.** Contracts (per P2900 spec) may be placed on `override` functions — they apply when called through a derived-type object. No restrictions on `final` functions.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "Basic: NVI pattern — contract on a non-virtual wrapper",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    std::printf(\"[%s] violated: %s\\n\", kind_str, v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\nclass Shape {\npublic:\n    // Public non-virtual wrapper with contract — always checked,\n    // regardless of the dynamic type of the object\n    double area(const double scale) const\n        pre(scale > 0.0)\n        post(r: r >= 0.0)\n    {\n        return do_area() * scale;\n    }\n    virtual ~Shape() = default;\nprotected:\n    virtual double do_area() const = 0;  // virtual hook without contract\n};\n\nclass Circle : public Shape {\n    double radius_;\npublic:\n    explicit Circle(double r) : radius_(r) {}\nprotected:\n    double do_area() const override {\n        return 3.14159265 * radius_ * radius_;\n    }\n};\n\nclass Square : public Shape {\n    double side_;\npublic:\n    explicit Square(double s) : side_(s) {}\nprotected:\n    double do_area() const override {\n        return side_ * side_;\n    }\n};\n\nint main() {\n    Circle c{3.0};\n    Square sq{4.0};\n\n    std::printf(\"circle.area(2.0)  = %.2f\\n\", c.area(2.0));\n    std::printf(\"square.area(0.5)  = %.2f\\n\", sq.area(0.5));\n\n    // Through a base class pointer — same non-virtual wrapper,\n    // same contracts as with a direct call\n    Shape* s = &c;\n    std::printf(\"via base ptr      = %.2f\\n\", s->area(1.0));\n\n    // Violate pre(scale > 0.0)\n    s->area(-1.0);\n}",
+          "expectedOutput": "circle.area(2.0)  = 56.55\nsquare.area(0.5)  = 8.00\nvia base ptr      = 28.27\n[pre] violated: scale > 0.0",
+          "explanation": "The NVI (Non-Virtual Interface) pattern: the public function `area()` is **non-virtual** and carries `pre`/`post` contracts. The protected `do_area()` is **virtual** and implements behavior without contracts. Calling through `Shape*` invokes `Shape::area` (non-virtual), which dispatches to the virtual `do_area()`. Contracts are checked identically for direct calls and calls through a base pointer — this is the key advantage of NVI over `pre` on a virtual function with the static dispatch rule. Note: `scale` is declared `const` in the signature — a mandatory requirement for parameters referenced in `post`."
+        },
+        {
+          "title": "Basic: contract_assert in a virtual destructor",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[violation] %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\nclass Resource {\n    int* data_;\npublic:\n    explicit Resource(int v) : data_(new int(v)) {\n        std::printf(\"Resource(%d) constructed\\n\", v);\n    }\n    virtual ~Resource() {\n        contract_assert(data_ != nullptr);  // invariant: no double-delete\n        std::printf(\"Resource destroyed, value=%d\\n\", *data_);\n        delete data_;\n        data_ = nullptr;\n    }\n};\n\nclass ManagedResource : public Resource {\n    const char* name_;\npublic:\n    explicit ManagedResource(int v, const char* name)\n        : Resource(v), name_(name) {}\n    ~ManagedResource() override {\n        std::printf(\"ManagedResource '%s' cleanup\\n\", name_);\n    }\n};\n\nint main() {\n    {\n        ManagedResource mr{42, \"test\"};\n        // mr goes out of scope:\n        // first ~ManagedResource(), then ~Resource()\n    }\n    std::printf(\"done\\n\");\n}",
+          "expectedOutput": "Resource(42) constructed\nManagedResource 'test' cleanup\nResource destroyed, value=42\ndone",
+          "explanation": "A virtual destructor can contain `contract_assert` — it is checked every time the object is destroyed. Destruction order: first the **derived** class destructor (`~ManagedResource`), then the **base** (`~Resource`). The invariant `contract_assert(data_ != nullptr)` in `~Resource` guards against double-delete: if someone calls delete twice, `data_` will already be `nullptr`. Per P2900, `pre`/`post` on destructors are allowed, but GCC trunk currently only accepts `contract_assert` in the body."
+        },
+        {
+          "title": "Advanced: observe mode and virtual dispatch — what is checked and when",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    std::printf(\"[%s/observe] violated: %s\\n\", kind_str, v.comment());\n    std::fflush(stdout);\n    // observe: return, execution continues\n}\n\nclass Validator {\npublic:\n    // Non-virtual wrapper with pre\n    void validate(const int value) const\n        pre(value != -1)\n    {\n        do_validate(value);\n    }\n    virtual ~Validator() = default;\nprotected:\n    virtual void do_validate(int value) const {\n        std::printf(\"base validate(%d): ok\\n\", value);\n    }\n};\n\nclass StrictValidator : public Validator {\nprotected:\n    void do_validate(int value) const override {\n        // Additional derived contract: stricter check\n        contract_assert(value > 0);\n        std::printf(\"strict validate(%d): ok\\n\", value);\n    }\n};\n\nint main() {\n    StrictValidator sv;\n    Validator* v = &sv;\n\n    // pre(value != -1) — from the non-virtual wrapper, always checked\n    // contract_assert(value > 0) — in do_validate body, checked via dynamic dispatch\n    v->validate(5);   // pre OK (5 != -1), assert OK (5 > 0)\n    v->validate(0);   // pre OK (0 != -1), assert FAILS (0 > 0)\n    v->validate(-1);  // pre FAILS (-1 != -1), then do_validate is still called (observe!)\n}",
+          "expectedOutput": "strict validate(5): ok\n[assert/observe] violated: value > 0\nstrict validate(0): ok\n[pre/observe] violated: value != -1\n[assert/observe] violated: value > 0\nstrict validate(-1): ok",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe`. Two levels of checks work independently. **First level** — `pre(value != -1)` on the non-virtual `validate()`: checked on every call through the NVI wrapper. **Second level** — `contract_assert(value > 0)` inside `StrictValidator::do_validate`: fires via dynamic dispatch. Under observe semantics, the handler returns and execution continues: `v->validate(0)` — `contract_assert(0 > 0)` violated, logged, but `strict validate(0): ok` still prints. `v->validate(-1)` — `pre(-1 != -1)` violated, `[pre/observe]` logged, then execution continues, `do_validate(-1)` is called, `contract_assert(-1 > 0)` also violated, `[assert/observe]` logged, finally `strict validate(-1): ok` prints. Both violations are captured for a single call — this is exactly what observe mode is designed for in debugging."
+        },
+        {
+          "title": "Advanced: object slicing silently hides derived contract_assert",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"violated: %s\\n\", v.comment());\n    std::fflush(stdout);\n    // observe: continue\n}\n\nclass Processor {\npublic:\n    virtual void process(const int x) const {\n        std::printf(\"base::process(%d)\\n\", x);\n    }\n    virtual ~Processor() = default;\n};\n\nclass SafeProcessor : public Processor {\npublic:\n    void process(const int x) const override {\n        contract_assert(x > 0);  // additional derived check\n        std::printf(\"safe::process(%d)\\n\", x);\n    }\n};\n\n// Correct: take by reference — no slicing, dynamic dispatch preserved\nvoid run_ref(const Processor& p, const int x) {\n    p.process(x);\n}\n\n// Wrong: take by value — slicing! Base copy, derived contract unreachable\nvoid run_val(Processor p, const int x) {\n    p.process(x);\n}\n\nint main() {\n    SafeProcessor sp;\n\n    std::printf(\"=== by reference ===\\n\");\n    run_ref(sp, 5);   // SafeProcessor::process, contract_assert(5>0) OK\n    run_ref(sp, -3);  // SafeProcessor::process, contract_assert(-3>0) FAILS\n\n    std::printf(\"=== by value (slicing) ===\\n\");\n    run_val(sp, 5);   // Processor::process — sliced! derived contract unreachable\n    run_val(sp, -3);  // Processor::process — no violation (and never can be)\n}",
+          "expectedOutput": "=== by reference ===\nsafe::process(5)\nviolated: x > 0\nsafe::process(-3)\n=== by value (slicing) ===\nbase::process(5)\nbase::process(-3)",
+          "explanation": "Object slicing is the silent killer of contractual protection. `run_ref` takes `const Processor&`: virtual dispatch is preserved, `SafeProcessor::process` is called, and `contract_assert(x > 0)` correctly fires for `x = -3`. `run_val` takes `Processor` by value: when `sp` is passed, only the **base portion** is copied — the derived part is \"sliced off\". Now `p` has type `Processor`, `Processor::process` is called, `SafeProcessor::process` is unreachable. With `x = -3`, no violation occurs — the derived `contract_assert` simply doesn't exist in the sliced object. Compiled with `-fcontract-evaluation-semantic=observe` to observe the violation without aborting."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l4-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"VIOLATION: %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\nclass Logger {\npublic:\n    void log(const int level) const\n        pre(level >= 0 && level <= 3)\n    {\n        do_log(level);\n    }\n    virtual ~Logger() = default;\nprotected:\n    virtual void do_log(int level) const {\n        std::printf(\"log[%d]\\n\", level);\n    }\n};\n\nclass NullLogger : public Logger {\nprotected:\n    void do_log(int level) const override {\n        // intentionally do nothing\n    }\n};\n\nint main() {\n    Logger base;\n    NullLogger null_log;\n\n    base.log(1);\n    null_log.log(2);\n\n    Logger* p = &null_log;\n    p->log(3);\n    p->log(4);  // what happens here?\n}",
+          "answer": "log[1]\nVIOLATION: level >= 0 && level <= 3",
+          "explanation": "Step-by-step breakdown. `base.log(1)`: `level=1` satisfies `pre(0 <= 1 <= 3)`, `Logger::do_log(1)` is called — prints `log[1]`. `null_log.log(2)`: pre passes, `NullLogger::do_log(2)` is called — prints nothing (intentional no-op). `p->log(3)` (`p` points to `NullLogger`): pre passes, `NullLogger::do_log(3)` — nothing. `p->log(4)`: the non-virtual wrapper `Logger::log` with `pre(level >= 0 && level <= 3)` — `4 > 3` → violation → `exit(1)`. The `null_log.log(2)` and `p->log(3)` calls produce no output because `NullLogger`'s implementation is intentionally empty."
+        },
+        {
+          "id": "m4-l4-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"violated: %s\\n\", v.comment());\n    std::fflush(stdout);\n    // observe: continue\n}\n\nclass Processor {\npublic:\n    virtual void process(const int x) const {\n        std::printf(\"base::process(%d)\\n\", x);\n    }\n    virtual ~Processor() = default;\n};\n\nclass SafeProcessor : public Processor {\npublic:\n    void process(const int x) const override {\n        contract_assert(x > 0);\n        std::printf(\"safe::process(%d)\\n\", x);\n    }\n};\n\nvoid run(Processor p, const int x) {\n    p.process(x);\n}\n\nint main() {\n    SafeProcessor sp;\n    run(sp, -5);  // expects a violation, but none will occur\n    std::printf(\"done\\n\");\n}",
+          "answerLine": 26,
+          "explanation": "Line 26: `void run(Processor p, const int x)` — the function takes `Processor` **by value**. When `sp` (a `SafeProcessor` object) is passed, **object slicing** occurs: only the base portion of `Processor` is copied, the derived portion is lost. `p.process(x)` calls `Processor::process` (not `SafeProcessor::process`), because `p` has type `Processor`. The `contract_assert(x > 0)` from `SafeProcessor::process` is never reached. Fix: change the signature to `void run(const Processor& p, int x)` or `void run(Processor* p, int x)` — then virtual dispatch is preserved."
+        },
+        {
+          "id": "m4-l4-e3",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[%s] %s\\n\",\n        (static_cast<int>(v.kind()) == 1) ? \"pre\" :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\",\n        v.comment());\n    std::fflush(stdout);\n    // observe: return\n}\n\nclass Animal {\npublic:\n    void speak(const int volume) const\n        pre(volume > 0)\n    {\n        do_speak(volume);\n    }\n    virtual ~Animal() = default;\nprotected:\n    virtual void do_speak(int vol) const {\n        std::printf(\"...(vol=%d)\\n\", vol);\n    }\n};\n\nclass Dog : public Animal {\nprotected:\n    void do_speak(int vol) const override {\n        contract_assert(vol <= 10);\n        std::printf(\"Woof!(vol=%d)\\n\", vol);\n    }\n};\n\nint main() {\n    Dog dog;\n    Animal* a = &dog;\n\n    a->speak(5);\n    a->speak(15);\n    a->speak(0);\n}",
+          "answer": "Woof!(vol=5)\n[assert] vol <= 10\nWoof!(vol=15)\n[pre] volume > 0\nWoof!(vol=0)",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe`. Breakdown of three calls. `a->speak(5)`: `pre(5 > 0)` OK → `do_speak(5)` → `contract_assert(5 <= 10)` OK → `Woof!(vol=5)`. `a->speak(15)`: `pre(15 > 0)` OK → `do_speak(15)` → `contract_assert(15 <= 10)` **violated** → handler prints `[assert] vol <= 10` and returns (observe) → `Woof!(vol=15)`. `a->speak(0)`: `pre(0 > 0)` **violated** → `[pre] volume > 0` and returns (observe) → the non-virtual wrapper still calls `do_speak(0)` → `contract_assert(0 <= 10)` OK → `Woof!(vol=0)`. Key insight: with observe semantics, execution continues even after a `pre` violation."
+        },
+        {
+          "id": "m4-l4-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Per P2900 spec, virtual function `Base::f()` has `pre(x >= 0)`. The derived class declares `Derived::f()` with `pre(x >= 10)`. What happens when `base_ptr->f(5)` is called, where `base_ptr` has type `Base*` pointing to a `Derived` object?\n\nA. Only `Base::pre(x >= 0)` is checked — 5 >= 0, no violation; `Derived::f` executes\nB. Only `Derived::pre(x >= 10)` is checked — violation; handler is called\nC. Both contracts are checked: Base and Derived; Derived contract violated → handler\nD. Calling through `Base*` is prohibited when `Derived::f` has a stricter contract",
+          "options": [
+            "Only Base::pre(x >= 0) is checked — 5 >= 0, no violation; Derived::f executes",
+            "Only Derived::pre(x >= 10) is checked — violation; handler is called",
+            "Both contracts are checked: Base and Derived; Derived contract violated → handler",
+            "Calling through Base* is prohibited when Derived::f has a stricter contract"
+          ],
+          "answerIndex": 0,
+          "explanation": "P2900 establishes the **static dispatch rule**: contracts are checked based on the **static type** at the call site. `base_ptr` has type `Base*`, so `Base::pre(x >= 0)` is checked. `5 >= 0` — no violation. Dynamic dispatch still works normally: `Derived::f` physically executes. But `Derived::pre(x >= 10)` is **not checked** when calling through `Base*`. This is exactly why a derived class can declare a stricter precondition — it only applies when called through the derived type directly. This lets the base class guarantee the interface contract, without the caller needing to know about derived implementation details."
+        }
+      ],
+      "challenge": {
+        "prompt": "Implement a `Transformer` hierarchy using the NVI pattern. The base class should have a non-virtual public method `int transform(const int x)` with precondition `pre(x >= -100 && x <= 100)` and postcondition `post(r: r >= -200 && r <= 200)`. Implement two derived classes: `Doubler` (multiplies by 2) and `Negator` (negates). Call `transform` through an array of base class pointers, print the results, and verify that a `pre` violation is correctly caught when the value is out of range. Use a static call counter `call_count`.",
+        "referenceSolution": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nstatic int call_count = 0;\nstatic int violation_count = 0;\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    ++violation_count;\n    std::printf(\"[violation #%d] %s\\n\", violation_count, v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\nclass Transformer {\npublic:\n    int transform(const int x)\n        pre(x >= -100 && x <= 100)\n        post(r: r >= -200 && r <= 200)\n    {\n        ++call_count;\n        return do_transform(x);\n    }\n    virtual ~Transformer() = default;\nprotected:\n    virtual int do_transform(int x) = 0;\n};\n\nclass Doubler : public Transformer {\nprotected:\n    int do_transform(int x) override {\n        return x * 2;\n    }\n};\n\nclass Negator : public Transformer {\nprotected:\n    int do_transform(int x) override {\n        return -x;\n    }\n};\n\nint main() {\n    Doubler d;\n    Negator n;\n\n    Transformer* transformers[] = {&d, &n};\n\n    for (Transformer* t : transformers) {\n        std::printf(\"transform(5) = %d\\n\", t->transform(5));\n    }\n\n    std::printf(\"calls so far: %d\\n\", call_count);\n\n    // Violate pre\n    d.transform(999);\n}",
+        "expectedOutput": "transform(5) = 10\ntransform(5) = -5\ncalls so far: 2\n[violation #1] x >= -100 && x <= 100",
+        "godboltUrl": "https://godbolt.org/z/example"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Per the P2900 static dispatch rule: when calling `ptr->f()` where `ptr` has type `Base*`, which contracts are checked?",
+            "options": [
+              "The contracts of the dynamic type — the actual class the ptr points to",
+              "The contracts of Base::f — based on the static type of the pointer at the call site",
+              "Contracts of both: Base::f and the derived override, if it declared its own",
+              "No contracts are checked when calling through a base class pointer"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Why is the NVI (Non-Virtual Interface) pattern the recommended approach for contracts on virtual functions?",
+            "options": [
+              "Because NVI is faster than virtual calls",
+              "Because contracts on non-virtual functions are always checked regardless of dispatch",
+              "Because NVI prevents derived classes from violating contracts",
+              "Because the C++26 standard requires NVI for any contractual interface"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Function `run(Processor p, int x)` takes a `SafeProcessor` object (derived from `Processor`) by value. `SafeProcessor::process` has `contract_assert(x > 0)`. What happens when `run(sp, -5)` is called?",
+            "options": [
+              "contract_assert fires — virtual dispatch still finds SafeProcessor::process",
+              "The compiler reports an error — polymorphic objects cannot be passed by value",
+              "contract_assert does not fire — object slicing hides SafeProcessor::process",
+              "Behavior is undefined — passing a derived by value to a base = UB"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "m4-l5",
+      "title": "Side effects in contract predicates",
+      "prerequisites": [
+        "m4-l1",
+        "m4-l2"
+      ],
+      "background": null,
+      "motivation": "Contracts (P2900) check preconditions and postconditions — but what exactly is allowed inside a `pre(...)` or `post(...)` predicate? At first glance, any boolean expression: you can call a function, read a global variable, increment a counter. However, contracts have a fundamental constraint: a predicate may be evaluated **zero or more times** depending on the evaluation semantic (`ignore`, `observe`, `enforce`). A program that relies on exactly one predicate evaluation works correctly under `enforce`, but breaks under `ignore` — where the predicate is never evaluated at all.\n\nAnother trap is **const-correctness**: a `pre(...)` predicate on a `const` member function executes in a `const` context. Calling a non-`const` method from such a predicate is a compile error, not a warning.\n\nThis lesson examines both pitfalls: why predicates must be **pure functions**, and how the const context of a predicate relates to the const-correctness of the function itself.",
+      "theory": "## How many times is a predicate evaluated?\n\nThe C++26 standard (P2900) defines three semantics for each contract:\n\n- **`ignore`** — the predicate is **not evaluated** (zero times). The annotation is visible in source, but under this semantic the compiler generates no evaluation code.\n- **`observe`** — the predicate is evaluated; if violated, the violation handler is called, and execution continues.\n- **`enforce`** — the predicate is evaluated; if violated, the violation handler is called, and if the handler returns — that is UB (in practice the compiler generates program termination).\n\nAn important nuance: the standard does not require the compiler to evaluate the predicate **exactly once** under `observe`/`enforce`. An implementation may evaluate it multiple times (for optimization or static analysis purposes). In practice GCC trunk evaluates it exactly once, but this cannot be relied upon portably.\n\n## The purity requirement (pure predicates)\n\nBecause the evaluation count is unspecified, the standard requires that predicates have no **observable side effects**. By \"observable effect\" we mean any change to external state: modifying a global variable, writing to a file, allocating memory, calling a function with such effects.\n\nIf a predicate has side effects, the program's behavior is formally undefined, because:\n1. Under `ignore`, the effect never happens.\n2. Under `enforce`/`observe`, the effect happens an unspecified number of times.\n\nExample of a **bad** predicate:\n\n```cpp\nint call_count = 0;\nbool count_and_check(const int* ptr) {\n    ++call_count;   // SIDE EFFECT!\n    return ptr != nullptr;\n}\n\nint bad_get(const int* ptr, int idx)\n    pre(count_and_check(ptr))   // wrong: predicate has a side effect\n{\n    return ptr[idx];\n}\n```\n\nUnder `enforce`, `count_and_check` is called, `call_count` is incremented. Under `ignore` — not called. Code that reads `call_count` after calling `bad_get` will get different results depending on the semantic — that is UB.\n\nExample of a **good** predicate:\n\n```cpp\nint good_get(const int* ptr, int idx)\n    pre(ptr != nullptr)   // pure: no side effects\n{\n    return ptr[idx];\n}\n```\n\n## Const-correctness of predicates\n\nA `pre(...)`/`post(...)` predicate on a `const` method executes in the **const context** of that function. This means: inside the predicate, `*this` has type `const T`, and only `const` methods may be called.\n\n```cpp\nclass Sensor {\n    bool initialized_ = false;\npublic:\n    bool ready() { return initialized_; }   // non-const\n\n    int read() const\n        pre(ready())   // COMPILE ERROR:\n                       // ready() is non-const, but read() is const\n    { return 42; }\n};\n```\n\nError: `passing 'const Sensor' as 'this' argument discards qualifiers`. Fix — add `const` to `ready()`:\n\n```cpp\nbool ready() const { return initialized_; }  // now callable from a const predicate\n```\n\nThis compile error is a **feature, not a limitation**. If the compiler allowed calling non-const from a const predicate, the predicate could inadvertently mutate object state — exactly what the purity requirement prohibits.\n\n## \"Literal\" vs \"evaluated\" semantics\n\nThe predicate text is stored in the binary separately from its evaluation. This is called **literal semantics**: the string `\"b != 0\"` is stored as metadata and accessible via `v.comment()` in the violation handler — regardless of whether the predicate was evaluated.\n\nUnder `ignore`: the predicate is **not evaluated**, but the predicate text may still be present in the binary (implementation-defined). Under `observe`/`enforce`: both the text is present and the predicate is evaluated.\n\nThese two aspects are independent:\n- **Literal** = string representation of the predicate (for diagnostics)\n- **Evaluated** = whether the boolean expression is actually executed at runtime\n\n## Nuance checklist\n\n- **Unevaluated contexts** (`decltype`, `sizeof`, `noexcept`, `requires`): contract predicates do not participate in these contexts — they are not part of a function's signature or type. A contract does not affect the `noexcept` specification (the separate issue of what an exception from a handler does to a `noexcept` function is covered in m4-l3).\n- **Ill-formed vs UB**: Calling a non-`const` method from a `const` function's predicate is a **compile error** (ill-formed), not UB. Using a predicate with observable side effects is **runtime UB** (the standard does not diagnose this statically in general, although implementations may warn).\n- **Old alternatives**: Before C++26 — `assert()` from `<cassert>`, which also requires pure expressions for the same reason: it may be disabled (`-DNDEBUG`), i.e., evaluated zero or one times. The same rules apply as for contract predicates.\n- **Interaction with templates**: The purity requirement applies equally in templated and non-templated functions. Template parameter types do not affect predicate semantics.\n- **Interaction with `constexpr`**: A contract predicate is not a `constexpr` expression (it is not evaluated at compile time). Contracts are a runtime check (`static_assert` for compile-time checking was covered in m4-l1).\n- **Value categories**: A predicate is a boolean expression; it is evaluated and converted to `bool`. The value category of subexpressions inside the predicate follows normal C++ rules — no special rules apply.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "Basic: pure predicate — safe under any evaluation semantic",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"[violation] %s\\n\", v.comment());\n    fflush(stdout);\n    exit(1);\n}\n\n// Pure predicate: references only parameters, no side effects.\n// Equally safe under ignore/observe/enforce.\nint safe_divide(int a, const int b)\n    pre(b != 0)\n{\n    return a / b;\n}\n\nstruct Buffer {\n    int data[4] = {10, 20, 30, 40};\n    int size = 4;\n\n    // const method with const-correct predicate: size is a field, readable from const context\n    int get(const int idx) const\n        pre(idx >= 0 && idx < size)\n    {\n        return data[idx];\n    }\n};\n\nint main() {\n    printf(\"10 / 2 = %d\\n\", safe_divide(10, 2));\n    printf(\"21 / 3 = %d\\n\", safe_divide(21, 3));\n\n    Buffer buf;\n    printf(\"buf[2] = %d\\n\", buf.get(2));\n\n    // idx=4 >= size=4 — violates pre\n    buf.get(4);\n}",
+          "expectedOutput": "10 / 2 = 5\n21 / 3 = 7\nbuf[2] = 30\n[violation] idx >= 0 && idx < size",
+          "explanation": "Both predicates are pure: `b != 0` reads only a parameter; `idx >= 0 && idx < size` reads a parameter and a field through a `const` context. Under any semantic (`ignore`, `observe`, `enforce`) the program's behavior is identical, except for the moment a violation is detected (under `ignore` the predicate is never evaluated, so `buf.get(4)` would return garbage without triggering the handler). Const-correctness: `size` is read inside a `const` method — permitted. `handle_contract_violation` is provided to demonstrate the violation under the default `enforce` semantic."
+        },
+        {
+          "title": "Predicate with side effect — the trap",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"[violation] %s\\n\", v.comment());\n    fflush(stdout);\n    exit(1);\n}\n\nint call_count = 0;\n\n// Helper function with a side effect!\nbool count_and_check(const int* ptr) {\n    ++call_count;   // SIDE EFFECT: increments a global counter\n    return ptr != nullptr;\n}\n\n// BAD: predicate calls a function with side effects.\n// Under 'enforce': count_and_check is called, call_count grows.\n// Under 'ignore':  predicate is NOT evaluated — call_count stays 0 (UB!).\nint bad_get(const int* ptr, int idx)\n    pre(count_and_check(ptr))\n{\n    return ptr[idx];\n}\n\n// GOOD: pure predicate\nint good_get(const int* ptr, int idx)\n    pre(ptr != nullptr)\n{\n    return ptr[idx];\n}\n\nint main() {\n    int arr[] = {1, 2, 3};\n\n    int v1 = bad_get(arr, 0);\n    printf(\"bad_get result: %d\\n\", v1);\n    printf(\"call_count after bad_get: %d\\n\", call_count);\n\n    int v2 = bad_get(arr, 1);\n    printf(\"bad_get result: %d\\n\", v2);\n    printf(\"call_count after bad_get: %d\\n\", call_count);\n\n    int v3 = good_get(arr, 2);\n    printf(\"good_get result: %d\\n\", v3);\n    printf(\"call_count after good_get: %d\\n\", call_count);\n}",
+          "expectedOutput": "bad_get result: 1\ncall_count after bad_get: 1\nbad_get result: 2\ncall_count after bad_get: 2\ngood_get result: 3\ncall_count after good_get: 2",
+          "explanation": "Under `enforce` (the default semantic), `count_and_check` is called on each `bad_get` invocation — `call_count` grows. Under `good_get` the predicate `ptr != nullptr` is pure — `call_count` is untouched. The danger: this same code under `ignore` (`-fcontract-evaluation-semantic=ignore`) would produce `call_count == 0` after all calls — the predicate is not evaluated. Any code that relies on a specific `call_count` value will behave differently depending on the semantic. The standard does not require static diagnosis of this — the responsibility is on the author."
+        },
+        {
+          "title": "Const-correctness of predicates: compile error",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"[violation] %s\\n\", v.comment());\n    fflush(stdout);\n    exit(1);\n}\n\nclass Stack {\n    int data_[8];\n    int size_ = 0;\npublic:\n    void push(int v) { data_[size_++] = v; }\n\n    // const method: predicate runs in const context.\n    // size_ is a field, readable through const *this — allowed.\n    int top() const\n        pre(size_ > 0)\n    {\n        return data_[size_ - 1];\n    }\n\n    // pop() with pre(size_ > 0) — also a pure predicate\n    void pop()\n        pre(size_ > 0)\n    {\n        --size_;\n    }\n};\n\nint main() {\n    Stack s;\n    s.push(10);\n    s.push(20);\n    s.push(30);\n\n    printf(\"top = %d\\n\", s.top());\n    s.pop();\n    printf(\"top = %d\\n\", s.top());\n    s.pop();\n    printf(\"top = %d\\n\", s.top());\n    s.pop();\n\n    // size == 0: pre(size_ > 0) violated\n    s.top();\n}",
+          "expectedOutput": "top = 30\ntop = 20\ntop = 10\n[violation] size_ > 0",
+          "explanation": "The predicate `pre(size_ > 0)` accesses the field `size_` through the implicit `this` in a `const` context — this is permitted because the field is read, not modified. If the predicate called a non-`const` method (e.g., a hypothetical `compute_size()` without `const`), the compiler would issue an error: `passing 'const Stack' as 'this' argument discards qualifiers`. The violation of `pre(size_ > 0)` when calling `top()` on an empty stack is correctly caught by the handler — `v.comment()` returns the string `\"size_ > 0\"` (literal semantics: the predicate text is available for diagnostics)."
+        },
+        {
+          "title": "Advanced: literal semantics and observe mode",
+          "code": "#include <contracts>\n#include <cstdio>\n\n// Violation log — stores the most recent predicate text\nstatic char last_violation[128] = \"\";\nstatic int violation_count = 0;\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    ++violation_count;\n    // v.comment() — the \"literal\" predicate text, always available\n    snprintf(last_violation, sizeof(last_violation), \"%s\", v.comment());\n    printf(\"[observe #%d] kind=%d predicate=\\\"%s\\\"\\n\",\n        violation_count,\n        static_cast<int>(v.kind()),\n        v.comment());\n    fflush(stdout);\n    // observe: return — execution continues\n}\n\nint clamp(const int x, const int lo, const int hi)\n    pre(lo <= hi)\n    post(r: r >= lo && r <= hi)\n{\n    if (x < lo) return lo;\n    if (x > hi) return hi;\n    return x;\n}\n\nint main() {\n    // Correct call\n    int r1 = clamp(5, 1, 10);\n    printf(\"clamp(5,1,10) = %d, violations = %d\\n\", r1, violation_count);\n\n    // lo > hi violates pre(lo <= hi); under observe, execution continues\n    int r2 = clamp(5, 10, 1);\n    printf(\"clamp(5,10,1) = %d, violations = %d\\n\", r2, violation_count);\n    printf(\"last predicate text: \\\"%s\\\"\\n\", last_violation);\n\n    // contract_assert: pure invariant check\n    contract_assert(r1 > 0);    // satisfied\n    contract_assert(r2 > 100);  // violated (r2=10)\n    printf(\"after assert, violations = %d\\n\", violation_count);\n    printf(\"last predicate text: \\\"%s\\\"\\n\", last_violation);\n}",
+          "expectedOutput": "clamp(5,1,10) = 5, violations = 0\n[observe #1] kind=1 predicate=\"lo <= hi\"\n[observe #2] kind=2 predicate=\"r >= lo && r <= hi\"\nclamp(5,10,1) = 10, violations = 2\nlast predicate text: \"r >= lo && r <= hi\"\n[observe #3] kind=3 predicate=\"r2 > 100\"\nafter assert, violations = 3\nlast predicate text: \"r2 > 100\"",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe`. **Literal semantics**: `v.comment()` returns the predicate text (`\"lo <= hi\"`, `\"r >= lo && r <= hi\"`, `\"r2 > 100\"`) — these strings are stored in the binary independently of whether the predicate was evaluated. **Evaluated semantics**: the predicate is actually evaluated and its result checked. When calling `clamp(5, 10, 1)`, both contracts are violated: `pre(lo <= hi)` (before entering the function) and `post(r >= lo && r <= hi)` (on exit, because `clamp(5,10,1)` returns `10`, which is not in the range `[10,1]`). Under `observe`, both violations are logged and execution continues. `kind=1` — pre, `kind=2` — post, `kind=3` — contract_assert."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l5-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"violated: %s\\n\", v.comment());\n    fflush(stdout);\n    exit(1);\n}\n\nint check_count = 0;\n\nbool is_valid(int x) {\n    ++check_count;\n    return x > 0;\n}\n\nint process(int x)\n    pre(is_valid(x))\n{\n    return x * 2;\n}\n\nint main() {\n    int r = process(5);\n    printf(\"result=%d checks=%d\\n\", r, check_count);\n    r = process(3);\n    printf(\"result=%d checks=%d\\n\", r, check_count);\n}",
+          "answer": "result=10 checks=1\nresult=6 checks=2",
+          "explanation": "The predicate `is_valid(x)` is a function with a side effect (incrementing `check_count`). Under `enforce` (the default semantic), the predicate is evaluated on each call to `process`. After `process(5)`: `check_count = 1`, result `10`. After `process(3)`: `check_count = 2`, result `6`. Neither call violates the predicate (`5 > 0`, `3 > 0`), so the handler is never invoked. Key insight: under `ignore`, `check_count` would remain `0` — that is exactly why such a predicate is impermissible."
+        },
+        {
+          "id": "m4-l5-e2",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"[violation] %s\\n\", v.comment());\n    fflush(stdout);\n    exit(1);\n}\n\nclass Sensor {\n    int value_ = 0;\n    bool initialized_ = false;\npublic:\n    void init(int v) { value_ = v; initialized_ = true; }\n\n    bool ready() { return initialized_; }\n\n    int read() const\n        pre(ready())\n    {\n        return value_;\n    }\n};\n\nint main() {\n    Sensor s;\n    s.init(42);\n    printf(\"value = %d\\n\", s.read());\n}",
+          "answerLine": 17,
+          "explanation": "Line 17: `bool ready() { return initialized_; }`. The method `ready()` is declared without `const`, but is called from the predicate `pre(ready())` of `read() const`. The predicate runs in a const context (`*this` has type `const Sensor`), so calling a non-const method is forbidden — compile error: `passing 'const Sensor' as 'this' argument discards qualifiers`. Fix: add `const` to `ready()`: `bool ready() const { return initialized_; }`."
+        },
+        {
+          "id": "m4-l5-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A program is compiled with the `ignore` semantic (`-fcontract-evaluation-semantic=ignore`). It contains:\n\n```cpp\nint log_count = 0;\n\nbool logged_check(int x) {\n    ++log_count;\n    return x >= 0;\n}\n\nint f(int x) pre(logged_check(x)) { return x + 1; }\n```\n\nWhat is `log_count` after calling `f(5)`?\n\nA. `1` — the predicate was evaluated once\nB. `0` — under `ignore` the predicate is not evaluated\nC. Unspecified — depends on the optimizer\nD. The program terminates with an error: side effects in predicates are forbidden",
+          "options": [
+            "1 — the predicate was evaluated once",
+            "0 — under ignore the predicate is not evaluated",
+            "Unspecified — depends on the optimizer",
+            "The program terminates with an error: side effects in predicates are forbidden"
+          ],
+          "answerIndex": 1,
+          "explanation": "Under the `ignore` semantic, the predicate is **not evaluated at all** — the compiler generates no code for `logged_check(x)`. Therefore `log_count` remains `0`. This is exactly the danger of side-effecting predicates: code that reads `log_count` expecting `1` will get `0` under `ignore`, but `1` under `enforce`. The compiler does not produce an error (option D is wrong) — P2900 requires purity but does not statically diagnose violations in the general case."
+        },
+        {
+          "id": "m4-l5-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    printf(\"violated: %s\\n\", v.comment());\n    fflush(stdout);\n    // observe: return\n}\n\nint check_count = 0;\n\nbool is_positive(int x) {\n    ++check_count;\n    return x > 0;\n}\n\nint double_val(int x)\n    pre(is_positive(x))\n{\n    return x * 2;\n}\n\nint main() {\n    int a = double_val(4);\n    printf(\"a=%d cc=%d\\n\", a, check_count);\n\n    int b = double_val(-1);\n    printf(\"b=%d cc=%d\\n\", b, check_count);\n\n    int c = double_val(3);\n    printf(\"c=%d cc=%d\\n\", c, check_count);\n}",
+          "answer": "a=8 cc=1\nviolated: is_positive(x)\nb=-2 cc=2\nc=6 cc=3",
+          "explanation": "Compiled with `-fcontract-evaluation-semantic=observe`. First call `double_val(4)`: `is_positive(4)` → `check_count=1`, predicate passes, returns `8`. Second call `double_val(-1)`: `is_positive(-1)` → `check_count=2`, predicate violated, handler is called, handler returns (observe mode), function body executes with `-1` → returns `-2`. Third call `double_val(3)`: `check_count=3`, no violation, returns `6`. Notice: even when `is_positive(-1)` violates the predicate, it is still called (incrementing `check_count`), because the predicate must be evaluated in order to detect the violation."
+        }
+      ],
+      "challenge": {
+        "prompt": "Implement a `Stack` struct with fixed capacity `CAP = 4` and methods `push`, `pop`, `top`, `size`, `empty`, `full`. Contract requirements:\n\n1. All helper methods (`empty()`, `full()`, `size()`) must be `const` — so they can be used from predicates of any method, including `const` ones.\n2. `push(int v)` must have `pre(!full())` — a pure predicate through a `const` method.\n3. `pop()` must have `pre(!empty())` — similarly.\n4. `top() const` must have `pre(!empty())` — a const-correct predicate.\n5. After three `push` calls, several `top`/`pop` operations, and one deliberate violation of `top()` on an empty stack, add a `contract_assert` with a provably false condition.\n\nRun with `-fcontract-evaluation-semantic=observe`. The handler should print the violation kind and predicate text, but must not terminate the program.",
+        "referenceSolution": "#include <contracts>\n#include <cstdio>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    printf(\"[%s] \\\"%s\\\"\\n\", kind_str, v.comment());\n    fflush(stdout);\n    // observe mode: return, execution continues\n}\n\nstruct Stack {\n    static constexpr int CAP = 4;\n    int data[CAP] = {};\n    int sz = 0;\n\n    bool empty() const { return sz == 0; }\n    bool full()  const { return sz == CAP; }\n    int  size()  const { return sz; }\n\n    void push(int v)\n        pre(!full())\n    {\n        data[sz++] = v;\n        contract_assert(sz > 0 && sz <= CAP);\n    }\n\n    int pop()\n        pre(!empty())\n    {\n        return data[--sz];\n    }\n\n    int top() const\n        pre(!empty())\n    {\n        return data[sz - 1];\n    }\n};\n\nint main() {\n    Stack s;\n    s.push(1);\n    s.push(2);\n    s.push(3);\n\n    printf(\"size=%d top=%d\\n\", s.size(), s.top());\n    printf(\"pop=%d\\n\", s.pop());\n    printf(\"pop=%d\\n\", s.pop());\n    printf(\"size=%d\\n\", s.size());\n\n    Stack empty_s;\n    int v = empty_s.top();    // pre(!empty()) violated\n    printf(\"top of empty (observe): %d\\n\", v);\n\n    contract_assert(s.size() >= 0);   // true\n    contract_assert(s.size() > 10);   // false — logged\n    printf(\"done\\n\");\n}",
+        "expectedOutput": "size=3 top=3\npop=3\npop=2\nsize=1\n[pre] \"!empty()\"\ntop of empty (observe): 0\n[assert] \"s.size() > 10\"\ndone",
+        "godboltUrl": "https://godbolt.org/z/example"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Why must a contract predicate have no observable side effects?",
+            "options": [
+              "The compiler forbids any function calls inside a predicate — only simple expressions are allowed",
+              "A predicate may be evaluated zero or more times depending on the semantic, so relying on a fixed evaluation count is UB",
+              "Side effects in predicates cause UB only under the `observe` semantic; under `enforce` they are allowed",
+              "Predicates with side effects work correctly, but the compiler emits a warning"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "The method `read() const` has the predicate `pre(ready())`. Why must `ready()` be declared `const`?",
+            "options": [
+              "Because `pre()` always evaluates in a `constexpr` context, which requires const functions",
+              "It is only a convention — the code will compile without `const` as well",
+              "The predicate runs in the const context of the function, where `*this` has type `const T`; calling a non-const method is a compile error",
+              "Because `const` methods are faster — the compiler optimizes them better"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the \"literal semantics\" of a contract predicate?",
+            "options": [
+              "The predicate is evaluated literally, without optimizations — the result is always exact",
+              "The predicate text is stored in the binary and accessible via `v.comment()`, independently of whether the predicate was evaluated",
+              "The predicate is written in quotes: `pre(\"x > 0\")` — this tells the compiler it is a string",
+              "Literal semantics is a synonym for `ignore`: the predicate exists only as text and is never evaluated"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "m4-l6",
+      "title": "Contracts design rationale & controversies",
+      "prerequisites": [
+        "m4-l1",
+        "m4-l2",
+        "m4-l3",
+        "m4-l4",
+        "m4-l5"
+      ],
+      "background": null,
+      "motivation": "By this point you know the contracts syntax (`pre`/`post`/`contract_assert`), evaluation semantics, the violation handler, side effects, and virtual functions. But understanding «how it works» is incomplete without «why it works this way».\n\nContracts in C++26 (P2900) are not the first attempt. Nearly the same mechanism was accepted into C++20 (P0542) — and then **removed before the standard was published**. This is rare: the committee voted it in and managed to vote it back out. Why? What changed in P2900 compared to P0542? Why does the standard library still have no contracts? Why can't contracts be used to validate user input?\n\nKnowing these «whys» is critical for two reasons: first, to avoid classic contracts misuse pitfalls; second, to understand what to expect from contracts in future standards.",
+      "theory": "## History: why C++20 contracts were removed\n\nIn 2018, contracts were accepted into C++20 as P0542. They were removed before the standard shipped. The reasons:\n\n**1. \"Build modes\" — a global build-level switch.** P0542 defined three modes for the entire build: `default` (compiler decides), `audit` (check everything), `axiom` (documentation only, never evaluated). This created a problem: one compiler flag switched *all* contracts in the entire program, including contracts in third-party libraries. The committee could not agree on the semantics of the global mode, especially for mixed-library code.\n\n**2. Side effects in predicates.** P0542 did not explicitly forbid side effects. This created situations where the program behaved differently in different build modes — not because the check was present or absent, but due to predicate side effects. The committee could not agree on the semantics.\n\n**3. No implementation experience.** No compiler had implemented P0542 before the vote. When Clang and GCC started prototyping, serious questions arose about ABI and interactions with inline/templates — questions P0542 left unanswered.\n\n**4. \"Axiom\" contracts.** P0542 included `[[expects axiom: cond]]` — a contract that was never evaluated but served as «documentation for the compiler» (supposedly for optimization). It was semantically useless and indistinguishable from a comment except for its syntax.\n\n## P2900 vs P0542: what changed\n\nP2900 (accepted into C++26) addressed every failure of P0542:\n\n| Issue | P0542 | P2900 |\n|-------|-------|-------|\n| Check mode | global build mode (`default`/`audit`/`axiom`) | **per-translation-unit**: `ignore`/`observe`/`enforce` set independently for each TU |\n| Syntax | `[[expects: cond]]` / `[[ensures: cond]]` | `pre(cond)` / `post(r: cond)` — part of the declarator, not an attribute |\n| Inline assertions | `[[assert: cond]]` | `contract_assert(cond)` — a statement, not an attribute |\n| Side effects | unspecified | explicit prohibition: UB (see m4-l5) |\n| Axiom contracts | `[[expects axiom: cond]]` | **removed**: never-evaluated contracts are just comments |\n| Violation handler | unspecified | replaceable function `handle_contract_violation` (like `operator new`) |\n\nThe key change is **per-translation-unit semantics**. A compiler pragma or flag now sets the semantics only for the current translation unit. Contracts in your code are checked with your semantics; contracts in a third-party library are checked with the semantics chosen when compiling that library. No global switch exists.\n\n## Narrow vs wide contracts\n\nThis is a fundamental distinction between functions based on their relationship to their inputs:\n\n**Narrow contract:** a function that works correctly only for a subset of possible inputs. Outside that subset — undefined behavior. Contracts (`pre`) make this subset explicit.\n\n```cpp\ndouble fast_log(const double x)\n    pre(x > 0.0)  // narrow: only for positive x\n{ /* ... */ }\n```\n\n**Wide contract:** a function that correctly handles any possible input — through branching, error codes, exceptions, etc. No preconditions.\n\n```cpp\ndouble safe_log(const double x) {\n    if (x <= 0.0) return std::numeric_limits<double>::quiet_NaN();\n    /* ... */\n}\n```\n\nNeither form is «better» — they solve different problems:\n- Narrow contracts are appropriate when the calling side *guarantees* valid input (system invariants).\n- Wide contracts are needed when the function itself is part of the error-handling mechanism (e.g., parsers, validators).\n\n## The main controversy: why the standard library has no contracts\n\nP2900 **deliberately does not add** `pre`/`post` to standard library functions. `std::vector::operator[]`, `std::span::operator[]`, `std::string::operator[]` — still UB on out-of-bounds access.\n\nReasons:\n\n**ABI stability.** Adding a contract to an existing function changes its «specification», which may affect the compiler's inlining decisions, mangling, or calling code. Although the standard does not explicitly state this, implementors are concerned about breaking compatibility with binary artifacts compiled without contracts.\n\n**Backward compatibility.** Millions of lines of code rely on the current behavior of `std::vector::operator[]`. Adding `pre(idx < size())` with `enforce` semantics as the default would break code that «accidentally worked» on out-of-bounds accesses. Adding it with `ignore` semantics — what changes?\n\n**Decision deferred.** The question of «contracts for the standard library» is a separate project with a separate vote, planned *after* C++26.\n\nThis is an ongoing source of controversy: the most obvious application of contracts (`std::vector::operator[]`) is deferred in C++26.\n\n## ABI implications of contracts\n\nAdding `pre(cond)` to a function changes its *declaration*. In some implementations this affects:\n- Inlining decisions: the contract adds checking code at the start of the function.\n- Mangling: in some ABI schemes, contracts may become part of the symbol name.\n\nTherefore, adding a contract to a published function in a dynamically linked library (.so/.dll) is a potentially ABI-breaking change. This is the same reason why adding `noexcept` to a virtual function is a breaking change in some ABIs.\n\n## What contracts are NOT\n\n**Not a testing framework.** `pre`/`post` do not replace unit tests. A unit test checks function behavior on a set of inputs and compares against expected results. A contract checks an interface invariant at runtime during a *specific* call. They complement each other but do not replace each other.\n\n**Not input validation for external data.** `pre()` is for *programmer* errors (violations that calling code should never make), not for external data. If a user enters `-1` in an «age» field, the correct response is to return an error or throw an exception — not to violate a contract (which calls `abort()` or the handler). Using `pre()` for data from HTTP requests, config files, command lines — this is an anti-pattern.\n\n**Not documentation-only.** The «axiom» contracts from P0542 were exactly that — descriptions that were never evaluated. P2900 removed them. A contract that is never checked is a comment with language syntax. Unevaluated contracts with `ignore` semantics in P2900 are a temporary development state, not a design goal.\n\n**Not compile-time checks.** Despite syntactic similarity to `requires`, contracts are a *runtime* mechanism. The condition in `pre()` is evaluated on every call (with non-zero semantics). `static_assert` is for compile-time checks; `pre`/`post` are for runtime.\n\n**Not a replacement for `-DNDEBUG`.** `assert()` is silenced by a single `NDEBUG` flag. Contracts are governed by per-TU semantics: there is no single «disable everything» compiler flag. This is intentional — to prevent accidentally disabling all checks in production.\n\n## What contracts ARE\n\n- **Machine-checkable interface specification.** `pre()`/`post()` are part of the function signature, visible in the declaration, and verifiable by tools.\n- **Standardized expression of UB boundaries.** Before P2900, functions with UB on certain inputs were described only in documentation. Now the boundary is expressed explicitly in code.\n- **A debugging and QA tool.** Enable `enforce` during development — get detectable violations with exact location and condition. In production — switch to `ignore`. This replaces ad-hoc `DEBUG_ASSERT` macros.\n- **Part of the design contract (in the DBC sense).** Design by Contract (Bertrand Meyer, Eiffel) is a design method where functions explicitly describe the obligations of the calling and called parties. P2900 brings DBC into C++ as a language construct.\n\n## Ongoing controversies (as of C++26)\n\n- **Per-TU vs per-contract vs global semantics:** some committee members consider per-TU insufficiently flexible; per-contract semantics (each contract explicitly tagged) is being discussed.\n- **Side effects:** the current position is UB. Part of the committee believes «conditionally evaluated» side effects should be permitted for logging.\n- **Contracts on virtual functions:** GCC trunk (as of C++26) does not allow `pre`/`post` on virtual functions at all. The standard permits it, but the question of contract inheritance on override remains open — does a stricter `pre` on Derived violate the Liskov Substitution Principle?\n- **Contracts in the standard library:** deferred to C++29.\n- **Lambdas:** the current state of the standard does not define whether lambdas may have `pre`/`post`; GCC trunk does not support this.\n\n## Nuances checklist\n\n- **Unevaluated contexts:** `pre`/`post` are not part of the function signature for overload resolution or SFINAE — two function declarations with different contracts are the same function with a conflict, not an overload.\n- **Old alternatives:** `assert()` (silenced by NDEBUG), custom macros `ASSERT(cond, msg)` — both are replaced by contracts, with backward compatibility maintained via `ignore` semantics.\n- **Ill-formed vs UB:** side effects in predicates — UB (not a compile error); use of a non-`const` parameter in `post` — ill-formed (compile error).\n- **Interaction with templates:** contracts in template functions work the same as in non-template functions — semantics do not depend on template parameters.",
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2 -fcontracts"
+      },
+      "examples": [
+        {
+          "title": "assert() vs pre(): two different tools",
+          "code": "#include <cassert>\n#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[contract] violated: %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// Old style: assert() — silenced by -DNDEBUG\nint old_sqrt(const int x) {\n    assert(x >= 0);  // disappears completely in release with NDEBUG\n    int r = 0;\n    while ((r + 1) * (r + 1) <= x) ++r;\n    return r;\n}\n\n// New style: pre() — behavior governed by evaluation semantics\nint new_sqrt(const int x)\n    pre(x >= 0)\n{\n    int r = 0;\n    while ((r + 1) * (r + 1) <= x) ++r;\n    return r;\n}\n\nint main() {\n    // Both behave the same with valid input\n    std::printf(\"old_sqrt(25) = %d\\n\", old_sqrt(25));\n    std::printf(\"new_sqrt(25) = %d\\n\", new_sqrt(25));\n    std::printf(\"old_sqrt(16) = %d\\n\", old_sqrt(16));\n    std::printf(\"new_sqrt(16) = %d\\n\", new_sqrt(16));\n\n    // Violation: pre() invokes the contract violation handler\n    new_sqrt(-1);\n}",
+          "expectedOutput": "old_sqrt(25) = 5\nnew_sqrt(25) = 5\nold_sqrt(16) = 4\nnew_sqrt(16) = 4\n[contract] violated: x >= 0",
+          "explanation": "With valid inputs, `assert()` and `pre()` behave identically — the check passes invisibly. The key difference is what happens *without* the check: `assert()` with `-DNDEBUG` disappears entirely, leaving the caller with UB. `pre()` is governed by per-TU evaluation semantics: `ignore` — skip, `observe` — log, `enforce` — invoke the handler. There is no single «-DNDEBUG» for contracts — this is deliberate, to prevent accidentally disabling all checks in production."
+        },
+        {
+          "title": "Narrow vs wide contracts",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[violation] %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// NARROW contract: only works for x > 0.\n// The caller is responsible for guaranteeing valid input.\ndouble log_narrow(const double x)\n    pre(x > 0.0)\n{\n    return x * 2.5;  // simplified for illustration\n}\n\n// WIDE contract: handles any input, including invalid.\n// No preconditions — the function itself is part of error handling.\ndouble log_wide(const double x) {\n    if (x <= 0.0) {\n        std::printf(\"[log_wide] invalid input %.1f, returning -1\\n\", x);\n        return -1.0;\n    }\n    return x * 2.5;\n}\n\nint main() {\n    // Narrow: valid input\n    std::printf(\"log_narrow(4.0) = %.1f\\n\", log_narrow(4.0));\n    std::printf(\"log_narrow(1.0) = %.1f\\n\", log_narrow(1.0));\n\n    // Wide: any input\n    std::printf(\"log_wide(4.0)   = %.1f\\n\", log_wide(4.0));\n    std::printf(\"log_wide(-1.0)  = %.1f\\n\", log_wide(-1.0));\n\n    // Narrow with violation: pre() fires\n    std::printf(\"calling log_narrow(-1.0)...\\n\");\n    log_narrow(-1.0);\n    std::printf(\"unreachable\\n\");\n}",
+          "expectedOutput": "log_narrow(4.0) = 10.0\nlog_narrow(1.0) = 2.5\nlog_wide(4.0)   = 10.0\n[log_wide] invalid input -1.0, returning -1\nlog_wide(-1.0)  = -1.0\ncalling log_narrow(-1.0)...\n[violation] x > 0.0",
+          "explanation": "`log_narrow` is a narrow contract: the function assumes the caller *guarantees* valid input. The precondition `pre(x > 0.0)` makes this obligation explicit. `log_wide` is a wide contract: the function handles any input itself via `if`. The choice between them is architectural: a narrow contract is appropriate inside a system where invariants are guaranteed by higher-level code; a wide contract belongs at the boundary with the outside world (parser, API handler). Both forms are correct — they solve different problems."
+        },
+        {
+          "title": "Contracts are NOT external input validation",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"[contract violated] %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// WRONG: pre() to validate data from a config file / HTTP request.\n// If the config has a bad value, the program terminates via the handler.\n// This is not «error handling» — it is a program failure.\nint setup_buffer_wrong(const int size)\n    pre(size > 0 && size <= 1024)\n{\n    std::printf(\"buffer size: %d\\n\", size);\n    return size;\n}\n\n// CORRECT: validate external data with a normal if-check.\n// Contract remains only for programmer-error invariants.\nint setup_buffer_correct(const int size) {\n    if (size <= 0 || size > 1024) {\n        std::printf(\"invalid config value: %d, using default 64\\n\", size);\n        return 64;\n    }\n    std::printf(\"buffer size: %d\\n\", size);\n    return size;\n}\n\nint main() {\n    const int config_value = -5;  // bad value from config file\n\n    // Correct version: handles config error gracefully\n    std::printf(\"correct: \");\n    setup_buffer_correct(config_value);\n\n    // Wrong version: contract fires — program crashes due to a config error\n    std::printf(\"wrong: \");\n    setup_buffer_wrong(config_value);\n    std::printf(\"unreachable\\n\");\n}",
+          "expectedOutput": "correct: invalid config value: -5, using default 64\nwrong: [contract violated] size > 0 && size <= 1024",
+          "explanation": "The key rule: `pre()` is for *programmer* errors (violations of invariants that the calling code should never make), not for *data* from the outside world. Data from a config file, HTTP request, command line, or database can be anything — the program must handle it gracefully. Using `pre()` to validate it means: «if the config is bad — the program crashes». That is not error handling; it is breaking the contract with the system's users. External data → `if`-checks and error codes/exceptions; programmer invariants → `pre()`."
+        },
+        {
+          "title": "Advanced: contracts as a QA tool, not a test framework",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    const char* kind_str =\n        (static_cast<int>(v.kind()) == 1) ? \"pre\"  :\n        (static_cast<int>(v.kind()) == 2) ? \"post\" : \"assert\";\n    std::printf(\"[%s] %s (line %u)\\n\",\n        kind_str,\n        v.comment(),\n        v.location().line());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// Binary search with contract_assert for algorithm invariants.\n// A unit test checks the result on specific data;\n// contract_assert checks the invariant on every call in any QA run.\nint binary_search(const int* arr, const int n, const int target)\n    pre(arr != nullptr)\n    pre(n > 0)\n    post(r: r >= -1 && r < n)\n{\n    int lo = 0, hi = n - 1;\n    while (lo <= hi) {\n        const int mid = lo + (hi - lo) / 2;\n        contract_assert(mid >= 0 && mid < n);  // invariant: mid stays in [0,n)\n\n        if (arr[mid] == target) return mid;\n        if (arr[mid] < target) lo = mid + 1;\n        else                   hi = mid - 1;\n    }\n    return -1;\n}\n\nint main() {\n    const int data[] = {1, 3, 5, 7, 9, 11, 13};\n    const int n = 7;\n\n    std::printf(\"search(7)  = index %d\\n\", binary_search(data, n, 7));\n    std::printf(\"search(1)  = index %d\\n\", binary_search(data, n, 1));\n    std::printf(\"search(13) = index %d\\n\", binary_search(data, n, 13));\n    std::printf(\"search(6)  = index %d\\n\", binary_search(data, n, 6));\n\n    // pre() catches a programmer error (passing n=0) right at the call site\n    std::printf(\"calling binary_search with n=0...\\n\");\n    binary_search(data, 0, 7);\n    std::printf(\"unreachable\\n\");\n}",
+          "expectedOutput": "search(7)  = index 3\nsearch(1)  = index 0\nsearch(13) = index 6\nsearch(6)  = index -1\ncalling binary_search with n=0...\n[pre] n > 0 (line 26)",
+          "explanation": "Contracts and unit tests complement each other: a unit test checks `binary_search(data, n, 7) == 3` on predetermined data; `contract_assert(mid >= 0 && mid < n)` checks the invariant on *every* call in any context. `pre(n > 0)` catches a programmer error right at the call site with the exact line number and condition — a unit test might not cover that particular calling code. Notice: `v.location().line()` gives the line of the violated contract (line 26 — `pre(n > 0)`). This is the «machine-checkable interface specification» — the UB boundary is explicit and detectable."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m4-l6-e1",
+          "level": "basic",
+          "type": "find-bug",
+          "code": "#include <contracts>\n#include <cstdio>\n#include <cstdlib>\n\nvoid handle_contract_violation(const std::contracts::contract_violation& v) {\n    std::printf(\"contract violated: %s\\n\", v.comment());\n    std::fflush(stdout);\n    exit(1);\n}\n\n// This function reads a value from a configuration file and sets up a buffer.\n// The value can be anything — the file could have been edited manually.\nint setup_buffer(const int size)\n    pre(size > 0 && size <= 1024)\n{\n    std::printf(\"buffer size: %d\\n\", size);\n    return size;\n}\n\nint main() {\n    // Simulating a value read from config: -5\n    const int config_size = -5;\n    setup_buffer(config_size);\n}",
+          "answerLine": 13,
+          "explanation": "Line 13: `pre(size > 0 && size <= 1024)` — this is incorrect use of a contract. `setup_buffer` receives data from a configuration file, which can contain any value. `pre()` is for *programmer* errors (violations that calling code should never make), not for validating external data. With a bad config, the program terminates via the handler instead of handling the error gracefully. Fix: remove the `pre()` and add `if (size <= 0 || size > 1024) { /* handle error */ }` inside the function body."
+        },
+        {
+          "id": "m4-l6-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Why were contracts removed from C++20 (P0542) before the standard was published?\n\nChoose the most complete and accurate answer.",
+          "options": [
+            "Due to technical errors in the specification of `[[expects:]]`/`[[ensures:]]` syntax",
+            "Due to three unresolved problems: a global «build mode» with no implementation experience, undefined semantics for predicate side effects, and no real compiler implementations before the vote",
+            "Because the committee decided to add `std::contract_check()` as a library mechanism instead",
+            "Due to a conflict with `noexcept`: contracts could not be added to functions with `noexcept`"
+          ],
+          "answerIndex": 1,
+          "explanation": "P0542 was removed due to three interrelated problems: (1) **global build mode** — one compiler flag switched all contracts in the entire program including third-party libraries, and the committee could not agree on semantics; (2) **side effects** in predicates were undefined, creating different behavior in different modes; (3) **no implementation experience** — when Clang/GCC started prototyping, ABI questions without answers in P0542 emerged. Axiom contracts were also criticized but were not the primary reason for removal."
+        },
+        {
+          "id": "m4-l6-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why does P2900 (C++26) **deliberately** not add `pre`/`post` to standard library functions (`std::vector::operator[]`, `std::span::operator[]`, etc.)?\n\nChoose the most complete answer.",
+          "options": [
+            "Because the standard library uses only wide contracts and never has preconditions",
+            "Due to ABI stability and backward compatibility: adding a contract to a published function may break binary compatibility; furthermore, changing the behavior of `operator[]` could break code that relies on current semantics",
+            "Because the standard library is compiled with `-fno-contracts` and does not support the contract mechanism",
+            "Because contracts are only allowed in user code (not in namespace `std`)"
+          ],
+          "answerIndex": 1,
+          "explanation": "P2900 defers contracts for the standard library for two key reasons. **ABI stability**: adding `pre()` to an already-published function may affect the compiler's inlining decisions and, in some ABI schemes, symbol mangling. **Backward compatibility**: `std::vector::operator[]` with `pre(idx < size())` under `enforce` semantics would break code that «accidentally worked» on out-of-bounds access. With `ignore` semantics — nothing changes, so why add it? This question has been moved to a separate project for C++29. Neither C nor D reflects the actual situation."
+        },
+        {
+          "id": "m4-l6-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A developer wants to check the invariant «all array elements are non-negative» before sorting:\n\n```cpp\nvoid sort_positive(int* arr, const int n)\n    pre(n > 0)\n    pre([&]{ for(int i=0;i<n;i++) if(arr[i]<0) return false; return true; }())\n{\n    // sort...\n}\n```\n\nWhat is wrong here?",
+          "options": [
+            "Syntactically invalid: a lambda is not allowed in pre()",
+            "The invariant check «all elements non-negative» is an O(n) operation; while the capture syntax may be accepted by GCC trunk, the predicate performs work proportional to n on every call — contracts with expensive predicates are a design smell and should use contract_assert inside the body or an explicit validate() call during QA",
+            "The lambda in pre() is correct syntax and the code will work without standard violations. The only issue is performance",
+            "pre() cannot reference parameter arr because it is a pointer"
+          ],
+          "answerIndex": 1,
+          "explanation": "Predicates in `pre()` must be **pure** (no side effects) — a requirement of P2900 (violation → UB, see m4-l5). A lambda with `[&]` capture is syntactically accepted by GCC trunk in some contexts, but the main architectural problem is: an O(n) check inside `pre()` runs on *every* call with non-zero semantics. A single-line contract becomes a hidden O(n) operation. The correct solution: use `contract_assert` inside the body (explicit, once per call) or a separate `validate()` function called explicitly in QA mode."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the key difference between the evaluation semantics of P2900 and the «build modes» of P0542?",
+            "options": [
+              "P2900 adds a fourth mode `strict` that was not in P0542",
+              "P0542 used a global switch for the entire build; P2900 sets semantics per-translation-unit, allowing different TUs to have different semantics independently",
+              "P2900 removed the `observe` mode, leaving only `ignore` and `enforce`",
+              "The difference is purely syntactic: `[[expects:]]` was replaced by `pre()`, but the semantics are unchanged"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "A function receives a string from an HTTP request and must ensure it is not empty. How should this be expressed in C++26?",
+            "options": [
+              "pre(!str.empty()) — the contract explicitly documents the requirement",
+              "A normal if-check: if (str.empty()) return error; — external data is validated through normal control flow, not through contracts",
+              "contract_assert(!str.empty()) — an assertion inside the body, not a precondition",
+              "static_assert — checked at compile time"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Why were «axiom» contracts from P0542 removed in P2900?",
+            "options": [
+              "Due to syntactic conflicts with the `axiom` keyword in other parts of the standard",
+              "Because a contract that is never evaluated is semantically indistinguishable from a comment — it is documentation with language syntax but without machine verification",
+              "Due to performance: axiom contracts compiled too slowly",
+              "Because compilers could not implement optimizations based on axiom predicates"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      }
     }
   ]
 }
