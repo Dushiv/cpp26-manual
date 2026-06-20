@@ -4,5 +4,11 @@
   "title": "std::execution (Senders/Receivers)",
   "significance": "флагман",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    {
+      "id": "m6-l1",
+      "title": "Модель Senders/Receivers: основы",
+      "stub": true
+    }
+  ]
 }

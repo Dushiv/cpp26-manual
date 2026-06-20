@@ -7,8 +7,989 @@
   "lessons": [
     {
       "id": "m5-l1",
-      "title": "Reflection operator ^ and std::meta::info",
-      "stub": true
+      "title": "The ^^ reflection operator and std::meta::info",
+      "prerequisites": [],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "Before C++26, the only introspection tool was `typeid` — and it worked only at runtime, only for types (not for functions or variables), and required RTTI, which is often disabled in embedded or library code. Tasks like \"generate a type name at compile time\" or \"check whether an entity is a function\" were solved through template tricks (`type_traits`, specializations, partial specialization) — verbose, brittle, and with no unified syntax.\n\nC++26 introduces **static reflection**: the `^^` operator turns any language entity — a type, variable, function, namespace, or template — into a value of type `std::meta::info`. That value is fully constexpr, exists only at compile time, and is queried via `std::meta::*` functions that answer questions about the entity: its name, its kind, the type of its value. One unified syntax instead of a zoo of tricks.",
+      "theory": "## The `^^` operator: what it does\n\n`^^expr` is a unary operator that takes a **language entity** and returns a **prvalue** of type `std::meta::info`. An \"entity\" can be a type (`^^int`, `^^MyStruct`), a variable (`^^x`), a function (`^^f`), a namespace (`^^std`), or a template (`^^vector`). The operator does not evaluate or call anything — it merely captures the identity of the entity at compile time.\n\nValid forms:\n```cpp\nconstexpr auto r1 = ^^int;        // type\nconstexpr auto r2 = ^^my_var;     // variable\nconstexpr auto r3 = ^^my_func;    // function\nconstexpr auto r4 = ^^std;        // namespace\nconstexpr auto r5 = ^^MyTemplate; // class template\n```\n\n## The type `std::meta::info`\n\n`std::meta::info` is a **consteval-only type**: a variable of this type must be `constexpr` (or appear inside a `consteval`/`constexpr` context). Storing `std::meta::info` in an ordinary runtime variable is a compile error. In other words, C++26 reflection is fully static — entity metadata exists only during compilation, with zero runtime overhead.\n\n```cpp\n// Correct:\nconstexpr std::meta::info r = ^^int;  // constexpr — OK\n\n// Compile error:\nstd::meta::info r = ^^int;             // not constexpr — ill-formed\n```\n\n## `^^` is an unevaluated context\n\nThe `^^` operator does not evaluate its operand at runtime — just like `sizeof` and `decltype`. This means side effects (function calls, variable mutations) do not occur:\n\n```cpp\nint counter = 0;\nint bump() { return ++counter; }\n\nconstexpr auto r = ^^bump;  // bump() is NOT called\n// counter == 0\n```\n\n`^^bump` captures the identity of function `bump`, but never executes its body.\n\n## Querying a reflection: `std::meta::*`\n\nAll query functions in namespace `std::meta` accept `std::meta::info` and must be called in a constexpr/consteval context.\n\n**Kind predicates:**\n- `std::meta::is_type(r)` — true if `r` reflects a type\n- `std::meta::is_function(r)` — true if `r` reflects a function\n- `std::meta::is_variable(r)` — true if `r` reflects a variable\n- `std::meta::is_namespace(r)` — true if `r` reflects a namespace\n- `std::meta::is_template(r)` — true if `r` reflects a template\n\n**Entity name:**\n- `std::meta::identifier_of(r)` — returns a `std::string_view` with the declared name of the entity. Works only for named entities (not for built-in types like `int`). Must be called in a `consteval` context.\n\n**Entity type:**\n- `std::meta::type_of(r)` — returns a `std::meta::info` for the entity's type (type of a variable, type of a function).\n\n**Identity comparison:**\n- `r1 == r2` — true if both reflect the same entity. The comparison is also consteval-only: its result must be used in a constant context.\n\n```cpp\nconsteval bool same(std::meta::info a, std::meta::info b) { return a == b; }\n\nconstexpr bool b = same(^^int, ^^int);    // true\nconstexpr bool c = same(^^int, ^^double); // false\n```\n\n## Use in templates and `if constexpr`\n\n`std::meta::info` is valid as a non-type template parameter. This lets you pass reflections into templates and use predicates in `if constexpr`:\n\n```cpp\ntemplate <std::meta::info R>\nvoid describe() {\n    if constexpr (std::meta::is_type(R)) {\n        // branch for types\n    } else if constexpr (std::meta::is_function(R)) {\n        // branch for functions\n    }\n}\n\ndescribe<^^MyStruct>(); // type branch is instantiated\ndescribe<^^my_func>();  // function branch is instantiated\n```\n\n## Contrast: `typeid` vs `^^`\n\n| | `typeid` / `type_info` | `^^` / `std::meta::info` |\n|---|---|---|\n| When it works | Runtime (requires RTTI) | Compile time only |\n| What can be reflected | Types only | Types, variables, functions, namespaces, templates |\n| Queries | `name()` only (implementation-defined) | `is_type`, `is_function`, `identifier_of`, `type_of`, and much more |\n| Overhead | RTTI tables in the binary | Zero at runtime |\n\n## Ill-formed: what you cannot reflect\n\nReflecting a non-existent entity is a compile error (ill-formed), not UB:\n```cpp\nconstexpr auto r = ^^nonexistent_entity; // compile error\n```\nThe compiler diagnoses this immediately; undefined behavior does not arise.",
+      "examples": [
+        {
+          "title": "What can be reflected with the ^^ operator",
+          "code": "#include <meta>\n#include <print>\n\nint speed = 100;\nstruct Point { int x, y; };\n\nnamespace physics {}\n\nint main() {\n    // ^^ captures an entity and returns a constexpr prvalue of type std::meta::info\n    constexpr std::meta::info r_type = ^^int;      // type\n    constexpr std::meta::info r_var  = ^^speed;    // variable\n    constexpr std::meta::info r_user = ^^Point;    // user-defined type\n\n    // std::meta::is_type: true only for types\n    std::print(\"is_type(^^int)   = {}\\n\", std::meta::is_type(r_type));\n    std::print(\"is_type(^^speed) = {}\\n\", std::meta::is_type(r_var));\n    std::print(\"is_type(^^Point) = {}\\n\", std::meta::is_type(r_user));\n\n    // std::meta::is_variable: true for variables\n    std::print(\"is_variable(^^speed) = {}\\n\", std::meta::is_variable(r_var));\n}",
+          "expectedOutput": "is_type(^^int)   = true\nis_type(^^speed) = false\nis_type(^^Point) = true\nis_variable(^^speed) = true",
+          "explanation": "`^^int` and `^^Point` produce reflections of types — `is_type` returns `true` for them. `^^speed` reflects a variable, not a type — `is_type` returns `false`, but `is_variable` returns `true`. Note that all variables `r_type`, `r_var`, `r_user` are declared `constexpr`: `std::meta::info` is a consteval-only type, and declaring one without `constexpr` is a compile error."
+        },
+        {
+          "title": "identifier_of, is_function, and type_of",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\ndouble area(int w, int h) { return w * h; }\nint max_count = 256;\n\nconsteval std::string_view name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\nconsteval bool same_type(std::meta::info a, std::meta::info b) {\n    return a == b;\n}\n\nint main() {\n    constexpr auto r_area      = ^^area;\n    constexpr auto r_max_count = ^^max_count;\n\n    // identifier_of: declared name of the entity\n    std::print(\"name(^^area)      = {}\\n\", name(r_area));\n    std::print(\"name(^^max_count) = {}\\n\", name(r_max_count));\n\n    // is_function\n    std::print(\"is_function(^^area)      = {}\\n\", std::meta::is_function(r_area));\n    std::print(\"is_function(^^max_count) = {}\\n\", std::meta::is_function(r_max_count));\n\n    // type_of: returns std::meta::info for the entity's type\n    // == comparison is also consteval-only, so wrap in a consteval function\n    constexpr bool type_is_int = same_type(std::meta::type_of(r_max_count), ^^int);\n    std::print(\"type_of(^^max_count) == ^^int: {}\\n\", type_is_int);\n\n    // == compares by entity identity\n    constexpr bool same = same_type(r_area, ^^area);\n    constexpr bool diff = same_type(r_area, r_max_count);\n    std::print(\"^^area == ^^area:      {}\\n\", same);\n    std::print(\"^^area == ^^max_count: {}\\n\", diff);\n}",
+          "expectedOutput": "name(^^area)      = area\nname(^^max_count) = max_count\nis_function(^^area)      = true\nis_function(^^max_count) = false\ntype_of(^^max_count) == ^^int: true\n^^area == ^^area:      true\n^^area == ^^max_count: false",
+          "explanation": "`identifier_of` returns a `std::string_view` with the entity's name — it must be called in a `consteval` context, so it is wrapped in the `consteval` helper `name`. `type_of(^^max_count)` returns a reflection of the variable's type — `^^int` — and comparing it against `^^int` yields `true`. The `==` operator on `std::meta::info` is also consteval-only, which is why `same_type` is `consteval` too. Two reflections of the same function `area` are equal — `^^area == ^^area` is `true`."
+        },
+        {
+          "title": "Reflection in if constexpr — dispatching by entity kind",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\nstruct Color { int r, g, b; };\nvoid render() {}\nint frame_count = 0;\n\nconsteval std::string_view get_name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\n// std::meta::info as a non-type template parameter\ntemplate <std::meta::info R>\nvoid describe_entity() {\n    if constexpr (std::meta::is_type(R)) {\n        std::print(\"[type]     {}\\n\", get_name(R));\n    } else if constexpr (std::meta::is_function(R)) {\n        std::print(\"[function] {}\\n\", get_name(R));\n    } else if constexpr (std::meta::is_variable(R)) {\n        std::print(\"[variable] {}\\n\", get_name(R));\n    }\n}\n\nint main() {\n    describe_entity<^^Color>();\n    describe_entity<^^render>();\n    describe_entity<^^frame_count>();\n}",
+          "expectedOutput": "[type]     Color\n[function] render\n[variable] frame_count",
+          "explanation": "`std::meta::info` is valid as a non-type template parameter. The predicates `is_type`, `is_function`, and `is_variable` used inside `if constexpr` operate in a constant context (the body of a function template), so the branches compile correctly. For each instantiation, only the matching branch is compiled. `get_name` is `consteval`, so it is evaluated at compile time and returns a string that `std::print` outputs at runtime."
+        },
+        {
+          "title": "^^ is an unevaluated context: side effects do not occur",
+          "code": "#include <meta>\n#include <print>\n\nint counter = 0;\n\nint side_effect() {\n    ++counter;\n    return 42;\n}\n\nint main() {\n    // ^^ reflects the entity; it does NOT call the function\n    constexpr auto r = ^^side_effect;  // side_effect() is NOT called\n\n    std::print(\"is_function(^^side_effect) = {}\\n\",\n               std::meta::is_function(r));\n    std::print(\"counter after ^^ = {}\\n\", counter);  // 0: no call happened\n\n    // For comparison: an actual call increments counter\n    int val = side_effect();\n    std::print(\"side_effect() = {}\\n\", val);\n    std::print(\"counter after call = {}\\n\", counter);  // 1\n}",
+          "expectedOutput": "is_function(^^side_effect) = true\ncounter after ^^ = 0\nside_effect() = 42\ncounter after call = 1",
+          "explanation": "`^^side_effect` behaves like `sizeof` or `decltype` — it is an unevaluated context. The operator captures the *identity* of the function but never executes its body. That is why `counter` remains zero after `^^`. The actual call `side_effect()` is a regular function call and does increment `counter`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\ndouble ratio = 1.5;\nstruct Tag {};\n\nint main() {\n    constexpr auto r1 = ^^ratio;\n    constexpr auto r2 = ^^Tag;\n    std::print(\"{} {}\\n\",\n        std::meta::is_variable(r1),\n        std::meta::is_type(r2));\n}",
+          "answer": "true true",
+          "explanation": "`^^ratio` reflects a variable — `is_variable` returns `true`, `is_type` returns `false`. `^^Tag` reflects a user-defined type — `is_type` returns `true`. The predicates `is_variable` and `is_type` are `consteval` functions that return plain `bool`, so they can be used as arguments to `std::print`."
+        },
+        {
+          "id": "m5-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does the expression `^^int` return?",
+          "options": [
+            "A value of type `std::type_info` (like `typeid(int)`)",
+            "A prvalue of type `std::meta::info` — a consteval-only entity descriptor",
+            "A pointer to the vtable of type `int`",
+            "A value of type `std::size_t` — the size of `int` in bytes"
+          ],
+          "answerIndex": 1,
+          "explanation": "`^^T` is the C++26 static reflection operator; it returns a prvalue of type `std::meta::info`. This is a consteval-only value that exists only at compile time — a fundamentally different abstraction from `typeid`, which works at runtime and requires RTTI."
+        },
+        {
+          "id": "m5-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Vec3 {};\nvoid normalize(Vec3) {}\n\nint main() {\n    std::meta::info r = ^^Vec3;\n    std::print(\"{}\\n\", std::meta::is_type(r));\n}",
+          "answerLine": 8,
+          "explanation": "The type `std::meta::info` is consteval-only: a variable of this type must be `constexpr`. Line 8 declares `r` as an ordinary (non-constexpr) variable, which is a compile error: \"variable of consteval-only type must be constexpr\". Fix: add `constexpr` before `std::meta::info r`."
+        },
+        {
+          "id": "m5-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Given this code:\n```cpp\nconstexpr auto r1 = ^^int;\nconstexpr auto r2 = ^^double;\nbool same = (r1 == r2);  // line 3\n```\nWhat happens when line 3 is compiled?",
+          "options": [
+            "Compiles fine: `same` will be `false` at runtime",
+            "Compile error: operator `==` on `std::meta::info` is consteval-only — the result cannot be stored in a `bool`",
+            "A compiler warning, but the program compiles",
+            "UB at runtime: comparing constexpr values in a runtime variable"
+          ],
+          "answerIndex": 1,
+          "explanation": "The `==` operator applied to two `std::meta::info` values is a consteval-only operation. Its result cannot be assigned to a plain `bool` variable. To compare two reflections, the comparison must happen inside a `consteval` function or a `static_assert`: `consteval bool same(std::meta::info a, std::meta::info b) { return a == b; }`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a function template `classify` that takes a list of reflections as a non-type template parameter pack and, for each one, prints a line in the form `\"type: Name\"`, `\"function: Name\"`, `\"variable: Name\"`, or `\"namespace: Name\"`.\n\nDeclare the following entities:\n```cpp\nstruct Vertex { float x, y, z; };\nvoid draw(Vertex v);\nint vertex_count = 0;\nnamespace gfx {}\n```\n\nThen call:\n```cpp\nclassify<^^Vertex, ^^draw, ^^vertex_count, ^^gfx>();\n```\n\nExpected output:\n```\ntype: Vertex\nfunction: draw\nvariable: vertex_count\nnamespace: gfx\n```",
+        "referenceSolution": "```cpp\n#include <meta>\n#include <print>\n#include <string_view>\n\nstruct Vertex { float x, y, z; };\nvoid draw(Vertex v) { (void)v; }\nint vertex_count = 0;\nnamespace gfx {}\n\nconsteval std::string_view get_name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\ntemplate <std::meta::info... Rs>\nvoid classify() {\n    (..., []{  // fold over lambdas\n        constexpr std::meta::info R = Rs;\n        if constexpr (std::meta::is_type(R))\n            std::print(\"type: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_function(R))\n            std::print(\"function: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_variable(R))\n            std::print(\"variable: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_namespace(R))\n            std::print(\"namespace: {}\\n\", get_name(R));\n    }());\n}\n\nint main() {\n    classify<^^Vertex, ^^draw, ^^vertex_count, ^^gfx>();\n}\n```",
+        "expectedOutput": "type: Vertex\nfunction: draw\nvariable: vertex_count\nnamespace: gfx",
+        "godboltUrl": null
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the type of the result of `^^MyStruct`?",
+            "options": [
+              "`std::type_info`",
+              "`std::meta::info`",
+              "`const char*` (the type name)",
+              "`std::size_t` (the size of the type)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`^^` is the static reflection operator; it returns a prvalue of type `std::meta::info`. This is a consteval-only type, so a variable storing it must be `constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "The variable `std::meta::info r = ^^int;` is declared without `constexpr`. What happens?",
+            "options": [
+              "Compiles fine; `r` holds a runtime copy of the reflection",
+              "Compile error: a variable of a consteval-only type must be `constexpr`",
+              "A compiler warning, but the program runs",
+              "UB: the value of `r` is unpredictable"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` is a consteval-only type. Its values exist only at compile time. Storing `std::meta::info` in an ordinary (non-constexpr) variable is a compile error."
+          },
+          {
+            "type": "choice",
+            "prompt": "Which `std::meta::*` predicate returns `true` for `^^my_func`, where `my_func` is an ordinary function?",
+            "options": [
+              "`std::meta::is_type(^^my_func)`",
+              "`std::meta::is_variable(^^my_func)`",
+              "`std::meta::is_function(^^my_func)`",
+              "`std::meta::is_namespace(^^my_func)`"
+            ],
+            "answerIndex": 2,
+            "explanation": "`^^my_func` reflects a function. `is_function` returns `true`. `is_type` and `is_variable` return `false` — a function is neither a type nor a variable."
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the fundamental difference between `^^` / `std::meta::info` and `typeid` / `std::type_info`?",
+            "options": [
+              "Only the syntax differs — the semantics are the same",
+              "`^^` works only at runtime; `typeid` works only at compile time",
+              "`^^` works at compile time, reflects any entity (not just types), and requires no RTTI; `typeid` is runtime-only, types only, requires RTTI",
+              "`typeid` is more precise — it returns a mangled name, while `^^` returns only a simple identifier"
+            ],
+            "answerIndex": 2,
+            "explanation": "`typeid` is a runtime mechanism: it requires RTTI, works only for types, and returns an implementation-defined name string. `^^` is compile-time only: zero runtime overhead, reflects types, variables, functions, and namespaces; queries via `std::meta::*` execute during compilation."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l2",
+      "title": "Splicing [: r :]",
+      "prerequisites": [
+        "m5-l1"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "In lesson m5-l1 we learned how to turn names into `std::meta::info` values using the `^^` operator. Now we need the reverse step: take a reflection and **inject it back into code** — as a type, as an expression, or as a template. That is exactly what the splice syntax `[: r :]` provides.\n\nWithout splicing, reflection would be one-directional: you can *ask* about a type, but you cannot *use* the answer where the compiler expects an actual type or value. Splicing closes the loop: `typename [: ^^int :]` is literally `int`. This enables generic functions parameterised not by types but by *type reflections*, and it opens the door to metadata-driven code generation.",
+      "theory": "## Three forms of splicing\n\nThe splicer `[: r :]` (read: \"splice r\") reads a compile-time value `r` of type `std::meta::info` and injects the corresponding entity back into the AST. The compiler requires `r` to be a **constant expression** — otherwise you get a compile error: *splice operand must be a constant expression*.\n\nThere are three context-distinguishable forms:\n\n### 1. `typename [: r :]` — splice as a type\n\nUsed wherever a type is syntactically expected:\n\n```cpp\nconstexpr auto r = ^^double;\ntypename [:r:] x = 3.14;           // double x = 3.14;\nauto f = static_cast<typename [:r:]>(7);  // static_cast<double>(7)\nstd::cout << sizeof(typename [:r:]);      // sizeof(double)\n```\n\nThe rule is simple: **wherever a `typename`-context is expected, write `typename [: r :]`**.\n\n### 2. `[: r :]` — splice as an expression (value)\n\nUsed wherever a *value* is expected — for reflections of variables and enumerators:\n\n```cpp\nconstexpr int kMax = 255;\nconstexpr auto r = ^^kMax;\nstd::cout << [:r:];     // reads kMax, prints 255\n```\n\nKey nuances:\n- **Value category**: `[: r :]` for a variable or enumerator produces an **lvalue** — you can take its address (`&[:r:]`), bind a const reference to it.\n- **Not allowed**: applying `[: r :]` to a *type* reflection — the compiler issues *reflection not usable in a splice expression*. A type is not a value.\n\n### 3. `[: r :]<Args>` — splice of a template\n\nIf `r` is a reflection of a class or function template, you can supply template arguments:\n\n```cpp\nconstexpr auto r = ^^std::vector;\ntypename [:r:]<int> v;    // std::vector<int> v;\n```\n\nHere `typename` tells the compiler the result is a type, and `[: r :]` stands in for the template name.\n\n## Roundtrip identity\n\n`typename [: ^^int :]` is identical to `int`. This can be verified with `std::is_same_v`:\n\n```cpp\nstatic_assert(std::is_same_v<typename [:^^int:], int>); // OK\n```\n\nLikewise for values: `[:^^kMax:]` is the same as `kMax` itself.\n\n## Mandatory constant expression\n\n```cpp\nstd::meta::info r = ^^int;   // NOT constexpr!\ntypename [:r:] x = 42;       // ERROR: splice operand must be a constant expression\n```\n\n`std::meta::info` is a *consteval-only* type: even assigning it without `constexpr` is an error. Always declare `constexpr auto r = ...`.\n\n## How the compiler chooses the form\n\nThe compiler looks at the **context** in which `[: r :]` appears:\n- After `typename` — type context.\n- Inside an expression — expression/value form.\n- After a template name position — template splice.\n\nIn ambiguous cases, `typename` makes the intent explicit.\n\n## Unevaluated contexts\n\n`typename [: r :]` works correctly inside `sizeof`, `decltype`, and `alignof`. The splice is resolved entirely at **compile time**, so `sizeof(typename [:^^long long:])` is a valid `sizeof(long long)`.\n\n## Ill-formed vs UB\n\nUsing the splicer in the wrong form — e.g. expression-splicing a type reflection — is a **hard compile error** (not UB, not SFINAE). The compiler stops immediately. This is predictable and safe.\n\n## Legacy alternatives\n\nBefore C++26, similar tasks required `std::tuple_element_t`, `std::variant_alternative_t`, `decltype`, `conditional_t`, and similar type traits. Splicing generalises all these cases: one syntax for any reflection of any type or value.",
+      "examples": [
+        {
+          "title": "Type splice: variable, sizeof, static_cast, roundtrip",
+          "code": "#include <meta>\n#include <iostream>\n#include <type_traits>\n\nint main() {\n    // 1. Variable declaration\n    constexpr auto r = ^^double;\n    typename [:r:] pi = 3.14;\n    std::cout << pi << \"\\n\";\n\n    // 2. sizeof in unevaluated context\n    std::cout << sizeof(typename [:r:]) << \"\\n\";\n\n    // 3. static_cast via type splice\n    int n = 7;\n    auto f = static_cast<typename [:r:]>(n);\n    std::cout << f << \"\\n\";\n\n    // 4. Roundtrip identity check\n    constexpr bool same = std::is_same_v<typename [:^^int:], int>;\n    std::cout << same << \"\\n\";\n\n    return 0;\n}",
+          "expectedOutput": "3.14\n8\n7\n1",
+          "explanation": "`typename [:r:]` in each of the four contexts behaves exactly like the original type:\n1. `typename [:^^double:]` — the type of variable `pi`.\n2. `sizeof(typename [:^^double:])` — `sizeof(double)` = 8 on 64-bit platforms.\n3. `static_cast<typename [:^^double:]>(7)` — converts `int` to `double`, result `7` (but type `double`).\n4. `std::is_same_v<typename [:^^int:], int>` — `true` (1), roundtrip confirmed."
+        },
+        {
+          "title": "Expression splice: enumerators and constexpr variables",
+          "code": "#include <meta>\n#include <iostream>\n\nenum Color { Red = 10, Green = 20, Blue = 30 };\nconstexpr int kMax = 255;\n\nint main() {\n    // Splice an enumerator as a value\n    constexpr auto r_green = ^^Color::Green;\n    std::cout << (int)[:r_green:] << \"\\n\";   // 20\n\n    // Splice a constexpr variable — lvalue\n    constexpr auto r_max = ^^kMax;\n    std::cout << [:r_max:] << \"\\n\";           // 255\n\n    // Take address: [:r:] is an lvalue\n    const int* p = &[:r_max:];\n    std::cout << *p << \"\\n\";                   // 255\n\n    return 0;\n}",
+          "expectedOutput": "20\n255\n255",
+          "explanation": "`[:r:]` without `typename` is used where a **value** is needed. For enumerator `Color::Green` that is the integer 20. For variable `kMax` it is 255. The splice of a variable produces an **lvalue**, so taking its address `&[:r_max:]` is valid — identical to `&kMax`."
+        },
+        {
+          "title": "Splice in templates: std::meta::info as a template parameter",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] make_zero() {\n    return typename [:R:]{};\n}\n\ntemplate <std::meta::info R>\nvoid describe() {\n    std::cout << \"size=\" << sizeof(typename [:R:]) << \"\\n\";\n}\n\nint main() {\n    std::cout << make_zero<^^int>() << \"\\n\";     // 0\n    std::cout << make_zero<^^double>() << \"\\n\";  // 0\n\n    describe<^^int>();        // size=4\n    describe<^^long long>();  // size=8\n\n    return 0;\n}",
+          "expectedOutput": "0\n0\nsize=4\nsize=8",
+          "explanation": "`template <std::meta::info R>` allows passing a reflection as a template argument. Inside the function, `typename [:R:]` expands it into the actual type — both the return type and the default-constructed object are determined by the passed argument. This is the primary \"reflection-as-type-in-templates\" pattern."
+        },
+        {
+          "title": "Class template splice",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <typename T>\nstruct Vec2 {\n    T x, y;\n    void print() const {\n        std::cout << x << \" \" << y << \"\\n\";\n    }\n};\n\nconstexpr auto vec_r = ^^Vec2;\n\nint main() {\n    // Splice template name + template argument list\n    typename [:vec_r:]<int> vi;\n    vi.x = 3; vi.y = 4;\n    vi.print();    // 3 4\n\n    typename [:vec_r:]<double> vd;\n    vd.x = 1.5; vd.y = 2.5;\n    vd.print();    // 1.5 2.5\n\n    return 0;\n}",
+          "expectedOutput": "3 4\n1.5 2.5",
+          "explanation": "When `r` is a reflection of a class template, `typename [:r:]<Args>` instantiates that template. `^^Vec2` reflects the template (not an instantiation of it). `typename [:vec_r:]<int>` is the same as `Vec2<int>`. This enables selecting a template at configuration time and instantiating it with the required arguments."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nint main() {\n    constexpr auto r = ^^unsigned short;\n    typename [:r:] x = 1000;\n    std::cout << x << \"\\n\";\n    std::cout << sizeof(typename [:r:]) << \"\\n\";\n    return 0;\n}",
+          "answer": "1000\n2",
+          "explanation": "`typename [:^^unsigned short:]` is the type `unsigned short`. Variable `x` = 1000, `sizeof(unsigned short)` = 2 bytes."
+        },
+        {
+          "id": "m5-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does the following code print?\n\n```cpp\n#include <meta>\n#include <iostream>\n\nenum Status { OK = 0, Warn = 1, Error = 2 };\n\nint main() {\n    constexpr auto r = ^^Status::Warn;\n    std::cout << (int)[:r:] << \"\\n\";\n}\n```",
+          "options": [
+            "0",
+            "1",
+            "2",
+            "Compile error"
+          ],
+          "answerIndex": 1,
+          "explanation": "`^^Status::Warn` is a reflection of enumerator `Warn`, whose value is 1. `[:r:]` in an expression context returns that enumerator as a value; `(int)` converts it to 1."
+        },
+        {
+          "id": "m5-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n\nint main() {\n    constexpr auto r = ^^int;\n    int x = [:r:];\n    std::cout << x << \"\\n\";\n    return 0;\n}",
+          "answerLine": 6,
+          "explanation": "Line 6: `[:r:]` is used as an expression, but `r` is a reflection of the **type** `int`, not a value. The compiler issues: *reflection not usable in a splice expression*. To use `int` as a type, the correct form is `typename [:r:]`."
+        },
+        {
+          "id": "m5-l2-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] doubled(typename [:R:] val) {\n    return val * 2;\n}\n\nint main() {\n    std::cout << doubled<^^int>(21) << \"\\n\";\n    std::cout << doubled<^^double>(1.5) << \"\\n\";\n    return 0;\n}",
+          "answer": "42\n3",
+          "explanation": "`doubled<^^int>(21)` instantiates as `int doubled(int val) { return val * 2; }` → 42. `doubled<^^double>(1.5)` instantiates as `double doubled(double val) { return val * 2; }` → 3. Both the return type and the parameter type are resolved from the single `R`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a function `clamp<R>(val, lo, hi)` that takes three values of type `typename [:R:]` and returns `val` clamped between `lo` and `hi`. Use splicing for the return type and all three parameters. Verify with `^^int` and `^^double`:\n\n```\nclamp<^^int>(5, 1, 10)         → 5\nclamp<^^int>(-3, 1, 10)        → 1\nclamp<^^int>(15, 1, 10)        → 10\nclamp<^^double>(2.5, 0.0, 1.0) → 1\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] clamp(typename [:R:] val, typename [:R:] lo, typename [:R:] hi) {\n    if (val < lo) return lo;\n    if (val > hi) return hi;\n    return val;\n}\n\nint main() {\n    std::cout << clamp<^^int>(5, 1, 10) << \"\\n\";\n    std::cout << clamp<^^int>(-3, 1, 10) << \"\\n\";\n    std::cout << clamp<^^int>(15, 1, 10) << \"\\n\";\n    std::cout << clamp<^^double>(2.5, 0.0, 1.0) << \"\\n\";\n    return 0;\n}",
+        "expectedOutput": "5\n1\n10\n1",
+        "godboltUrl": "https://godbolt.org/z/clang_bb_p2996"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which splice form is used to extract a type from a reflection?",
+            "options": [
+              "[:r:]",
+              "typename [:r:]",
+              "type [:r:]",
+              "decltype([:r:])"
+            ],
+            "answerIndex": 1,
+            "explanation": "`typename [:r:]` is the only correct form for expanding a type. `[:r:]` without `typename` is used for values (variables, enumerators)."
+          },
+          {
+            "type": "choice",
+            "prompt": "What happens when the following code is compiled?\n\n```cpp\nstd::meta::info r = ^^double;  // not constexpr\ntypename [:r:] x = 1.0;\n```",
+            "options": [
+              "Compiles and prints 1",
+              "Compile error: splice operand must be a constant expression",
+              "Undefined behaviour at runtime",
+              "Compiler warning, code runs fine"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` is a consteval-only type. Assigning it without `constexpr` and then splicing it are both hard compile errors. The compiler will report: *splice operand must be a constant expression*."
+          },
+          {
+            "type": "choice",
+            "prompt": "What value category does the expression `[:r:]` produce when `r = ^^someVariable`?",
+            "options": [
+              "prvalue — a temporary object",
+              "xvalue — an expiring value",
+              "lvalue — a named object",
+              "Depends on the variable's type"
+            ],
+            "answerIndex": 2,
+            "explanation": "`[:r:]` for a variable is an **lvalue** — the same as accessing the variable directly. You can take its address (`&[:r:]`), bind `const&` to it, and assign through it if the variable is not `const`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Which option correctly passes the reflection of template `std::vector` as a template argument and creates a `std::vector<int>`?",
+            "options": [
+              "template <^^std::vector> struct S {};  S<int> v;",
+              "constexpr auto r = ^^std::vector;  typename [:r:]<int> v;",
+              "constexpr auto r = ^^std::vector<int>;  typename [:r:] v;",
+              "auto r = ^^std::vector;  typename [:r:]<int> v;"
+            ],
+            "answerIndex": 1,
+            "explanation": "Option 2 is correct: `^^std::vector` reflects the template; `typename [:r:]<int>` instantiates it. Option 3 reflects the already-instantiated type `vector<int>`, not the template itself. Option 4 fails to compile: `r` is not `constexpr`, and `std::meta::info` is consteval-only."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l3",
+      "title": "Querying members, names, and base classes",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Think about how many times you've had to write boilerplate like: \"for struct `Foo`, print all fields\", \"compare two objects field by field\", \"serialize every member to JSON\". Each time it's either duplicating names (`x, y, z` — both in the struct and in the function), X-macros (fragile and unreadable), `boost::pfr` (a third-party dependency with limitations), or the Visitor pattern (mountains of boilerplate).\n\nC++26 static reflection solves this at the root: `std::meta::nonstatic_data_members_of(^^T)` returns a list of all fields of type `T` as a collection of `std::meta::info` — objects that carry everything the compiler knows about each member. From these objects you can retrieve the name (`identifier_of`), type (`type_of`), access modifier (`is_public`/`is_private`/`is_protected`), and storage class (`is_static_member`). And through the splice operator `obj.[:m:]` you can read the field's value at runtime.\n\nThe result: a single generic function works for any struct — no code generation, no macros, no external libraries.",
+      "theory": "## Key query functions\n\nAll `std::meta::*` functions are `consteval` — they are evaluated exclusively at compile time. The type `std::meta::info` is \"consteval-only\": values of this type can only be stored in `constexpr` variables or used inside consteval contexts.\n\n### nonstatic_data_members_of\n\n```cpp\nconstexpr auto mems = std::define_static_array(\n    std::meta::nonstatic_data_members_of(^^T,\n        std::meta::access_context::unchecked())\n);\n```\n\nReturns a `std::vector<std::meta::info>` — one `info` per non-static data member of `T` in declaration order. In C++26 (P2996R10) it requires a second argument — an `access_context` describing the access context. `access_context::unchecked()` disables access checking and grants access to all members.\n\n`std::define_static_array` converts the `vector<info>` into a `std::span<const info>` with static storage — only such a span can be used as the range in `template for`.\n\n### members_of\n\n```cpp\nconstexpr auto all = std::define_static_array(\n    std::meta::members_of(^^T, std::meta::access_context::unchecked())\n);\n```\n\nIncludes **all** direct members: fields, methods, static members, constructors, operators. Constructors and destructors have no identifier — always check `has_identifier(m)` before calling `identifier_of`.\n\n### bases_of\n\n```cpp\nconstexpr auto bases = std::define_static_array(\n    std::meta::bases_of(^^T, std::meta::access_context::unchecked())\n);\n```\n\nReturns the direct base classes of `T`. For each element: `type_of(b)` is the `info` of the base type, `display_string_of(type_of(b))` is its name as a string, `is_public(b)` reflects inheritance access.\n\n## Member names and types\n\n| Function | Returns | When to use |\n|---|---|---|\n| `identifier_of(m)` | `const char*` — the identifier | only when `has_identifier(m)` |\n| `display_string_of(r)` | `const char*` — a human-readable string | always: fields, types, classes |\n| `type_of(m)` | `std::meta::info` of the member's type | for data fields |\n| `display_string_of(type_of(m))` | `const char*` — the type name | always — unlike `identifier_of(type_of(m))` |\n\n**Important**: `identifier_of(type_of(m))` for built-in types (`int`, `double`, `float`) is a compile error — built-in types have no identifier in the reflection model. Always use `display_string_of(type_of(m))`.\n\n## Access and kind predicates\n\n```cpp\nstd::meta::is_public(m)               // public access\nstd::meta::is_private(m)              // private access\nstd::meta::is_protected(m)            // protected access\nstd::meta::is_nonstatic_data_member(m)// is this a non-static data field?\nstd::meta::is_static_member(m)        // is this a static member?\nstd::meta::has_identifier(m)          // does this member have an identifier?\n```\n\nAll predicates are `consteval` functions returning `bool`. Inside `template for` they are used in `if constexpr`.\n\n## Iteration: template for\n\n`template for` — the expansion statement from P1306. With the `-fexpansion-statements` flag (required on clang_bb_p2996) it expands into a separate code block for each element — analogous to `std::apply` for pack expansions, but without lambda wrappers.\n\n```cpp\ntemplate for (constexpr auto m : mems) {\n    // m is constexpr std::meta::info, unique in each \"iteration\"\n    std::println(\"{}\", std::meta::identifier_of(m));\n}\n```\n\n`mems` must be a `std::span<const std::meta::info>` (i.e., the result of `define_static_array`), not a `vector<info>` — the latter uses the heap and is not a constant expression.\n\n## Reading a field via splice\n\n```cpp\nobj.[:m:]   // reads the field described by info m from object obj\n```\n\nThe expression `obj.[:m:]` is an lvalue (when `obj` is an lvalue). Its type is the same as the field's type. Reading requires only accessibility at the splice point; with `access_context::unchecked()`, private fields are also accessible through a splice.\n\n## Limitations and ill-formed cases\n\n- `nonstatic_data_members_of(^^int)` — **ill-formed**: `int` is not a class type.\n- `identifier_of(type_of(m))` for `int`/`double` — **ill-formed**: built-in types are anonymous in the reflection model.\n- Without `define_static_array`, iterating `vector<info>` in `template for` — **ill-formed**: a heap-allocated vector is not a constant expression.\n- `members_of(^^T)` without `access_context` — **deprecated** (P2996R10): add `access_context::unchecked()` or `access_context::current()`.\n\n## Historical alternatives\n\n| Approach | Limitation |\n|---|---|\n| `boost::pfr` | aggregate types without bases only |\n| X-macros | fragile, no type info |\n| Visitor + virtual | runtime only, not constexpr |\n| `std::tuple` + `std::apply` | must list fields manually |\n\nReflection works for any struct or class, includes type info and access predicates, and operates entirely in `constexpr`.",
+      "examples": [
+        {
+          "title": "Listing fields and their types",
+          "code": "#include <meta>\n#include <print>\n\nstruct Point3D {\n    float x;\n    float y;\n    float z;\n};\n\ntemplate <class T>\nvoid describe_fields() {\n    std::println(\"Fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  {} : {}\",\n            std::meta::identifier_of(m),\n            std::meta::display_string_of(std::meta::type_of(m)));\n    }\n}\n\nint main() {\n    describe_fields<Point3D>();\n}",
+          "expectedOutput": "Fields of Point3D:\n  x : float\n  y : float\n  z : float",
+          "explanation": "`nonstatic_data_members_of` returns a `vector<info>` — one per non-static data field in declaration order. `define_static_array` converts it to a `span<const info>` — only the latter is valid as the range in `template for`. `display_string_of(type_of(m))` produces a readable type name (`float`) — unlike `identifier_of(type_of(m))`, which fails to compile for built-in types."
+        },
+        {
+          "title": "Reading field values via splice",
+          "code": "#include <meta>\n#include <print>\n\nstruct Packet {\n    int id;\n    int length;\n    int checksum;\n};\n\ntemplate <class T>\nvoid dump(const T& obj) {\n    std::println(\"{}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  {} = {}\",\n            std::meta::identifier_of(m),\n            obj.[:m:]);\n    }\n}\n\nint main() {\n    Packet p{7, 256, 0xAB};\n    dump(p);\n}",
+          "expectedOutput": "Packet:\n  id = 7\n  length = 256\n  checksum = 171",
+          "explanation": "`obj.[:m:]` is the splice operator (from lesson m5-l2): the compiler substitutes the actual field name described by `info m`. The result is an lvalue of the field's type. The key win: a single generic `dump` function works for any struct — with no knowledge of its members at the time of writing."
+        },
+        {
+          "title": "Class hierarchy with bases_of",
+          "code": "#include <meta>\n#include <print>\n\nstruct Animal { int id; };\nstruct Pet : Animal { int owner_id; };\nstruct Dog : Pet   { int breed_id; };\n\ntemplate <class T>\nvoid describe_hierarchy() {\n    std::println(\"Class: {}\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto bases = std::define_static_array(\n        std::meta::bases_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto b : bases) {\n        std::println(\"  base: {} (public={})\",\n            std::meta::display_string_of(std::meta::type_of(b)),\n            std::meta::is_public(b));\n    }\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  field: {}\",\n                     std::meta::identifier_of(m));\n    }\n}\n\nint main() {\n    describe_hierarchy<Animal>();\n    describe_hierarchy<Pet>();\n    describe_hierarchy<Dog>();\n}",
+          "expectedOutput": "Class: Animal\n  field: id\nClass: Pet\n  base: Animal (public=true)\n  field: owner_id\nClass: Dog\n  base: Pet (public=true)\n  field: breed_id",
+          "explanation": "`bases_of` returns only **direct** base classes — `Dog` sees `Pet`, but not `Animal`. To traverse the full hierarchy you need to recursively call `bases_of` on each base. `nonstatic_data_members_of` likewise returns only **direct** fields — fields from base classes (`id` for `Pet`, `id` and `owner_id` for `Dog`) are not included."
+        },
+        {
+          "title": "Filtering: public non-static fields only",
+          "code": "#include <meta>\n#include <print>\n\nclass Config {\npublic:\n    int width  = 800;\n    int height = 600;\nprivate:\n    int    _version = 1;\n    double _scale   = 1.0;\npublic:\n    static int max_instances;\n};\nint Config::max_instances = 4;\n\ntemplate <class T>\nvoid list_public_fields() {\n    std::println(\"Public non-static fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_public(m)) {\n            std::println(\"  {} : {}\",\n                std::meta::identifier_of(m),\n                std::meta::display_string_of(std::meta::type_of(m)));\n        }\n    }\n}\n\nint main() {\n    list_public_fields<Config>();\n}",
+          "expectedOutput": "Public non-static fields of Config:\n  width : int\n  height : int",
+          "explanation": "Here `members_of` (all members) is used rather than `nonstatic_data_members_of`, enabling filtering by both kind and access. The filter `is_nonstatic_data_member && is_public` retains only `width` and `height`. `max_instances` is skipped (`is_static_member`); `_version` and `_scale` are skipped (`is_private`). The predicates appear in `if constexpr` because they are themselves `consteval` functions."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nstruct Box { int w; int h; int d; };\n\ntemplate <class T>\nvoid print_values(const T& obj) {\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::print(\"{} \", obj.[:m:]);\n    }\n    std::println(\"\");\n}\n\nint main() {\n    Box b{10, 20, 30};\n    print_values(b);\n}",
+          "answer": "10 20 30 ",
+          "explanation": "`nonstatic_data_members_of` returns fields in declaration order: `w`, `h`, `d`. `obj.[:m:]` reads each field's value. `std::print` appends a space after every number including the last, so there is a trailing space before the newline from `std::println`."
+        },
+        {
+          "id": "m5-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::meta::display_string_of(std::meta::type_of(m))` return if `m` is the reflection of field `int x` of struct `Point`?",
+          "options": [
+            "\"x\"",
+            "\"int\"",
+            "\"Point::x\"",
+            "Compile error: built-in types have no name"
+          ],
+          "answerIndex": 1,
+          "explanation": "`type_of(m)` returns an `info` for the field's type — in this case `int`. `display_string_of` returns a human-readable representation of the reflection — the string `\"int\"`. Note: `identifier_of(type_of(m))` for `int` **fails to compile** (built-in types have no identifier), but `display_string_of` always works."
+        },
+        {
+          "id": "m5-l3-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Reading { float temp; float pressure; };\n\ntemplate <class T>\nvoid show_types(const T& obj) {\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"{} : {} = {}\",\n            std::meta::identifier_of(m),\n            std::meta::identifier_of(std::meta::type_of(m)),\n            obj.[:m:]);\n    }\n}\n\nint main() {\n    Reading r{36.6f, 101.3f};\n    show_types(r);\n}",
+          "answerLine": 15,
+          "explanation": "Line 15: `std::meta::identifier_of(std::meta::type_of(m))`. `type_of(m)` returns the reflection of a built-in type (`float`). Built-in types have no \"identifier\" in the reflection model — calling `identifier_of` on them is a compile error. Fix: replace with `std::meta::display_string_of(std::meta::type_of(m))`."
+        },
+        {
+          "id": "m5-l3-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nclass Entity {\npublic:\n    int id;\n    static int count;\nprivate:\n    float x;\n    float y;\n};\nint Entity::count = 0;\n\nint main() {\n    constexpr auto mems = std::define_static_array(\n        std::meta::members_of(^^Entity,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_public(m)) {\n            std::println(\"pub: {}\", std::meta::identifier_of(m));\n        }\n    }\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_private(m)) {\n            std::println(\"priv: {}\", std::meta::identifier_of(m));\n        }\n    }\n}",
+          "answer": "pub: id\npriv: x\npriv: y",
+          "explanation": "`members_of` returns all direct members: `id` (public non-static field), `count` (static — skipped by `is_nonstatic_data_member`), the constructor (skipped), `x` and `y` (private non-static fields). The first `template for` prints only `id`; the second prints `x` and `y` in declaration order."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a generic function `to_config_string(obj)` that takes an object of any struct and returns a `std::string` in the format `\"field=value\\nfield=value\\n...\"` for every non-static data field. Test it on:\n```cpp\nstruct Config {\n    int width;\n    int height;\n    int fps;\n    float gamma;\n};\nConfig cfg{1920, 1080, 60, 2.2f};\n```",
+        "referenceSolution": "#include <meta>\n#include <print>\n#include <string>\n\nstruct Config {\n    int width;\n    int height;\n    int fps;\n    float gamma;\n};\n\ntemplate <class T>\nstd::string to_config_string(const T& obj) {\n    std::string result;\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if (!result.empty()) result += '\\n';\n        result += std::meta::identifier_of(m);\n        result += '=';\n        result += std::to_string(obj.[:m:]);\n    }\n    return result;\n}\n\nint main() {\n    Config cfg{1920, 1080, 60, 2.2f};\n    std::println(\"{}\", to_config_string(cfg));\n}",
+        "expectedOutput": "width=1920\nheight=1080\nfps=60\ngamma=2.200000",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Cmeta%3E%0A%23include+%3Cprint%3E%0A%23include+%3Cstring%3E%0A%0Astruct+Config+%7B%0A++++int+width%3B%0A++++int+height%3B%0A++++int+fps%3B%0A++++float+gamma%3B%0A%7D%3B%0A%0Atemplate+%3Cclass+T%3E%0Astd::string+to_config_string(const+T%26+obj)+%7B%0A++++std::string+result%3B%0A++++constexpr+auto+mems+%3D+std::define_static_array(%0A++++++++std::meta::nonstatic_data_members_of(%5E%5ET,%0A++++++++++++std::meta::access_context::unchecked())%0A++++)%3B%0A++++template+for+(constexpr+auto+m+:+mems)+%7B%0A++++++++if+(!result.empty())+result+%2B%3D+%27%5Cn%27%3B%0A++++++++result+%2B%3D+std::meta::identifier_of(m)%3B%0A++++++++result+%2B%3D+%27%3D%27%3B%0A++++++++result+%2B%3D+std::to_string(obj.%5B:m:%5D)%3B%0A++++%7D%0A++++return+result%3B%0A%7D%0A%0Aint+main()+%7B%0A++++Config+cfg%7B1920,+1080,+60,+2.2f%7D%3B%0A++++std::println(%22%7B%7D%22,+to_config_string(cfg))%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),header:(),k:59.58245723104056,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:executor,i:(argsPanelShown:'1',compilationPanelShown:'0',compiler:clang_bb_p2996,compilerName:'',compilerOutShown:'0',execArgs:'',execStdin:'',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B26+-O2+-stdlib%3Dlibc%2B%2B+-fexpansion-statements',source:1,stdinPanelShown:'1',tree:0,wrap:'1'),l:'5',n:'0',o:'Executor+x86-64+clang+(bb_p2996+trunk)+(Editor+%231)',t:'0')),k:40.41754276895944,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which function returns only the non-static data fields of a class (excluding methods, static members, and constructors)?",
+            "options": [
+              "std::meta::members_of(^^T, ctx)",
+              "std::meta::nonstatic_data_members_of(^^T, ctx)",
+              "std::meta::bases_of(^^T, ctx)",
+              "std::meta::fields_of(^^T, ctx)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`nonstatic_data_members_of` returns exactly the non-static data fields. `members_of` returns all members (including methods and constructors). `bases_of` returns base classes. `fields_of` does not exist in the standard."
+          },
+          {
+            "type": "choice",
+            "prompt": "You want to print the type name of field `double val`. What is correct?",
+            "options": [
+              "std::meta::identifier_of(std::meta::type_of(m))",
+              "std::meta::display_string_of(std::meta::type_of(m))",
+              "std::meta::name_of(m)",
+              "std::meta::type_name_of(m)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`identifier_of(type_of(m))` for `double` is a compile error (built-in types have no identifier). `display_string_of(type_of(m))` always works and returns the string `\"double\"`. `name_of` and `type_name_of` do not exist in P2996R10."
+          },
+          {
+            "type": "choice",
+            "prompt": "Why can't you write `for (auto m : std::meta::nonstatic_data_members_of(^^T, ctx))` in an ordinary (non-consteval) function?",
+            "options": [
+              "Because `nonstatic_data_members_of` returns an empty range at runtime",
+              "Because `std::meta::info` is a consteval-only type: it can only be used in constant-evaluated contexts",
+              "Because `for` does not support reflection ranges",
+              "Because you need `constexpr for` instead of `for`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` is a \"consteval-only\" type. Variables of this type must be `constexpr` or reside in a consteval context. A regular `for` loop runs at runtime, where `info` is not permitted. Solution: `template for` with `std::define_static_array`, or a `consteval` lambda."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `bases_of(^^Dog)` return, given: `struct A {}; struct B : A {}; struct Dog : B {}`?",
+            "options": [
+              "A list of two elements: A and B",
+              "A list of one element: B",
+              "An empty list",
+              "A list of one element: A"
+            ],
+            "answerIndex": 1,
+            "explanation": "`bases_of` returns only the **direct** base classes. `Dog`'s direct base is `B`; `A` is an indirect base. To traverse the full hierarchy you need to call `bases_of` recursively on each base class."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l4",
+      "title": "Enum Reflection: enum→string and string→enum",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Every time you need to log an enum value, read it from config, or serialize it to JSON, you end up writing a `switch` with manual strings:\n\n```cpp\nstd::string_view to_string(Color c) {\n    switch (c) {\n        case Color::Red:   return \"Red\";\n        case Color::Green: return \"Green\";\n        case Color::Blue:  return \"Blue\";\n    }\n    return \"unknown\";\n}\n```\n\nThe problem: add a new enumerator and the `switch` silently becomes incomplete (unless you have `-Wswitch`). X-macro tricks maintain the mapping but make the code unreadable.\n\nC++26 static reflection eliminates this problem permanently: `enumerators_of(^^E)` returns the list of all enumerators in declaration order. Add a new enumerator and `to_string`/`from_string` automatically pick it up — no code changes needed.",
+      "theory": "## Key reflection functions for enumerations\n\n### `std::meta::enumerators_of(^^E)`\n\nReturns a range of `std::meta::info` values — one per enumerator, in declaration order:\n\n```cpp\nconstexpr auto enums = std::define_static_array(\n    std::meta::enumerators_of(^^Color));\n// enums is span<const std::meta::info>\n```\n\nImportant: `std::meta::info` is a *consteval-only* type. Values of this type can only be stored in `constexpr` context or iterated via `template for`.\n\n### `std::meta::identifier_of(e)` → `std::string_view`\n\nReturns the enumerator name as a `string_view` — exactly as written in source code:\n\n```cpp\nconstexpr auto name = std::meta::identifier_of(e); // \"Red\", \"Green\", ...\n```\n\nNote: this is the *identifier*, not `display_string_of`. For enumerations the result is the same, but `identifier_of` is semantically more precise.\n\n### Splicer `[:e:]` — extracting the enumerator value\n\nTo get the actual enum value from its reflection, use the splicer `[:e:]`. It is only valid in a `constexpr` context:\n\n```cpp\nif ([:e:] == value) return std::meta::identifier_of(e);\n```\n\n> **Historical note**: early P2996 drafts used `std::meta::value_of<E>(e)` for this purpose. In P2996R12 it was renamed to `constant_of`, and `constant_of` itself now returns `std::meta::info`, not `E`. The splicer `[:e:]` is the correct and idiomatic approach.\n\n### `template for` — iterating over enumerators\n\nA regular `for` loop cannot iterate over `std::meta::info` because it is a consteval-only type. You need the **expansion statement** (`template for`), which unrolls iteration at compile time:\n\n```cpp\ntemplate for (constexpr auto e :\n              std::define_static_array(std::meta::enumerators_of(^^E))) {\n    // e is constexpr here — splicer [:e:] works\n}\n```\n\nCompiler flag: `-fexpansion-statements` (Clang).\n\n## The enum→string pattern\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n```\n\nThis function works with **any** enum type. The compiler expands `template for` into a series of `if`-checks at compile time — zero runtime overhead.\n\n## The string→enum pattern\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n```\n\nReturns `std::nullopt` when the string matches no enumerator name.\n\n## `std::meta::is_scoped_enum_type` vs `std::is_scoped_enum_v`\n\nTwo ways to check if a type is `enum class` (rather than plain `enum`):\n\n```cpp\n// Via type traits (standard, C++23):\nconstexpr bool scoped = std::is_scoped_enum_v<E>;\n\n// Via reflection (works with std::meta::info):\nconstexpr bool scoped = std::meta::is_scoped_enum_type(^^E);\n```\n\nBoth give identical results. `is_scoped_enum_type` is convenient when you already have an `info` value for the type (e.g. inside a template meta-function).\n\n## When `switch`/X-macros are still preferable\n\n- **No `-fexpansion-statements` support** on your compiler (before C++26 stabilizes).\n- **Enums with gap values** (`Red = 1, Blue = 10`) — `enumerators_of` returns all of them, but a `switch` may be more explicit.\n- **Custom string representations** differ from identifiers (`\"my-value\"` instead of `MyValue`) — manual `switch` or a lookup table is clearer.\n\n## Constraints and SFINAE\n\nPassing a non-enum type to a function constrained with `requires std::is_enum_v<E>` is *ill-formed* (compile error), not UB. Similarly, `enumerators_of` is not defined for non-enum types.",
+      "examples": [
+        {
+          "title": "Iterating over enumerators",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Color { Red, Green, Blue };\n\nint main() {\n    // enumerators_of returns a range of std::meta::info\n    // template for is the only way to iterate a consteval-only type\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Color))) {\n        std::cout << std::meta::identifier_of(e) << \"\\n\";\n    }\n}",
+          "expectedOutput": "Red\nGreen\nBlue",
+          "explanation": "`enumerators_of(^^Color)` produces three `std::meta::info` values — one per enumerator. `template for` unrolls the loop at compile time, making `e` available as `constexpr`. `identifier_of(e)` returns a `string_view` with the enumerator name."
+        },
+        {
+          "title": "The enum→string pattern (runtime value)",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Direction { North, South, East, West };\n\nstd::string_view to_string(Direction d) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Direction))) {\n        if ([:e:] == d) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::cout << to_string(Direction::North) << \"\\n\";\n    std::cout << to_string(Direction::East)  << \"\\n\";\n    std::cout << to_string(Direction::South) << \"\\n\";\n    std::cout << to_string(Direction::West)  << \"\\n\";\n\n    Direction d = Direction::West;\n    std::cout << \"Runtime: \" << to_string(d) << \"\\n\";\n}",
+          "expectedOutput": "North\nEast\nSouth\nWest\nRuntime: West",
+          "explanation": "The function takes a **runtime** `Direction d`. `template for` expands into a series of compile-time `if`-checks: `if (North == d) ... if (South == d) ...`. The splicer `[:e:]` substitutes the enumerator value; `identifier_of(e)` gives its name. Add `Center` to the enum — the function automatically handles it."
+        },
+        {
+          "title": "The string→enum pattern and round-trip",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <optional>\n\nenum class Status { Pending, Running, Done, Failed };\n\nstd::string_view to_string(Status s) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Status))) {\n        if ([:e:] == s) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nstd::optional<Status> from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Status))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n\nint main() {\n    for (auto s : {Status::Pending, Status::Running, Status::Done, Status::Failed})\n        std::cout << to_string(s) << \"\\n\";\n\n    auto r1 = from_string(\"Done\");\n    std::cout << \"Done -> \" << (r1 ? to_string(*r1) : \"not found\") << \"\\n\";\n\n    auto r2 = from_string(\"Cancelled\");\n    std::cout << \"Cancelled -> \" << (r2 ? to_string(*r2) : \"not found\") << \"\\n\";\n}",
+          "expectedOutput": "Pending\nRunning\nDone\nFailed\nDone -> Done\nCancelled -> not found",
+          "explanation": "`from_string` compares `std::meta::identifier_of(e)` (the string representation) against the input name and returns `[:e:]` — the enum value. `std::nullopt` on no match makes invalid input explicit. The round-trip `\"Done\"` → `Status::Done` → `\"Done\"` passes through both functions."
+        },
+        {
+          "title": "Generic template + `is_scoped_enum_type`",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <type_traits>\n\nenum class Planet { Mercury, Venus, Earth, Mars };\nenum Weekday { Mon, Tue, Wed, Thu, Fri, Sat, Sun };\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\ntemplate <typename E>\nvoid describe_enum() {\n    constexpr bool scoped = std::meta::is_scoped_enum_type(^^E);\n    std::cout << std::meta::identifier_of(^^E)\n              << \" is \" << (scoped ? \"scoped\" : \"plain\") << \"\\n\";\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        std::cout << \"  \" << std::meta::identifier_of(e) << \"\\n\";\n    }\n}\n\nint main() {\n    describe_enum<Planet>();\n    describe_enum<Weekday>();\n\n    std::cout << to_string(Planet::Earth) << \"\\n\";\n    std::cout << to_string(Wed) << \"\\n\";\n}",
+          "expectedOutput": "Planet is scoped\n  Mercury\n  Venus\n  Earth\n  Mars\nWeekday is plain\n  Mon\n  Tue\n  Wed\n  Thu\n  Fri\n  Sat\n  Sun\nEarth\nWed",
+          "explanation": "`is_scoped_enum_type(^^E)` returns `true` for `enum class`/`enum struct` and `false` for plain `enum`. Unlike `std::is_scoped_enum_v<E>`, it works directly with `std::meta::info`, which is natural in meta-programming contexts. Notice: for plain `enum`, enumerators are accessible without a prefix (`Wed`, not `Weekday::Wed`), and `to_string` handles both cases identically."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l4-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nenum class Suit { Clubs, Diamonds, Hearts, Spades };\n\nint main() {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Suit))) {\n        std::cout << std::meta::identifier_of(e) << \"\\n\";\n    }\n}",
+          "answer": "Clubs\nDiamonds\nHearts\nSpades",
+          "explanation": "`enumerators_of(^^Suit)` returns enumerators in declaration order. `identifier_of(e)` returns the name of each enumerator without the `Suit::` prefix — just `Clubs`, `Diamonds`, etc."
+        },
+        {
+          "id": "m5-l4-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::meta::identifier_of(e)` return when `e` is the reflection of an enumerator of `enum class Direction { North, South };`?",
+          "options": [
+            "A `std::string_view` with value `\"North\"` or `\"South\"` (without the `Direction::` prefix)",
+            "A `std::string_view` with value `\"Direction::North\"` or `\"Direction::South\"`",
+            "An `int` — the numeric value of the enumerator",
+            "A `std::meta::info` — a reflection of the string"
+          ],
+          "answerIndex": 0,
+          "explanation": "`identifier_of` returns exactly the *identifier* — what is written after `Direction::` in source code. The qualified name (`Direction::North`) would be `display_string_of`, and even that isn't guaranteed to produce the qualified form for all entities. For enumerators, `identifier_of` is the right choice."
+        },
+        {
+          "id": "m5-l4-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Phase { Solid, Liquid, Gas, Plasma };\n\nstd::string_view to_string(Phase p) {\n    for (constexpr auto e :\n         std::define_static_array(std::meta::enumerators_of(^^Phase))) {\n        if ([:e:] == p) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::cout << to_string(Phase::Gas) << \"\\n\";\n}",
+          "answerLine": 8,
+          "explanation": "Line 8: `for` should be `template for`. The type `std::meta::info` is consteval-only: it cannot be stored in a regular loop variable. `template for` (an expansion statement) unrolls each iteration at compile time, making `e` a `constexpr` — only then is the splicer `[:e:]` on line 10 valid."
+        },
+        {
+          "id": "m5-l4-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "You are writing a generic `from_string<E>`. Why should it return `std::optional<E>` rather than just `E`?",
+          "options": [
+            "Because `std::meta::info` is an optional type",
+            "Because the input string may not match any enumerator name, and `optional` signals this without exceptions",
+            "Because `identifier_of` returns `optional<string_view>`",
+            "Because `enumerators_of` can return an empty range for any enum"
+          ],
+          "answerIndex": 1,
+          "explanation": "String lookup is a partial operation: the string `\"Cancelled\"` simply may not exist among the enumerators. `std::optional<E>` lets you return `std::nullopt` exception-free and forces the caller to explicitly handle the missing case. An enum always has at least one enumerator (an empty enum is ill-formed), so `enumerators_of` is never empty for valid types."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write two generic templates:\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view enum_to_string(E value);\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> enum_from_string(std::string_view name);\n```\n\nTest them against two enumerations:\n```cpp\nenum class LogLevel { Debug, Info, Warning, Error, Critical };\nenum class HttpMethod { GET, POST, PUT, DELETE, PATCH };\n```\n\nExpected output:\n```\nWarning\nPOST\nError\nPATCH\nnot found\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <optional>\n#include <type_traits>\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view enum_to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"\";\n}\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> enum_from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n\nenum class LogLevel { Debug, Info, Warning, Error, Critical };\nenum class HttpMethod { GET, POST, PUT, DELETE, PATCH };\n\nint main() {\n    std::cout << enum_to_string(LogLevel::Warning) << \"\\n\";\n    std::cout << enum_to_string(HttpMethod::POST) << \"\\n\";\n\n    auto lv = enum_from_string<LogLevel>(\"Error\");\n    std::cout << (lv ? enum_to_string(*lv) : \"not found\") << \"\\n\";\n\n    auto hm = enum_from_string<HttpMethod>(\"PATCH\");\n    std::cout << (hm ? enum_to_string(*hm) : \"not found\") << \"\\n\";\n\n    auto missing = enum_from_string<LogLevel>(\"Verbose\");\n    std::cout << (missing ? enum_to_string(*missing) : \"not found\") << \"\\n\";\n}",
+        "expectedOutput": "Warning\nPOST\nError\nPATCH\nnot found",
+        "godboltUrl": "https://godbolt.org/z/clang_bb_p2996"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which `std::meta` function returns the name of an enumerator as a `std::string_view`?",
+            "options": [
+              "`std::meta::identifier_of(e)`",
+              "`std::meta::value_of(e)`",
+              "`std::meta::name_of(e)`",
+              "`std::meta::display_string_of(e)` — the only correct option"
+            ],
+            "answerIndex": 0,
+            "explanation": "`identifier_of(e)` returns the enumerator name — the identifier as written in source. `value_of` was renamed to `constant_of` in P2996R12 and returns `std::meta::info`, not a string. `name_of` does not exist in the standard."
+          },
+          {
+            "type": "choice",
+            "prompt": "Why does iterating `enumerators_of(^^E)` require `template for` instead of a regular `for`?",
+            "options": [
+              "Because `template for` is faster at runtime",
+              "Because `std::meta::info` is a consteval-only type: it cannot be stored in a regular `for` loop variable",
+              "Because `enumerators_of` returns a `std::span`, not a `std::vector`, and regular `for` doesn't work with it",
+              "Because the compiler needs an explicit template parameter type"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` is a consteval-only type: values of this type only exist in compile-time contexts. A regular `for` would create a runtime variable `e`, which is forbidden. `template for` unrolls each iteration as a separate compile-time block, where `e` is `constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "How does `std::meta::is_scoped_enum_type(^^E)` differ from `std::is_scoped_enum_v<E>`?",
+            "options": [
+              "They give different results for `enum class`",
+              "The first works with a `std::meta::info` value and is useful in meta-contexts; the second is a standard type trait taking a type directly; both give the same result",
+              "`is_scoped_enum_type` returns `std::meta::info`, not `bool`",
+              "`is_scoped_enum_type` only checks `enum struct`, not `enum class`"
+            ],
+            "answerIndex": 1,
+            "explanation": "Both predicates check the same thing but accept different arguments. `is_scoped_enum_type(^^E)` is convenient when you already have a type reflection (`std::meta::info`), for example when writing meta-functions. `is_scoped_enum_v<E>` is the classic type trait taking a type as a template argument."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l5",
+      "title": "Code Generation: define_aggregate and data_member_spec",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "Before C++26, the only way to programmatically produce a new type was template metaprogramming: specializations, `enable_if`, parameter packs. Want a struct whose field names are determined by compile-time data? Impossible without code generation or macros. C++26 introduces **compile-time code generation**: the function `std::meta::define_aggregate`, which accepts a list of field descriptors and \"fills in\" a forward-declared empty struct right in a consteval context. The result is a first-class type usable exactly like any hand-written struct. This unlocks an entire class of patterns: auto-generating \"patch\" structs, transforming AoS → SoA, synthesizing DTO types from schemas — all without macros and without external code generators.",
+      "theory": "## Two key tools\n\n### `std::meta::data_member_spec`\n\n```cpp\nconsteval std::meta::info\ndata_member_spec(std::meta::info type_reflection,\n                 data_member_options options = {});\n```\n\nCreates a **field descriptor** — an object of type `std::meta::info` describing a future non-static data member. Key `options` fields:\n\n| Option | Type | Meaning |\n|--------|------|---------|\n| `name` | `std::string_view` | Field name; required for named fields |\n| `alignment` | `size_t` | Explicit alignment (optional) |\n| `width` | `size_t` | Bit-field width (optional) |\n| `no_unique_address` | `bool` | `[[no_unique_address]]` (optional) |\n\nThe function is `consteval`, meaning it can only be called in a compile-time context.\n\n### `std::meta::define_aggregate`\n\n```cpp\nconsteval std::meta::info\ndefine_aggregate(std::meta::info class_reflection,\n                 /* range of */ std::meta::info members);\n```\n\nTakes a reflection of an **incomplete** (forward-declared) type and a range of field descriptors, and **defines** that type as an aggregate-struct with the given fields.\n\n> **Important:** In P2996R8, `define_class` was renamed to `define_aggregate`. On clang_bb_p2996 the old name triggers a deprecation warning — use `define_aggregate`.\n\n## Key constraint: the \"plainly constant-evaluated\" context\n\n`define_aggregate` performs a **declaration injection** into the program — a fundamentally different operation from regular computations. The compiler requires the call to originate from a \"plainly constant-evaluated\" context.\n\nThe single reliably working approach is a **namespace-scope `consteval { }` block**:\n\n```cpp\nstruct MyPoint;   // forward declaration\n\nconsteval {       // ← namespace-scope consteval block\n    std::meta::define_aggregate(^^MyPoint, {\n        std::meta::data_member_spec(^^float, {.name = \"x\"}),\n        std::meta::data_member_spec(^^float, {.name = \"y\"})\n    });\n}\n\n// MyPoint is now a complete type: struct MyPoint { float x; float y; };\n```\n\n**Why not a `consteval` function?** Calling a `consteval` function via a `constexpr` variable is not a \"plainly constant-evaluated\" context per the current specification; the compiler will emit the error \"cannot produce an injected declaration from a non-plainly constant-evaluated context\".\n\n## Pattern: programmatic field generation\n\nInside a `consteval { }` block you can use any compile-time algorithms — `std::vector`, loops, conditionals:\n\n```cpp\nstruct Generated;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (char c : {'x', 'y', 'z'}) {\n        fields.push_back(\n            std::meta::data_member_spec(^^double, {.name = std::string(1, c)})\n        );\n    }\n    std::meta::define_aggregate(^^Generated, fields);\n}\n```\n\n## Pattern: type transformation\n\nBy reflecting an existing type you can systematically transform its fields. Example — wrapping every field in `std::optional`:\n\n```cpp\nstruct Source { int a; float b; };\nstruct Patch;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Source, std::meta::access_context::unchecked())) {\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(\n            std::meta::data_member_spec(opt_type,\n                {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^Patch, fields);\n}\n// Patch is equivalent to: struct Patch { std::optional<int> a; std::optional<float> b; };\n```\n\n## Important details\n\n- **Forward declaration is mandatory**: the type must be declared (`struct Foo;`) before `define_aggregate` defines it.\n- **Cannot redefine**: if the type is already complete, `define_aggregate` will result in a compile error.\n- **`nonstatic_data_members_of` requires `access_context`**: without it you get a deprecation warning (P2996R10 made this argument mandatory). Use `std::meta::access_context::unchecked()`.\n- **`std::meta::substitute`** builds a reflection of a template specialization: `substitute(^^std::optional, {^^int})` → reflection of `std::optional<int>`.",
+      "examples": [
+        {
+          "title": "Basic example: Color struct from field descriptors",
+          "code": "#include <meta>\n#include <iostream>\n#include <cstdint>\n\nstruct Color;  // forward declaration — incomplete type for now\n\nconsteval {    // namespace-scope consteval block\n    std::meta::define_aggregate(^^Color, {\n        std::meta::data_member_spec(^^uint8_t, {.name = \"r\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"g\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"b\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"a\"})\n    });\n}  // after this block, Color is a complete type\n\nint main() {\n    Color red{255, 0, 0, 255};\n    std::cout << \"r=\" << (int)red.r\n              << \" g=\" << (int)red.g\n              << \" b=\" << (int)red.b\n              << \" a=\" << (int)red.a << \"\\n\";\n}",
+          "expectedOutput": "r=255 g=0 b=0 a=255",
+          "explanation": "The forward declaration `struct Color;` creates an incomplete type — the name exists but there is no definition. The `consteval { }` block at namespace scope is executed by the compiler when it processes the translation unit. `define_aggregate` fills in the type with four `uint8_t` fields. After the block, `Color` is a complete aggregate that can be initialized with `{255, 0, 0, 255}`."
+        },
+        {
+          "title": "Programmatic field generation in a loop",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n\nstruct Vertex3D;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    // Three fields x, y, z from a loop\n    for (char name : {'x', 'y', 'z'}) {\n        fields.push_back(\n            std::meta::data_member_spec(^^float, {.name = std::string(1, name)})\n        );\n    }\n    // Fourth field w — added manually\n    fields.push_back(\n        std::meta::data_member_spec(^^float, {.name = \"w\"})\n    );\n    std::meta::define_aggregate(^^Vertex3D, fields);\n}\n\nint main() {\n    Vertex3D v{1.0f, 2.0f, 3.0f, 1.0f};\n    std::cout << \"x=\" << v.x << \" y=\" << v.y\n              << \" z=\" << v.z << \" w=\" << v.w << \"\\n\";\n}",
+          "expectedOutput": "x=1 y=2 z=3 w=1",
+          "explanation": "Inside a `consteval { }` block, ordinary consteval-compatible algorithms are available: `std::vector`, range-for over a character list, `std::string`. On each iteration a `data_member_spec` is created with a single-character name. All descriptors are collected into a vector and passed to `define_aggregate` in one call."
+        },
+        {
+          "title": "Transforming AoS to SoA: reflect + generate",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <array>\n\nstruct Particle { float x, y, z, mass; };  // Array-of-Structures\n\nstruct ParticleSoA;  // Structure-of-Arrays — will be generated\n\nconsteval {\n    constexpr size_t N = 4;\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Particle, std::meta::access_context::unchecked())) {\n        // For each field T, generate a field std::array<T, N>\n        auto arr_type = std::meta::substitute(\n            ^^std::array,\n            {std::meta::type_of(m), std::meta::reflect_constant(N)});\n        fields.push_back(std::meta::data_member_spec(\n            arr_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ParticleSoA, fields);\n}\n\nint main() {\n    ParticleSoA soa;\n    soa.x    = {1.0f, 2.0f, 3.0f, 4.0f};\n    soa.y    = {0.1f, 0.2f, 0.3f, 0.4f};\n    soa.z    = {10.f, 20.f, 30.f, 40.f};\n    soa.mass = {1.0f, 2.0f, 1.5f, 3.0f};\n    for (int i = 0; i < 4; ++i)\n        std::cout << \"particle \" << i\n                  << \": x=\" << soa.x[i] << \" mass=\" << soa.mass[i] << \"\\n\";\n}",
+          "expectedOutput": "particle 0: x=1 mass=1\nparticle 1: x=2 mass=2\nparticle 2: x=3 mass=1.5\nparticle 3: x=4 mass=3",
+          "explanation": "The AoS → SoA pattern classically requires manually duplicating the struct layout. Here we reflect `Particle`, iterate its fields with `access_context::unchecked()`, construct the type `std::array<T, N>` via `std::meta::substitute`, and generate `ParticleSoA` automatically. If `Particle` changes, a recompile is all that's needed — `ParticleSoA` updates itself."
+        },
+        {
+          "title": "Generating a \"patch\" struct: optional fields automatically",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <optional>\n\nstruct Config { int port; int max_connections; float timeout; };\n\nstruct ConfigPatch;  // auto-generated \"patch\"\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Config, std::meta::access_context::unchecked())) {\n        // Each field T -> std::optional<T>\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(std::meta::data_member_spec(\n            opt_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ConfigPatch, fields);\n}\n\nvoid apply_patch(Config& cfg, const ConfigPatch& patch) {\n    if (patch.port)            cfg.port            = *patch.port;\n    if (patch.max_connections) cfg.max_connections = *patch.max_connections;\n    if (patch.timeout)         cfg.timeout         = *patch.timeout;\n}\n\nint main() {\n    Config cfg{8080, 100, 30.0f};\n    ConfigPatch patch{\n        .port            = 9090,\n        .max_connections = std::nullopt,\n        .timeout         = 60.0f\n    };\n    apply_patch(cfg, patch);\n    std::cout << \"port=\" << cfg.port\n              << \" max_conn=\" << cfg.max_connections\n              << \" timeout=\" << cfg.timeout << \"\\n\";\n}",
+          "expectedOutput": "port=9090 max_conn=100 timeout=60",
+          "explanation": "The \"patch object\" pattern: a separate struct with the same field names, but each field is `std::optional<T>`. `nullopt` means \"leave unchanged\", a value means \"apply\". Generation via `define_aggregate` eliminates the need to manually keep `Config` and `ConfigPatch` in sync. Note: `max_connections=100` — unchanged because the patch has it as `nullopt`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l5-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "In which context does `std::meta::define_aggregate` correctly perform declaration injection (without the error \"cannot produce an injected declaration from a non-plainly constant-evaluated context\")?",
+          "options": [
+            "In a `consteval` function called via a `constexpr` variable",
+            "In a namespace-scope `consteval { }` block",
+            "In a `static_assert`",
+            "In the body of a `constexpr` function"
+          ],
+          "answerIndex": 1,
+          "explanation": "`define_aggregate` requires a \"plainly constant-evaluated\" context. In practice this means a namespace-scope `consteval { }` block. A `consteval` function called through a `constexpr` variable is not a \"plainly\" CE context per the current specification and results in a compile error."
+        },
+        {
+          "id": "m5-l5-e2",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nstruct Pair;\n\nconsteval {\n    std::meta::define_aggregate(^^Pair, {\n        std::meta::data_member_spec(^^int,    {.name = \"first\"}),\n        std::meta::data_member_spec(^^double, {.name = \"second\"})\n    });\n}\n\nint main() {\n    Pair p{42, 3.14};\n    std::cout << p.first << \"\\n\" << p.second << \"\\n\";\n}",
+          "answer": "42\n3.14",
+          "explanation": "`define_aggregate` creates type `Pair` with two fields: `int first` and `double second`. The aggregate initializer `{42, 3.14}` fills them in declaration order. `p.first` = 42, `p.second` = 3.14."
+        },
+        {
+          "id": "m5-l5-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n\nstruct MyRect;\n\nconsteval void make_rect() {\n    std::meta::define_aggregate(^^MyRect, {\n        std::meta::data_member_spec(^^int, {.name = \"width\"}),\n        std::meta::data_member_spec(^^int, {.name = \"height\"})\n    });\n}\nconstexpr bool _ = (make_rect(), true);\n\nint main() {\n    MyRect r{640, 480};\n    std::cout << r.width << \"x\" << r.height << \"\\n\";\n}",
+          "answerLine": 6,
+          "explanation": "The bug is on line 6: `define_aggregate` is called from the `consteval` function `make_rect()` rather than from a namespace-scope `consteval { }` block. Calling a `consteval` function via `constexpr bool _ = (make_rect(), true)` is not a \"plainly constant-evaluated\" context, so the compiler reports \"cannot produce an injected declaration from a non-plainly constant-evaluated context\". Fix: replace `consteval void make_rect() { ... }` plus the call with a single `consteval { ... }` block."
+        },
+        {
+          "id": "m5-l5-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "What happens if you call `std::meta::define_aggregate(^^T, members)` for a type `T` that is already complete?",
+          "options": [
+            "The new fields are appended to T's existing fields",
+            "T is completely redefined with the new fields",
+            "A compile error — a complete type cannot be redefined",
+            "Undefined behavior at runtime"
+          ],
+          "answerIndex": 2,
+          "explanation": "`define_aggregate` requires the target type to be **incomplete** (forward-declared). If the type is already complete, the compiler produces an error. This is analogous to the ODR rule that forbids two definitions of the same class in one program. This is why the pattern always starts with `struct T;` (a forward declaration), never with a full definition."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write code that:\n1. Defines a struct `ServerConfig` with fields `int port`, `int max_connections`, `float timeout`.\n2. Using `define_aggregate` and `nonstatic_data_members_of`, automatically generates a struct `ServerConfigPatch` where each field `T` is replaced by `std::optional<T>` and the field names remain the same.\n3. In `main`, creates a `ServerConfigPatch` with `port=9090`, `max_connections=nullopt`, `timeout=60.0f`, and prints each field: if a value is present — the value itself; otherwise the string `\"(unchanged)\"`.\n\nExpected output:\n```\nport: 9090\nmax_connections: (unchanged)\ntimeout: 60\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <optional>\n\nstruct ServerConfig {\n    int port;\n    int max_connections;\n    float timeout;\n};\n\nstruct ServerConfigPatch;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^ServerConfig, std::meta::access_context::unchecked())) {\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(std::meta::data_member_spec(\n            opt_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ServerConfigPatch, fields);\n}\n\nvoid print_patch(const ServerConfigPatch& p) {\n    std::cout << \"port: \";\n    if (p.port) std::cout << *p.port; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n    std::cout << \"max_connections: \";\n    if (p.max_connections) std::cout << *p.max_connections; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n    std::cout << \"timeout: \";\n    if (p.timeout) std::cout << *p.timeout; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n}\n\nint main() {\n    ServerConfigPatch patch{\n        .port            = 9090,\n        .max_connections = std::nullopt,\n        .timeout         = 60.0f\n    };\n    print_patch(patch);\n}",
+        "expectedOutput": "port: 9090\nmax_connections: (unchanged)\ntimeout: 60",
+        "godboltUrl": "https://godbolt.org/z/rnb59oEdc"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which of the following `define_aggregate` calls compiles without error?",
+            "options": [
+              "```cpp\nconsteval bool init() {\n    std::meta::define_aggregate(^^T, members);\n    return true;\n}\nconstexpr bool _ = init();\n```",
+              "```cpp\nconsteval {\n    std::meta::define_aggregate(^^T, members);\n}\n```",
+              "```cpp\nstatic_assert([] consteval {\n    std::meta::define_aggregate(^^T, members);\n    return true;\n}());\n```",
+              "```cpp\nconstexpr auto r = std::meta::define_aggregate(^^T, members);\n```"
+            ],
+            "answerIndex": 1,
+            "explanation": "Only a namespace-scope `consteval { }` block is a \"plainly constant-evaluated\" context permitted for `define_aggregate`. The other options — a consteval function called via a constexpr variable, a consteval lambda in static_assert, a constexpr variable — do not satisfy this requirement."
+          },
+          {
+            "type": "choice",
+            "prompt": "Which of the following best describes the role of `data_member_spec` when used with `define_aggregate`?",
+            "options": [
+              "Adds a field to an already-complete type",
+              "Creates a descriptor (`std::meta::info`) for a future field — type, name, attributes — with no immediate effect on any struct",
+              "Declares a static field in a class",
+              "Returns the reflection of an already-existing data member"
+            ],
+            "answerIndex": 1,
+            "explanation": "`data_member_spec` is a pure consteval function that creates a **descriptor** (a `std::meta::info` object) with no immediate side effects. The actual injection of the field into a type only happens when that descriptor is passed to `define_aggregate`."
+          },
+          {
+            "type": "choice",
+            "prompt": "You want to automatically generate a struct `Nullable<T>` for an arbitrary aggregate `T`, where each field `FieldType field_name` becomes `std::optional<FieldType> field_name`. Which set of functions is sufficient?",
+            "options": [
+              "`nonstatic_data_members_of`, `type_of`, `identifier_of`, `data_member_spec`, `define_aggregate`",
+              "Only `members_of` and `define_aggregate`",
+              "`type_of`, `name_of`, `define_class`",
+              "`reflect_invoke`, `substitute`, `define_aggregate`"
+            ],
+            "answerIndex": 0,
+            "explanation": "The minimum required set: `nonstatic_data_members_of` to get T's field list; `type_of` to get the reflection of each field's type; `identifier_of` to get the field name; `substitute(^^std::optional, {type})` to build `std::optional<T>`; `data_member_spec` to create the new field descriptor; `define_aggregate` to define the resulting type. `name_of` and `define_class` do not exist (or are deprecated) in P2996R8; `reflect_invoke` is not needed."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l6",
+      "title": "Annotations: reflectable labels on declarations",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -freflection-latest"
+      },
+      "motivation": "Before C++26, the only way to tag struct fields for a code generator was to use tag types, naming conventions, or comments. None of these are visible to reflection: `[[deprecated]]` and `[[nodiscard]]` are compiler attributes, not values, and `std::meta` cannot read them.\n\n**Annotations** (P3394) change this: `[[=Serialize{}]]` attaches an arbitrary compile-time value to a declaration, and `std::meta::annotations_of` returns the list of those values during `consteval` evaluation. This enables serializers, ORM mappers, schema generators, and any tool that reads the author's \"intent\" directly from source — no macros, no external config files, zero runtime overhead.",
+      "theory": "## Annotation syntax\n\nAn annotation is an attribute of the form `= expression` inside `[[...]]`:\n\n```cpp\n[[=42]] int x;\n[[=Serialize{}]] std::string_view name;\n[[=Range{0, 100}]] int brightness;\n```\n\nThe key difference from regular attributes (`[[nodiscard]]`, `[[deprecated]]`): an annotation is a **compile-time value**, not an instruction to the compiler. The value is stored in the declaration's metadata and is accessible via reflection.\n\n**Rules**:\n- A single `[[...]]` may contain only annotations (multiple via comma: `[[=A{}, =B{}]]`) — mixing regular attributes and annotations in one specifier is ill-formed. Use separate `[[...]]`:\n  ```cpp\n  [[nodiscard]] [[=42]] int f();  // OK: separate specifiers\n  [[nodiscard, =42]] int f();     // ERROR: cannot mix\n  ```\n- The annotation value must be a constant expression with a **structural type**: integers, enumerations, structs composed only of structural fields — no pointers. The requirement is the same as for non-type template parameters.\n- `[[=Label{\"text\"}]]` **does not work** if `Label` contains `const char*` or a `std::string_view` initialized from a string literal — a pointer to a subobject of a string literal is not a valid template argument.\n\n## Querying annotations\n\n`std::meta::annotations_of(r)` is **consteval** and returns `vector<info>` — reflections of the annotation values in declaration order:\n\n```cpp\nconsteval bool has_serialize(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}\n```\n\nExtracting an annotation value — `std::meta::extract<T>(ann)` — is also consteval:\n\n```cpp\nconsteval Range get_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range)\n            return std::meta::extract<Range>(ann);\n    return {0, 0};\n}\n```\n\n## Annotations vs attributes\n\n| | Regular attribute | Annotation |\n|---|---|---|\n| Syntax | `[[nodiscard]]` | `[[=expr]]` |\n| Value | none | arbitrary constant expression |\n| Visible via reflection | no | yes — `annotations_of` |\n| Affects semantics | yes (warnings, etc.) | no |\n| Audience | the compiler | your consteval code |\n\n## Old alternatives and why they fall short\n\n- **Tag types** (`struct Serialize{};` as a template parameter): require changing the signature or wrapping every field.\n- **Naming conventions** (`serialize_name`): fragile, no compile-time enforcement.\n- **Compiler attributes** (`[[clang::annotate(\"serialize\")]]`): strings are not typed values, not checked by the compiler, not reflectable via standard `std::meta`.\n\n## Compiler support\n\nAnnotations are specified in P3394 and are part of the C++26 standard. In the experimental `clang_bb_p2996` build they are available with the **`-freflection-latest`** flag. Without this flag, `[[=expr]]` produces a compiler error even with `-std=c++26 -O2`. Always add this flag when working with annotations on `clang_bb_p2996`.",
+      "examples": [
+        {
+          "title": "Tagging fields for serialization",
+          "code": "#include <meta>\n#include <print>\n\n// Tag type: serialization marker\nstruct Serialize {};\n\nstruct User {\n    [[=Serialize{}]] std::string_view name;\n    [[=Serialize{}]] int age;\n    std::string_view password_hash;  // intentionally not annotated\n};\n\n// Does this member carry a Serialize annotation?\nconsteval bool is_serializable(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}\n\ntemplate <class T>\nvoid list_serializable_fields() {\n    std::println(\"Serializable fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        if constexpr (is_serializable(m)) {\n            std::println(\"  + {}\", std::meta::identifier_of(m));\n        } else {\n            std::println(\"  - {} (skipped)\", std::meta::identifier_of(m));\n        }\n    }\n}\n\nint main() {\n    list_serializable_fields<User>();\n}",
+          "expectedOutput": "Serializable fields of User:\n  + name\n  + age\n  - password_hash (skipped)",
+          "explanation": "`[[=Serialize{}]]` attaches the structural object `Serialize{}` to the field. Inside `consteval` function `is_serializable`, we call `annotations_of(m)` and compare each annotation's type against `^^Serialize` via `type_of`. In the template `list_serializable_fields`, the result of the check drives an `if constexpr` — the branch is selected statically for each field. No macros, no strings, zero runtime overhead."
+        },
+        {
+          "title": "Annotation with data: range constraint",
+          "code": "#include <meta>\n#include <print>\n\n// Annotation carrying data: a structural type with two int fields\nstruct Range {\n    int min;\n    int max;\n};\n\nstruct Config {\n    [[=Range{0, 100}]]   int brightness;\n    [[=Range{1, 16}]]    int threads;\n    [[=Range{0, 65535}]] int port;\n    std::string_view name;  // no annotation\n};\n\nconsteval bool has_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range) return true;\n    return false;\n}\n\nconsteval Range get_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range)\n            return std::meta::extract<Range>(ann);\n    return {0, 0};\n}\n\ntemplate <class T>\nvoid print_constraints() {\n    std::println(\"Constraints for {}:\", std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        if constexpr (has_range(m)) {\n            constexpr Range r = get_range(m);\n            std::println(\"  {} in [{}, {}]\",\n                         std::meta::identifier_of(m), r.min, r.max);\n        }\n    }\n}\n\nint main() {\n    print_constraints<Config>();\n}",
+          "expectedOutput": "Constraints for Config:\n  brightness in [0, 100]\n  threads in [1, 16]\n  port in [0, 65535]",
+          "explanation": "`Range` is a structural type (only `int` fields), so `Range{0,100}` is valid as an annotation value. `std::meta::extract<Range>(ann)` retrieves the value as a `Range` directly inside a `consteval` function. The `name` field carries no `Range` annotation, so `has_range` returns `false` and the field is skipped by `if constexpr`."
+        },
+        {
+          "title": "Multiple independent annotations on one field",
+          "code": "#include <meta>\n#include <print>\n\n// Independent tags\nstruct Indexed {};\nstruct NotNull {};\n\nstruct Table {\n    [[=NotNull{}]] [[=Indexed{}]] int id;\n    [[=NotNull{}]] std::string_view email;\n    std::string_view nickname;  // nullable, not indexed\n};\n\nconsteval bool has_ann(std::meta::info m, std::meta::info type) {\n    for (auto a : std::meta::annotations_of(m))\n        if (std::meta::type_of(a) == type) return true;\n    return false;\n}\n\ntemplate <class T>\nvoid describe_schema() {\n    std::println(\"Schema for {}:\", std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        constexpr bool nn      = has_ann(m, ^^NotNull);\n        constexpr bool indexed = has_ann(m, ^^Indexed);\n        std::println(\"  {} : NOT NULL={} INDEX={}\",\n            std::meta::identifier_of(m), nn, indexed);\n    }\n}\n\nint main() {\n    describe_schema<Table>();\n}",
+          "expectedOutput": "Schema for Table:\n  id : NOT NULL=true INDEX=true\n  email : NOT NULL=true INDEX=false\n  nickname : NOT NULL=false INDEX=false",
+          "explanation": "Field `id` carries two independent annotations — each in its own `[[...]]`. `annotations_of` returns both. The helper `has_ann` accepts a second `std::meta::info type` argument — a reflection of the annotation's type — and compares `type_of(a) == type` for each annotation. `constexpr bool nn = has_ann(m, ^^NotNull)` is evaluated statically for every field in the `template for`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l6-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Which of the following declarations is syntactically **valid** in C++26?",
+          "options": [
+            "[[=42]] int x;",
+            "[[nodiscard, =42]] int f();",
+            "[[= std::string(\"hello\")]] int y;",
+            "[[annotation(42)]] int z;"
+          ],
+          "answerIndex": 0,
+          "explanation": "`[[=42]]` is a valid annotation: sole element in the specifier, `42` has structural type. `[[nodiscard, =42]]` is ill-formed: an attribute and an annotation in the same `[[...]]`. `[[= std::string(\"hello\")]]` is ill-formed: `std::string` is not a structural type. `[[annotation(42)]]` is not the C++26 annotation syntax (it looks like a named attribute)."
+        },
+        {
+          "id": "m5-l6-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::meta::annotations_of(r)` return?\n\n```cpp\nconsteval auto get_anns(std::meta::info m) {\n    return std::meta::annotations_of(m);\n}\n```",
+          "options": [
+            "A `vector<std::meta::info>` where each element is a reflection of an annotation value",
+            "A vector of strings with annotation names",
+            "A vector of `std::type_info` objects for each annotation",
+            "A reflection of the single (first) annotation"
+          ],
+          "answerIndex": 0,
+          "explanation": "`annotations_of` returns `vector<std::meta::info>` — each element is an `info` reflecting the specific annotation value. To get the type, use `std::meta::type_of(ann) == ^^MyTag`; to extract the value, use `std::meta::extract<MyTag>(ann)`."
+        },
+        {
+          "id": "m5-l6-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "The following code is supposed to check whether a reflected field carries a `Serialize` annotation. Find the line with the error.",
+          "code": "struct Serialize {};\n\nstruct Foo {\n    [[=Serialize{}]] int x;\n    int y;\n};\n\nbool has_serialize(std::meta::info m) {\n    auto anns = std::meta::annotations_of(m);\n    for (auto ann : anns)\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}",
+          "answerLine": 8,
+          "explanation": "Line 8: `has_serialize` is declared as a plain `bool` function, not `consteval`. `std::meta::annotations_of` is a consteval function — it can only be called inside a constant-evaluated context. Fix: add `consteval` to the declaration: `consteval bool has_serialize(std::meta::info m)`."
+        },
+        {
+          "id": "m5-l6-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why does the following declaration **fail to compile**?\n\n```cpp\nstruct Label { const char* text; };\n\nstruct Foo {\n    [[=Label{\"hello\"}]] int x;\n};\n```",
+          "options": [
+            "`Label` is not a structural type: it contains a pointer to `char`, and a string literal is not a valid template argument",
+            "Annotations only support integer types (`int`, `enum`)",
+            "`const char*` cannot appear in any struct used as an annotation",
+            "Annotations cannot be applied to struct fields, only to functions"
+          ],
+          "answerIndex": 0,
+          "explanation": "An annotation value must be \"usable as a template argument\" — i.e., it must have structural type. A structural type cannot contain pointers, and `Label{\"hello\"}` creates a pointer to a substring of a string literal, which is not a valid template argument. Solution: use `int` fields, enumerations, or other structural types without pointers."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the fundamental difference between annotations (`[[=expr]]`) and regular C++ attributes (`[[nodiscard]]`, `[[deprecated]]`)?",
+            "options": [
+              "Annotations store an arbitrary constant value and are accessible via `std::meta::annotations_of`; regular attributes are only visible to the compiler and are not reflectable",
+              "Annotations affect the compiler's code generation; attributes do not",
+              "Attributes store values, while annotations are just markers without values",
+              "Annotations and attributes are identical in purpose; only the syntax differs"
+            ],
+            "answerIndex": 0,
+            "explanation": "Regular attributes are instructions to the compiler (warnings, optimizations). `std::meta` provides no functions to read them. Annotations are values attached to a declaration that `std::meta::annotations_of` returns inside `consteval` code."
+          },
+          {
+            "type": "choice",
+            "prompt": "What is required for `std::meta::annotations_of` and `std::meta::extract<T>` to work?",
+            "options": [
+              "They must be called only from `consteval` functions or other constant-evaluated contexts",
+              "They must be wrapped in a `static_assert`",
+              "They must be called only from `main`",
+              "They require `#include <annotations>`"
+            ],
+            "answerIndex": 0,
+            "explanation": "`annotations_of` and `extract` are consteval functions — they work only inside constant-evaluated contexts. The typical pattern is to declare a helper `consteval` function that is then called from a template function or `if constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Which of the following statements about annotation syntax is **true**?",
+            "options": [
+              "Multiple annotations on one declaration are allowed via separate `[[...]]`: `[[=A{}]] [[=B{}]] int x;`",
+              "An annotation and a regular attribute may coexist in one `[[...]]`: `[[nodiscard, =42]] int f();`",
+              "Annotations only accumulate from the first declaration of a function; redeclarations are ignored",
+              "Annotations can only be applied to types (`struct`, `class`), not to fields"
+            ],
+            "answerIndex": 0,
+            "explanation": "Multiple annotations via separate `[[...]]` on one declaration is valid syntax. Mixing regular attributes and annotations in one specifier is ill-formed. Per the specification, annotations from multiple declarations of the same function/variable accumulate. Annotations can be applied to any declaration: variables, functions, fields, types."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l7",
+      "title": "Capstone: generic utilities via reflection",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3",
+        "m5-l4",
+        "m5-l5",
+        "m5-l6"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Lessons l1–l6 introduced all the key static reflection primitives: the `^^` operator, `std::meta::info`, member and enumerator iteration with `template for`, the splice syntax `[: :]`, and annotations. Each primitive is useful on its own, but the real power appears when they compose into **generic utilities** — functions that work with *any* type or enumeration without code generation or macros.\n\nIn this capstone lesson we build three utilities that classically required per-type boilerplate:\n- `enum_name<E>(value)` — converting an enum value to a string;\n- `print_fields(obj)` — automatic printing of all struct fields;\n- `auto_equal(a, b)` — field-by-field struct comparison.\n\nEach is around 10 lines, fully generic, with zero runtime overhead.",
+      "theory": "## Pattern: consteval iteration + runtime dispatch\n\nIteration via `template for` unfolds **at compile time**. To select a branch based on a runtime value (such as an enum value), use one of two approaches:\n\n**Approach A — comparison inside `template for`:**\n```cpp\ntemplate for (constexpr auto e : std::define_static_array(\n        std::meta::enumerators_of(^^E))) {\n    if ([:e:] == value) return std::meta::identifier_of(e);\n}\n```\nHere `[:e:]` — a splice of an enumerator (not `value_of<E>()`) — produces the enumerator's value. The construct compiles into a linear if-else chain across all enumerators.\n\n**Approach B — `if constexpr` inside member iteration:**\nFor type-safe access to heterogeneous fields (`int`, `double`, `std::string_view`), the splice `obj.[: m :]` returns a reference to the field at the correct type — the compiler treats each `template for` iteration as an independent instantiation.\n\n## Key primitive combinations\n\n| Task | Primitives |\n|---|---|\n| Enumerator name from value | `enumerators_of` + `[:e:]` (value splice) + `identifier_of` |\n| Printing struct fields | `nonstatic_data_members_of` + `obj.[: m :]` + `identifier_of` |\n| Field-by-field equality | `nonstatic_data_members_of` + `a.[: m :] != b.[: m :]` |\n| Fields that differ | same + conditional output |\n\n## Why this beats the old approaches\n\n- **No macros.** The classic `REFLECT_ENUM(Color, Red, Green, Blue)` pattern disappears.\n- **No code generation.** No separate tool that reads headers and emits `switch` statements.\n- **No hand-maintained runtime tables.** The compiler generates optimal code.\n- **Grows automatically.** Add a new enumerator or field — the utility picks it up with no changes.\n\n## `std::define_static_array` — why it is needed\n\n`nonstatic_data_members_of` and `enumerators_of` return `std::vector<std::meta::info>`. To use this in `template for` (which requires a constexpr range), the vector must be converted into a static array via `std::define_static_array`. This is a special C++26 function that wraps the vector in a constexpr-accessible range:\n```cpp\nconstexpr auto members = std::define_static_array(\n    std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::unchecked()));\ntemplate for (constexpr auto m : members) { ... }\n```",
+      "examples": [
+        {
+          "title": "Generic enum-to-string function",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\nenum class Color { Red, Green, Blue };\n\nconsteval std::string_view enum_name(Color c) {\n    template for (constexpr auto e : std::define_static_array(\n            std::meta::enumerators_of(^^Color))) {\n        if ([:e:] == c) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::println(\"{}\", enum_name(Color::Red));\n    std::println(\"{}\", enum_name(Color::Green));\n    std::println(\"{}\", enum_name(Color::Blue));\n}",
+          "expectedOutput": "Red\nGreen\nBlue",
+          "explanation": "`enumerators_of(^^Color)` returns a list of enumerator reflections. `[:e:]` is a splice that produces the enumerator's value (analogous to `Color::Red`, `Color::Green`, etc.). The comparison `[:e:] == c` finds the matching enumerator; `identifier_of(e)` returns its name as a `string_view`. The function is `consteval` — all logic runs at compile time. To call it from `main`, the argument must be a constant expression (which `Color::Red` etc. are)."
+        },
+        {
+          "title": "Generic struct field printer",
+          "code": "#include <meta>\n#include <print>\n\nstruct Point { int x; double y; };\n\ntemplate <class T>\nvoid print_fields(const T& obj) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        std::println(\"{}: {}\", std::meta::identifier_of(m), obj.[: m :]);\n    }\n}\n\nint main() {\n    Point p{1, 2.5};\n    print_fields(p);\n}",
+          "expectedOutput": "x: 1\ny: 2.5",
+          "explanation": "`nonstatic_data_members_of(^^T, access_context::unchecked())` returns all non-static data members of type `T` (the `unchecked` flag allows access to private members — here all fields are public). `obj.[: m :]` is a member-splice: for each member `m` it is equivalent to `obj.x`, `obj.y`, etc. `std::println` can format both `int` and `double` uniformly, so mixed field types pose no problem. The function is templated — it works with **any** struct without modification."
+        },
+        {
+          "title": "Generic field-by-field equality",
+          "code": "#include <meta>\n#include <print>\n\nstruct Vec2 { float x, y; };\n\ntemplate <class T>\nconstexpr bool auto_equal(const T& a, const T& b) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        if (a.[: m :] != b.[: m :]) return false;\n    }\n    return true;\n}\n\nint main() {\n    Vec2 v1{1.0f, 2.0f};\n    Vec2 v2{1.0f, 2.0f};\n    Vec2 v3{1.0f, 3.0f};\n    std::println(\"{}\", auto_equal(v1, v2));\n    std::println(\"{}\", auto_equal(v1, v3));\n}",
+          "expectedOutput": "true\nfalse",
+          "explanation": "`auto_equal` iterates over all fields of type `T` and compares `a.[: m :]` with `b.[: m :]` — returning `false` at the first mismatch. `v1` and `v2` are identical → `true`; `v1` and `v3` differ on field `y` → `false`. The function is `constexpr`, making it usable in `if constexpr` as well as runtime conditions. Unlike a hand-written `operator==`, it requires no update when a new field is added to the struct."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l7-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nenum class Dir { North, South, East, West };\n\nint main() {\n    template for (constexpr auto e : std::define_static_array(\n            std::meta::enumerators_of(^^Dir))) {\n        std::println(\"{}\", std::meta::identifier_of(e));\n    }\n}",
+          "answer": "North\nSouth\nEast\nWest",
+          "explanation": "`enumerators_of(^^Dir)` returns enumerator reflections in declaration order. `identifier_of(e)` for each one returns the string representation of its name: `\"North\"`, `\"South\"`, `\"East\"`, `\"West\"`."
+        },
+        {
+          "id": "m5-l7-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "How does `[:e:]` in the context of iterating over `enumerators_of(^^E)` differ from `value_of<E>(e)`?",
+          "options": [
+            "`[:e:]` is a splice that produces the enumerator's value as a constant expression; `value_of<E>()` does not exist in the C++26 standard",
+            "`value_of<E>(e)` returns the underlying integer type; `[:e:]` returns the value with type `E`",
+            "`[:e:]` requires a `consteval` context; `value_of<E>(e)` works at runtime",
+            "Both are equivalent — they are synonyms"
+          ],
+          "answerIndex": 0,
+          "explanation": "`value_of<E>()` is not a name that exists in `std::meta`. The correct way to produce an enumerator's value from `std::meta::info e` is the splice `[:e:]`. It produces the value as a constant expression of type `E` (or whatever type the reflected entity has)."
+        },
+        {
+          "id": "m5-l7-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Box { int w; int h; };\n\ntemplate <class T>\nvoid print_fields(const T& obj) {\n    for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        std::println(\"{}: {}\", std::meta::identifier_of(m), obj.[: m :]);\n    }\n}",
+          "answerLine": 8,
+          "explanation": "Line 8: `for` instead of `template for`. A regular range-for loop cannot iterate over a constexpr range of `std::meta::info` — each element must be `constexpr`, which is only possible with `template for`. Without `template`, the compiler will error because `constexpr auto m` is not valid in an ordinary range-for."
+        },
+        {
+          "id": "m5-l7-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "The `print_fields` function works for a struct with `int` and `double` fields. What happens if a `std::string_view` field is added?",
+          "options": [
+            "Compile error: `obj.[: m :]` yields different types, and `std::println` cannot handle `string_view` and numbers in one call",
+            "Compiles and prints correctly: `std::println` formats `string_view` the same way as `int` and `double`",
+            "Runtime error: `std::println` does not know the format for `string_view`",
+            "The `string_view` field is skipped: `template for` only handles numeric types"
+          ],
+          "answerIndex": 1,
+          "explanation": "`template for` generates a separate code block for each field — each block has its own type for `obj.[: m :]`. `std::println(\"{}\", obj.[: m :])` works for `int`, `double`, and `string_view` alike, since all three support the default `{}` formatter. No error occurs."
+        }
+      ],
+      "challenge": {
+        "prompt": "Write a function `diff(a, b)` that takes two instances of the same type and prints only the fields whose values differ, in the format `fieldname: old -> new`. Test it on struct `Config { int width; int height; float scale; }` with instances `{1920, 1080, 1.0f}` and `{1280, 1080, 1.5f}`.",
+        "referenceSolution": "#include <meta>\n#include <print>\n\nstruct Config {\n    int width;\n    int height;\n    float scale;\n};\n\ntemplate <class T>\nvoid diff(const T& a, const T& b) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        if (a.[: m :] != b.[: m :]) {\n            std::println(\"{}: {} -> {}\",\n                std::meta::identifier_of(m),\n                a.[: m :],\n                b.[: m :]);\n        }\n    }\n}\n\nint main() {\n    Config c1{1920, 1080, 1.0f};\n    Config c2{1280, 1080, 1.5f};\n    diff(c1, c2);\n}",
+        "expectedOutput": "width: 1920 -> 1280\nscale: 1 -> 1.5",
+        "godboltUrl": "https://godbolt.org/z/placeholder"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does `std::meta::enumerators_of(^^E)` return?",
+            "options": [
+              "`std::vector<std::meta::info>` — a list of enumerator reflections",
+              "`std::vector<std::string_view>` — a list of enumerator names",
+              "`std::initializer_list<E>` — a list of enumerator values",
+              "An integer — the number of enumerators"
+            ],
+            "answerIndex": 0,
+            "explanation": "`enumerators_of` returns `std::vector<std::meta::info>` — reflections of the enumerators. From each reflection you can obtain the name (`identifier_of`) or the value (`[:e:]`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Why is `std::define_static_array(...)` used in `template for (constexpr auto m : ...)` instead of passing `nonstatic_data_members_of` directly?",
+            "options": [
+              "For performance: `define_static_array` caches the result",
+              "`nonstatic_data_members_of` returns a `std::vector` that cannot be used directly as a constexpr range in `template for`; `define_static_array` converts it into a static array",
+              "`define_static_array` filters out private fields",
+              "`template for` cannot work with `std::vector` due to move-semantics restrictions"
+            ],
+            "answerIndex": 1,
+            "explanation": "`nonstatic_data_members_of` returns `std::vector<std::meta::info>` — a constexpr vector that is not directly suitable for `template for`. `std::define_static_array` converts it into a static constexpr array that `template for` can expand into independent code blocks."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `obj.[: m :]` mean when `m` is a `std::meta::info` reflecting a data member?",
+            "options": [
+              "Calling method `m` on object `obj`",
+              "Member-splice: syntax for accessing the field of `obj` reflected by `m` — equivalent to `obj.fieldname`",
+              "Taking the address of field `m` in object `obj`",
+              "Creating a copy of field `m` from object `obj`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`obj.[: m :]` is a member-splice: it substitutes the identifier of the field reflected in `m`, analogous to writing `obj.x` directly. The result is an lvalue reference to the field, typed as the field's type."
+          },
+          {
+            "type": "choice",
+            "prompt": "The annotation `[[=Serialize{}]]` (from lesson l6) is visible through `std::meta::annotations_of`. Which statement is true?",
+            "options": [
+              "An annotation can be checked at runtime — it is stored in the binary",
+              "An annotation is visible only in a `consteval` context; `annotations_of` is a consteval function",
+              "Annotations are stored like `[[nodiscard]]` and affect compiler behavior",
+              "An annotation automatically documents the field in a debugger"
+            ],
+            "answerIndex": 1,
+            "explanation": "`annotations_of` is a consteval function: it can only be called in a `consteval`/`constexpr` context. Annotations are compile-time metadata and add zero bytes to the runtime binary; they do not change compiler behavior (unlike `[[nodiscard]]`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "The `auto_equal(a, b)` function is written using `template for` + `obj.[: m :]`. What is its key advantage over a hand-written `operator==`?",
+            "options": [
+              "It runs faster at runtime due to SIMD optimization",
+              "It automatically accounts for new fields when added to the struct — no changes needed",
+              "It only works with `constexpr` objects",
+              "It does not require `#include <meta>`"
+            ],
+            "answerIndex": 1,
+            "explanation": "The main advantage is automatic extensibility: if a new field is added to the struct, `auto_equal` will compare it automatically. A hand-written `operator==` would require explicitly adding the new field — something that is easy to forget."
+          }
+        ]
+      }
     }
   ]
 }

@@ -7,8 +7,989 @@
   "lessons": [
     {
       "id": "m5-l1",
-      "title": "Оператор рефлексии ^ и std::meta::info",
-      "stub": true
+      "title": "Оператор ^^ и std::meta::info",
+      "prerequisites": [],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "До C++26 единственным инструментом интроспекции типов был `typeid` — и он работал только в рантайме, только для типов (не для функций и переменных), и требовал RTTI, которая часто отключается в embedded или в библиотечном коде. Задачи вроде «сгенерировать имя типа в compile-time» или «проверить, является ли сущность функцией» решались через шаблонные трюки (`type_traits`, специализации, частичная специализация) — многословно, хрупко и без единого синтаксиса.\n\nC++26 вводит **статическую рефлексию**: оператор `^^` превращает любую сущность языка — тип, переменную, функцию, пространство имён, шаблон — в значение типа `std::meta::info`. Это значение полностью constexpr, существует только на этапе компиляции, и над ним работают функции `std::meta::*`, которые отвечают на вопросы о сущности: как она называется, какого рода, какого типа её значение. Один унифицированный синтаксис вместо зоопарка трюков.",
+      "theory": "## Оператор `^^`: что он делает\n\n`^^expr` — унарный оператор, который берёт **сущность языка** и возвращает **prvalue** типа `std::meta::info`. Под «сущностью» понимается тип (`^^int`, `^^MyStruct`), переменная (`^^x`), функция (`^^f`), пространство имён (`^^std`), шаблон (`^^vector`). Сам по себе оператор ничего не вычисляет и не вызывает — он лишь захватывает идентификатор сущности на этапе компиляции.\n\nВот возможные формы:\n```cpp\nconstexpr auto r1 = ^^int;        // тип\nconstexpr auto r2 = ^^my_var;     // переменная\nconstexpr auto r3 = ^^my_func;    // функция\nconstexpr auto r4 = ^^std;        // пространство имён\nconstexpr auto r5 = ^^MyTemplate; // шаблон класса\n```\n\n## Тип `std::meta::info`\n\n`std::meta::info` — **consteval-only тип**: переменная этого типа обязана быть `constexpr` (или находиться в `consteval`/`constexpr`-контексте). Хранить `std::meta::info` в обычной runtime-переменной нельзя — это ошибка компиляции. Иными словами, рефлексия в C++26 полностью статическая: данные о сущностях существуют только во время компиляции, runtime-накладных расходов нет.\n\n```cpp\n// Корректно:\nconstexpr std::meta::info r = ^^int;  // constexpr — OK\n\n// Ошибка компиляции:\nstd::meta::info r = ^^int;             // не constexpr — ill-formed\n```\n\n## `^^` — unevaluated context\n\nОператор `^^` не вычисляет своё операнд в рантайме — как `sizeof` и `decltype`. Это означает, что побочные эффекты (вызов функции, изменение переменной) не происходят:\n\n```cpp\nint counter = 0;\nint bump() { return ++counter; }\n\nconstexpr auto r = ^^bump;  // bump() НЕ вызывается\n// counter == 0\n```\n\n`^^bump` захватывает сущность «функция `bump`», но не вызывает её.\n\n## Запросы к отражению: `std::meta::*`\n\nВсе функции-запросы из пространства имён `std::meta` принимают `std::meta::info` и обязаны вызываться в constexpr/consteval-контексте.\n\n**Предикаты рода:**\n- `std::meta::is_type(r)` — true, если `r` отражает тип\n- `std::meta::is_function(r)` — true, если `r` отражает функцию\n- `std::meta::is_variable(r)` — true, если `r` отражает переменную\n- `std::meta::is_namespace(r)` — true, если `r` отражает пространство имён\n- `std::meta::is_template(r)` — true, если `r` отражает шаблон\n\n**Имя сущности:**\n- `std::meta::identifier_of(r)` — возвращает `std::string_view` с объявленным именем сущности. Работает только для именованных сущностей (не для встроенных типов вроде `int`). Должна вызываться в `consteval`-контексте.\n\n**Тип сущности:**\n- `std::meta::type_of(r)` — возвращает `std::meta::info` для типа сущности (тип переменной, тип функции).\n\n**Сравнение по идентичности:**\n- `r1 == r2` — true, если оба отражают одну и ту же сущность. Сравнение тоже consteval-only: его результат обязан использоваться в константном контексте.\n\n```cpp\nconsteval bool same(std::meta::info a, std::meta::info b) { return a == b; }\n\nconstexpr bool b = same(^^int, ^^int);   // true\nconstexpr bool c = same(^^int, ^^double); // false\n```\n\n## Применение в шаблонах и `if constexpr`\n\n`std::meta::info` может быть non-type template parameter. Это позволяет передавать отражения в шаблоны и использовать предикаты в `if constexpr`:\n\n```cpp\ntemplate <std::meta::info R>\nvoid describe() {\n    if constexpr (std::meta::is_type(R)) {\n        // ветка для типов\n    } else if constexpr (std::meta::is_function(R)) {\n        // ветка для функций\n    }\n}\n\ndescribe<^^MyStruct>(); // инстанцируется ветка для типов\ndescribe<^^my_func>();  // инстанцируется ветка для функций\n```\n\n## Contrast: `typeid` vs `^^`\n\n| | `typeid` / `type_info` | `^^` / `std::meta::info` |\n|---|---|---|\n| Когда работает | Рантайм (требует RTTI) | Compile-time only |\n| Что можно отражать | Только типы | Типы, переменные, функции, пространства имён, шаблоны |\n| Запросы | Только `name()` (implementation-defined) | `is_type`, `is_function`, `identifier_of`, `type_of` и многое другое |\n| Накладные расходы | RTTI-таблицы в бинарнике | Ноль в рантайме |\n\n## Ill-formed: что нельзя отражать\n\nОтражение несуществующей сущности — ошибка компиляции (ill-formed), не UB:\n```cpp\nconstexpr auto r = ^^nonexistent_entity; // ошибка компиляции\n```\nКомпилятор диагностирует это сразу, undefined behavior не возникает.",
+      "examples": [
+        {
+          "title": "Что можно отразить оператором ^^",
+          "code": "#include <meta>\n#include <print>\n\nint speed = 100;\nstruct Point { int x, y; };\n\nnamespace physics {}\n\nint main() {\n    // ^^ captures an entity and returns a constexpr prvalue of type std::meta::info\n    constexpr std::meta::info r_type = ^^int;      // type\n    constexpr std::meta::info r_var  = ^^speed;    // variable\n    constexpr std::meta::info r_user = ^^Point;    // user-defined type\n\n    // std::meta::is_type: true only for types\n    std::print(\"is_type(^^int)   = {}\\n\", std::meta::is_type(r_type));\n    std::print(\"is_type(^^speed) = {}\\n\", std::meta::is_type(r_var));\n    std::print(\"is_type(^^Point) = {}\\n\", std::meta::is_type(r_user));\n\n    // std::meta::is_variable: true for variables\n    std::print(\"is_variable(^^speed) = {}\\n\", std::meta::is_variable(r_var));\n}",
+          "expectedOutput": "is_type(^^int)   = true\nis_type(^^speed) = false\nis_type(^^Point) = true\nis_variable(^^speed) = true",
+          "explanation": "`^^int` и `^^Point` возвращают отражения типов — `is_type` для них `true`. `^^speed` отражает переменную, а не тип — `is_type` вернёт `false`, зато `is_variable` вернёт `true`. Заметьте, что все переменные `r_type`, `r_var`, `r_user` объявлены как `constexpr`: тип `std::meta::info` — consteval-only, без `constexpr` будет ошибка компиляции."
+        },
+        {
+          "title": "identifier_of, is_function и type_of",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\ndouble area(int w, int h) { return w * h; }\nint max_count = 256;\n\nconsteval std::string_view name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\nconsteval bool same_type(std::meta::info a, std::meta::info b) {\n    return a == b;\n}\n\nint main() {\n    constexpr auto r_area      = ^^area;\n    constexpr auto r_max_count = ^^max_count;\n\n    // identifier_of: declared name of the entity\n    std::print(\"name(^^area)      = {}\\n\", name(r_area));\n    std::print(\"name(^^max_count) = {}\\n\", name(r_max_count));\n\n    // is_function\n    std::print(\"is_function(^^area)      = {}\\n\", std::meta::is_function(r_area));\n    std::print(\"is_function(^^max_count) = {}\\n\", std::meta::is_function(r_max_count));\n\n    // type_of: returns std::meta::info for the entity's type\n    // == comparison is also consteval-only, so wrap in a consteval function\n    constexpr bool type_is_int = same_type(std::meta::type_of(r_max_count), ^^int);\n    std::print(\"type_of(^^max_count) == ^^int: {}\\n\", type_is_int);\n\n    // == compares by entity identity\n    constexpr bool same = same_type(r_area, ^^area);\n    constexpr bool diff = same_type(r_area, r_max_count);\n    std::print(\"^^area == ^^area:      {}\\n\", same);\n    std::print(\"^^area == ^^max_count: {}\\n\", diff);\n}",
+          "expectedOutput": "name(^^area)      = area\nname(^^max_count) = max_count\nis_function(^^area)      = true\nis_function(^^max_count) = false\ntype_of(^^max_count) == ^^int: true\n^^area == ^^area:      true\n^^area == ^^max_count: false",
+          "explanation": "`identifier_of` возвращает `std::string_view` с именем сущности — её надо вызывать в `consteval`-контексте, поэтому обёрнута в `consteval`-функцию `name`. `type_of(^^max_count)` возвращает отражение типа переменной — `^^int`, и сравнение с `^^int` даёт `true`. Оператор `==` на `std::meta::info` тоже consteval-only, поэтому `same_type` тоже `consteval`. Два отражения одной и той же функции `area` равны — `^^area == ^^area` это `true`."
+        },
+        {
+          "title": "Отражение в if constexpr — диспетчеризация по роду сущности",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\nstruct Color { int r, g, b; };\nvoid render() {}\nint frame_count = 0;\n\nconsteval std::string_view get_name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\n// std::meta::info as a non-type template parameter\ntemplate <std::meta::info R>\nvoid describe_entity() {\n    if constexpr (std::meta::is_type(R)) {\n        std::print(\"[type]     {}\\n\", get_name(R));\n    } else if constexpr (std::meta::is_function(R)) {\n        std::print(\"[function] {}\\n\", get_name(R));\n    } else if constexpr (std::meta::is_variable(R)) {\n        std::print(\"[variable] {}\\n\", get_name(R));\n    }\n}\n\nint main() {\n    describe_entity<^^Color>();\n    describe_entity<^^render>();\n    describe_entity<^^frame_count>();\n}",
+          "expectedOutput": "[type]     Color\n[function] render\n[variable] frame_count",
+          "explanation": "`std::meta::info` допустим как non-type template parameter. Предикаты `is_type`, `is_function`, `is_variable` в `if constexpr` работают в константном контексте (тело шаблонной функции), поэтому ветки компилируются правильно. Для каждой инстанции компилируется только одна ветка — та, что соответствует роду сущности R. `get_name` — `consteval`, поэтому вызывается на этапе компиляции и возвращает строку, которую `std::print` выводит в рантайме."
+        },
+        {
+          "title": "^^ — невычисляемый контекст: побочные эффекты не происходят",
+          "code": "#include <meta>\n#include <print>\n\nint counter = 0;\n\nint side_effect() {\n    ++counter;\n    return 42;\n}\n\nint main() {\n    // ^^ reflects the entity; it does NOT call the function\n    constexpr auto r = ^^side_effect;  // side_effect() is NOT called\n\n    std::print(\"is_function(^^side_effect) = {}\\n\",\n               std::meta::is_function(r));\n    std::print(\"counter after ^^ = {}\\n\", counter);  // 0: no call happened\n\n    // For comparison: an actual call increments counter\n    int val = side_effect();\n    std::print(\"side_effect() = {}\\n\", val);\n    std::print(\"counter after call = {}\\n\", counter);  // 1\n}",
+          "expectedOutput": "is_function(^^side_effect) = true\ncounter after ^^ = 0\nside_effect() = 42\ncounter after call = 1",
+          "explanation": "`^^side_effect` работает как `sizeof` или `decltype` — это невычисляемый контекст. Оператор захватывает *идентификатор* функции, но никогда не выполняет её тело. Поэтому `counter` остаётся равным нулю после `^^`. Реальный вызов `side_effect()` — обычный вызов функции — уже инкрементирует `counter`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\ndouble ratio = 1.5;\nstruct Tag {};\n\nint main() {\n    constexpr auto r1 = ^^ratio;\n    constexpr auto r2 = ^^Tag;\n    std::print(\"{} {}\\n\",\n        std::meta::is_variable(r1),\n        std::meta::is_type(r2));\n}",
+          "answer": "true true",
+          "explanation": "`^^ratio` отражает переменную — `is_variable` вернёт `true`, `is_type` вернёт `false`. `^^Tag` отражает пользовательский тип — `is_type` вернёт `true`. Предикаты `is_variable` и `is_type` — `consteval`-функции, поэтому они допустимы как аргументы `std::print`: компилятор вычисляет их в константном контексте и передаёт уже готовые `bool`-значения."
+        },
+        {
+          "id": "m5-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что возвращает выражение `^^int`?",
+          "options": [
+            "Значение типа `std::type_info` (как `typeid(int)`)",
+            "Prvalue типа `std::meta::info` — consteval-only дескриптор сущности",
+            "Указатель на таблицу виртуальных методов типа `int`",
+            "Значение типа `std::size_t` — размер типа `int` в байтах"
+          ],
+          "answerIndex": 1,
+          "explanation": "`^^T` — оператор статической рефлексии C++26, он возвращает prvalue типа `std::meta::info`. Это consteval-only значение, существующее только на этапе компиляции — принципиально иная абстракция, чем `typeid`, который работает в рантайме и требует RTTI."
+        },
+        {
+          "id": "m5-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Vec3 {};\nvoid normalize(Vec3) {}\n\nint main() {\n    std::meta::info r = ^^Vec3;\n    std::print(\"{}\\n\", std::meta::is_type(r));\n}",
+          "answerLine": 8,
+          "explanation": "Тип `std::meta::info` — consteval-only: переменная этого типа обязана быть `constexpr`. Строка 8 объявляет `r` как обычную (не constexpr) переменную, что является ошибкой компиляции: «variable of consteval-only type must be constexpr». Исправление: добавить `constexpr` перед `std::meta::info r`."
+        },
+        {
+          "id": "m5-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Дан код:\n```cpp\nconstexpr auto r1 = ^^int;\nconstexpr auto r2 = ^^double;\nbool same = (r1 == r2);  // строка 3\n```\nЧто произойдёт при компиляции строки 3?",
+          "options": [
+            "Скомпилируется: `same` будет равен `false` в рантайме",
+            "Ошибка компиляции: оператор `==` для `std::meta::info` consteval-only — результат нельзя хранить в `bool`",
+            "Предупреждение компилятора, но программа скомпилируется",
+            "UB в рантайме: сравнение constexpr-значений в рантайм-переменной"
+          ],
+          "answerIndex": 1,
+          "explanation": "Оператор `==` над двумя значениями `std::meta::info` — consteval-only операция. Её результат нельзя присвоить в обычную `bool`-переменную. Чтобы сравнить два отражения, нужно сделать это в `consteval`-функции или в `static_assert`: `consteval bool same(std::meta::info a, std::meta::info b) { return a == b; }`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напиши функцию-шаблон `classify`, которая принимает список отражений как non-type template parameter pack и для каждого из них печатает строку вида `\"type: Name\"`, `\"function: Name\"`, `\"variable: Name\"` или `\"namespace: Name\"`.\n\nОбъяви вспомогательные сущности:\n```cpp\nstruct Vertex { float x, y, z; };\nvoid draw(Vertex v);\nint vertex_count = 0;\nnamespace gfx {}\n```\n\nЗатем вызови:\n```cpp\nclassify<^^Vertex, ^^draw, ^^vertex_count, ^^gfx>();\n```\n\nОжидаемый вывод:\n```\ntype: Vertex\nfunction: draw\nvariable: vertex_count\nnamespace: gfx\n```",
+        "referenceSolution": "```cpp\n#include <meta>\n#include <print>\n#include <string_view>\n\nstruct Vertex { float x, y, z; };\nvoid draw(Vertex v) { (void)v; }\nint vertex_count = 0;\nnamespace gfx {}\n\nconsteval std::string_view get_name(std::meta::info r) {\n    return std::meta::identifier_of(r);\n}\n\ntemplate <std::meta::info... Rs>\nvoid classify() {\n    (..., []{  // fold по лямбдам\n        constexpr std::meta::info R = Rs;\n        if constexpr (std::meta::is_type(R))\n            std::print(\"type: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_function(R))\n            std::print(\"function: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_variable(R))\n            std::print(\"variable: {}\\n\", get_name(R));\n        else if constexpr (std::meta::is_namespace(R))\n            std::print(\"namespace: {}\\n\", get_name(R));\n    }());\n}\n\nint main() {\n    classify<^^Vertex, ^^draw, ^^vertex_count, ^^gfx>();\n}\n```",
+        "expectedOutput": "type: Vertex\nfunction: draw\nvariable: vertex_count\nnamespace: gfx",
+        "godboltUrl": null
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Каким типом является результат выражения `^^MyStruct`?",
+            "options": [
+              "`std::type_info`",
+              "`std::meta::info`",
+              "`const char*` (имя типа)",
+              "`std::size_t` (размер типа)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`^^` — оператор статической рефлексии, он возвращает prvalue типа `std::meta::info`. Это consteval-only тип, переменная которого обязана быть `constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Переменная `std::meta::info r = ^^int;` объявлена без `constexpr`. Что произойдёт?",
+            "options": [
+              "Скомпилируется; `r` содержит runtime-копию отражения",
+              "Ошибка компиляции: переменная consteval-only типа обязана быть `constexpr`",
+              "Предупреждение компилятора, но программа работает",
+              "UB: значение `r` непредсказуемо"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` — consteval-only тип. Его значения существуют только на этапе компиляции. Хранить `std::meta::info` в обычной (не constexpr) переменной — ошибка компиляции."
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой из предикатов `std::meta::*` вернёт `true` для `^^my_func`, где `my_func` — обычная функция?",
+            "options": [
+              "`std::meta::is_type(^^my_func)`",
+              "`std::meta::is_variable(^^my_func)`",
+              "`std::meta::is_function(^^my_func)`",
+              "`std::meta::is_namespace(^^my_func)`"
+            ],
+            "answerIndex": 2,
+            "explanation": "`^^my_func` отражает функцию. `is_function` вернёт `true`. `is_type` и `is_variable` вернут `false` — функция не является ни типом, ни переменной."
+          },
+          {
+            "type": "choice",
+            "prompt": "Чем `^^` / `std::meta::info` принципиально отличается от `typeid` / `std::type_info`?",
+            "options": [
+              "Только синтаксисом — семантика одинакова",
+              "`^^` работает только в рантайме, `typeid` — только в compile-time",
+              "`^^` работает в compile-time, отражает любые сущности (не только типы), не требует RTTI; `typeid` — рантайм, только типы, требует RTTI",
+              "`typeid` точнее — возвращает mangled name, а `^^` — только простое имя"
+            ],
+            "answerIndex": 2,
+            "explanation": "`typeid` — рантайм-механизм: требует RTTI, работает только для типов, возвращает implementation-defined строку имени. `^^` — compile-time: нет рантайм-накладных расходов, отражает типы, переменные, функции, пространства имён; запросы через `std::meta::*` выполняются на этапе компиляции."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l2",
+      "title": "Сплайсинг [: r :]",
+      "prerequisites": [
+        "m5-l1"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "В уроке m5-l1 мы научились превращать имена в значения типа `std::meta::info` с помощью оператора `^^`. Теперь нужен обратный шаг: взять отражение и **вернуть его в код** — как тип, как выражение или как шаблон. Именно для этого существует синтаксис сплайсинга `[: r :]`.\n\nБез сплайсинга рефлексия была бы односторонней: можно *спросить* о типе, но нельзя *использовать* полученный ответ там, где компилятор ожидает реальный тип или значение. Сплайсинг замыкает этот круг: `typename [: ^^int :]` — это буквально `int`. Это открывает дорогу к обобщённым функциям, которые параметризуются не типами, а *отражениями типов*, и к кодогенерации на основе метаданных.",
+      "theory": "## Три формы сплайсинга\n\nСплайсер `[: r :]` (произносится «splice r») читает значение `r` типа `std::meta::info` во время компиляции и вставляет соответствующую сущность обратно в AST. Компилятор требует, чтобы `r` было **константным выражением** — иначе compile error: *splice operand must be a constant expression*.\n\nСуществуют три контекстно-различимые формы:\n\n### 1. `typename [: r :]` — сплайс как тип\n\nИспользуется там, где синтаксически ожидается тип:\n\n```cpp\nconstexpr auto r = ^^double;\ntypename [:r:] x = 3.14;          // double x = 3.14;\nauto f = static_cast<typename [:r:]>(7); // static_cast<double>(7)\nstd::cout << sizeof(typename [:r:]); // sizeof(double)\n```\n\nПравило простое: **там, где стоит `typename`-контекст, пишется `typename [: r :]`**.\n\n### 2. `[: r :]` — сплайс как выражение (значение)\n\nИспользуется там, где ожидается *значение* — для отражений переменных и перечислителей:\n\n```cpp\nconstexpr int kMax = 255;\nconstexpr auto r = ^^kMax;\nstd::cout << [:r:];     // читает kMax, выводит 255\n```\n\nВажные нюансы:\n- **Категория значения**: `[: r :]` для переменной или перечислителя даёт **lvalue** — можно брать адрес (`&[:r:]`), можно привязать константную ссылку.\n- **Нельзя**: применить `[: r :]` к отражению *типа* — компилятор выдаёт ошибку *reflection not usable in a splice expression*. Тип — не значение.\n\n### 3. `[: r :]<Args>` — сплайс шаблона\n\nЕсли `r` — отражение шаблона класса или функции, можно подставить аргументы:\n\n```cpp\nconstexpr auto r = ^^std::vector;\ntypename [:r:]<int> v;    // std::vector<int> v;\n```\n\nЗдесь `typename` указывает компилятору, что результат — тип, а `[: r :]` — имя шаблона.\n\n## Круговой маршрут (roundtrip)\n\n`typename [: ^^int :]` тождественно равно `int`. Это проверяется через `std::is_same_v`:\n\n```cpp\nstatic_assert(std::is_same_v<typename [:^^int:], int>); // OK\n```\n\nАналогично для значений: `[:^^kMax:]` — то же самое, что просто `kMax`.\n\n## Обязательное константное выражение\n\n```cpp\nstd::meta::info r = ^^int;   // НЕ constexpr!\ntypename [:r:] x = 42;       // ОШИБКА: splice operand must be a constant expression\n```\n\n`std::meta::info` — «consteval-only» тип: даже присвоение без `constexpr` уже является ошибкой. Декларируйте `constexpr auto r = ...` всегда.\n\n## Как компилятор выбирает форму\n\nКомпилятор смотрит на **контекст**, в котором встречается `[: r :]`:\n- Перед `typename` — типовой контекст.\n- Внутри выражения — выражение/значение.\n- После `template [...]` — имя шаблона.\n\nВ неоднозначных случаях `typename` расставляет акценты явно.\n\n## Неоцениваемые контексты (unevaluated)\n\n`typename [: r :]` корректно работает внутри `sizeof`, `decltype`, `alignof` — это уже показано выше. Сплайс вычисляется **во время компиляции**, поэтому вызов `sizeof(typename [:^^long long:])` — полноценный `sizeof(long long)`.\n\n## Ill-formed vs UB\n\nИспользование сплайсера «не с той» формой — **жёсткая ошибка компиляции** (не UB, не SFINAE). Компилятор немедленно останавливается. Это предсказуемо и безопасно.\n\n## Старые альтернативы\n\nДо C++26 похожие задачи решались через `std::tuple_element_t`, `std::variant_alternative_t`, `decltype`, `conditional_t` и тому подобные трейты. Сплайсинг обобщает все эти случаи: один синтаксис для любого отражения любого типа или значения.",
+      "examples": [
+        {
+          "title": "Сплайс типа: переменная, sizeof, static_cast, roundtrip",
+          "code": "#include <meta>\n#include <iostream>\n#include <type_traits>\n\nint main() {\n    // 1. Объявление переменной\n    constexpr auto r = ^^double;\n    typename [:r:] pi = 3.14;\n    std::cout << pi << \"\\n\";\n\n    // 2. sizeof в неоцениваемом контексте\n    std::cout << sizeof(typename [:r:]) << \"\\n\";\n\n    // 3. static_cast через сплайс типа\n    int n = 7;\n    auto f = static_cast<typename [:r:]>(n);\n    std::cout << f << \"\\n\";\n\n    // 4. Проверка roundtrip: typename [:^^int:] == int\n    constexpr bool same = std::is_same_v<typename [:^^int:], int>;\n    std::cout << same << \"\\n\";\n\n    return 0;\n}",
+          "expectedOutput": "3.14\n8\n7\n1",
+          "explanation": "`typename [:r:]` в каждом из четырёх контекстов ведёт себя точно как исходный тип:\n1. `typename [:^^double:]` — тип переменной `pi`.\n2. `sizeof(typename [:^^double:])` — `sizeof(double)` = 8 на 64-битных платформах.\n3. `static_cast<typename [:^^double:]>(7)` — приводит `int` к `double`, результат `7` (но тип `double`).\n4. `std::is_same_v<typename [:^^int:], int>` — `true` (1), roundtrip подтверждён."
+        },
+        {
+          "title": "Сплайс выражения: перечислители и constexpr-переменные",
+          "code": "#include <meta>\n#include <iostream>\n\nenum Color { Red = 10, Green = 20, Blue = 30 };\nconstexpr int kMax = 255;\n\nint main() {\n    // Сплайс перечислителя как значения\n    constexpr auto r_green = ^^Color::Green;\n    std::cout << (int)[:r_green:] << \"\\n\";   // 20\n\n    // Сплайс constexpr-переменной — lvalue\n    constexpr auto r_max = ^^kMax;\n    std::cout << [:r_max:] << \"\\n\";           // 255\n\n    // Берём адрес: [:r:] — lvalue\n    const int* p = &[:r_max:];\n    std::cout << *p << \"\\n\";                   // 255\n\n    return 0;\n}",
+          "expectedOutput": "20\n255\n255",
+          "explanation": "`[:r:]` без `typename` используется там, где нужно **значение**. Для перечислителя `Color::Green` это целое число 20. Для переменной `kMax` — её значение 255. Результат сплайса переменной является **lvalue**, поэтому взятие адреса `&[:r_max:]` допустимо — это то же самое, что `&kMax`."
+        },
+        {
+          "title": "Сплайс в шаблоне: std::meta::info как параметр шаблона",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] make_zero() {\n    return typename [:R:]{};\n}\n\ntemplate <std::meta::info R>\nvoid describe() {\n    std::cout << \"size=\" << sizeof(typename [:R:]) << \"\\n\";\n}\n\nint main() {\n    std::cout << make_zero<^^int>() << \"\\n\";     // 0\n    std::cout << make_zero<^^double>() << \"\\n\";  // 0\n\n    describe<^^int>();        // size=4\n    describe<^^long long>();  // size=8\n\n    return 0;\n}",
+          "expectedOutput": "0\n0\nsize=4\nsize=8",
+          "explanation": "`template <std::meta::info R>` позволяет передавать отражение как шаблонный параметр. Внутри функции `typename [:R:]` разворачивает его в тип — возвращаемый тип и тип конструируемого объекта определяются переданным аргументом. Это основной паттерн «отражение-как-тип-в-шаблонах»."
+        },
+        {
+          "title": "Сплайс шаблона класса",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <typename T>\nstruct Vec2 {\n    T x, y;\n    void print() const {\n        std::cout << x << \" \" << y << \"\\n\";\n    }\n};\n\nconstexpr auto vec_r = ^^Vec2;\n\nint main() {\n    // Сплайс имени шаблона + список аргументов\n    typename [:vec_r:]<int> vi;\n    vi.x = 3; vi.y = 4;\n    vi.print();    // 3 4\n\n    typename [:vec_r:]<double> vd;\n    vd.x = 1.5; vd.y = 2.5;\n    vd.print();    // 1.5 2.5\n\n    return 0;\n}",
+          "expectedOutput": "3 4\n1.5 2.5",
+          "explanation": "Если `r` — отражение шаблона класса, то `typename [:r:]<Args>` конкретизирует этот шаблон. `^^Vec2` отражает шаблон (а не его конкретизацию). `typename [:vec_r:]<int>` — то же самое, что `Vec2<int>`. Это позволяет выбирать шаблон в runtime-конфигурации и конкретизировать его с нужными аргументами."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l2-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nint main() {\n    constexpr auto r = ^^unsigned short;\n    typename [:r:] x = 1000;\n    std::cout << x << \"\\n\";\n    std::cout << sizeof(typename [:r:]) << \"\\n\";\n    return 0;\n}",
+          "answer": "1000\n2",
+          "explanation": "`typename [:^^unsigned short:]` — это тип `unsigned short`. Переменная `x` = 1000, `sizeof(unsigned short)` = 2 байта."
+        },
+        {
+          "id": "m5-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что выведет следующий код?\n\n```cpp\n#include <meta>\n#include <iostream>\n\nenum Status { OK = 0, Warn = 1, Error = 2 };\n\nint main() {\n    constexpr auto r = ^^Status::Warn;\n    std::cout << (int)[:r:] << \"\\n\";\n}\n```",
+          "options": [
+            "0",
+            "1",
+            "2",
+            "Ошибка компиляции"
+          ],
+          "answerIndex": 1,
+          "explanation": "`^^Status::Warn` — отражение перечислителя `Warn`, значение которого равно 1. `[:r:]` в выражении-контексте возвращает этот перечислитель как значение, `(int)` приводит его к 1."
+        },
+        {
+          "id": "m5-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n\nint main() {\n    constexpr auto r = ^^int;\n    int x = [:r:];\n    std::cout << x << \"\\n\";\n    return 0;\n}",
+          "answerLine": 6,
+          "explanation": "Строка 6: `[:r:]` используется как выражение, но `r` — отражение **типа** `int`, а не значения. Компилятор выдаёт: *reflection not usable in a splice expression*. Для использования `int` как типа нужна форма `typename [:r:]`."
+        },
+        {
+          "id": "m5-l2-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] doubled(typename [:R:] val) {\n    return val * 2;\n}\n\nint main() {\n    std::cout << doubled<^^int>(21) << \"\\n\";\n    std::cout << doubled<^^double>(1.5) << \"\\n\";\n    return 0;\n}",
+          "answer": "42\n3",
+          "explanation": "`doubled<^^int>(21)` → `int doubled(int val) { return val * 2; }` → 42. `doubled<^^double>(1.5)` → `double doubled(double val) { return val * 2; }` → 3. Обе формы — возвращаемый тип и тип параметра — раскрываются из одного `R`."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите функцию `clamp<R>(val, lo, hi)`, которая принимает три значения типа `typename [:R:]` и возвращает `val`, зажатое между `lo` и `hi`. Используйте сплайсинг для типа возвращаемого значения и всех трёх параметров. Проверьте на `^^int` и `^^double`:\n\n```\nclamp<^^int>(5, 1, 10)    → 5\nclamp<^^int>(-3, 1, 10)   → 1\nclamp<^^int>(15, 1, 10)   → 10\nclamp<^^double>(2.5, 0.0, 1.0) → 1\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n\ntemplate <std::meta::info R>\ntypename [:R:] clamp(typename [:R:] val, typename [:R:] lo, typename [:R:] hi) {\n    if (val < lo) return lo;\n    if (val > hi) return hi;\n    return val;\n}\n\nint main() {\n    std::cout << clamp<^^int>(5, 1, 10) << \"\\n\";\n    std::cout << clamp<^^int>(-3, 1, 10) << \"\\n\";\n    std::cout << clamp<^^int>(15, 1, 10) << \"\\n\";\n    std::cout << clamp<^^double>(2.5, 0.0, 1.0) << \"\\n\";\n    return 0;\n}",
+        "expectedOutput": "5\n1\n10\n1",
+        "godboltUrl": "https://godbolt.org/z/clang_bb_p2996"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какая форма сплайсинга используется для получения типа из отражения?",
+            "options": [
+              "[:r:]",
+              "typename [:r:]",
+              "type [:r:]",
+              "decltype([:r:])"
+            ],
+            "answerIndex": 1,
+            "explanation": "`typename [:r:]` — единственная правильная форма для раскрытия типа. `[:r:]` без `typename` используется для значений (переменных, перечислителей)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что произойдёт при компиляции следующего кода?\n\n```cpp\nstd::meta::info r = ^^double;  // не constexpr\ntypename [:r:] x = 1.0;\n```",
+            "options": [
+              "Код скомпилируется и выведет 1",
+              "Ошибка компиляции: splice operand must be a constant expression",
+              "Неопределённое поведение во время выполнения",
+              "Предупреждение компилятора, код выполнится"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` — consteval-only тип. Присвоение без `constexpr` и последующий сплайс — жёсткие ошибки компиляции. Компилятор выдаст: *splice operand must be a constant expression*."
+          },
+          {
+            "type": "choice",
+            "prompt": "Выражение `[:r:]`, где `r = ^^someVariable`, какую категорию значения (value category) имеет?",
+            "options": [
+              "prvalue — временный объект",
+              "xvalue — «умирающее» значение",
+              "lvalue — именованный объект",
+              "Зависит от типа переменной"
+            ],
+            "answerIndex": 2,
+            "explanation": "`[:r:]` для переменной является **lvalue** — так же, как обращение к самой переменной. Можно взять адрес (`&[:r:]`), привязать `const&`, использовать как левую часть присваивания (если переменная не `const`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой из вариантов корректно передаёт отражение шаблона `std::vector` как параметр шаблона и создаёт `std::vector<int>`?",
+            "options": [
+              "template <^^std::vector> struct S {};  S<int> v;",
+              "constexpr auto r = ^^std::vector;  typename [:r:]<int> v;",
+              "constexpr auto r = ^^std::vector<int>;  typename [:r:] v;",
+              "auto r = ^^std::vector;  typename [:r:]<int> v;"
+            ],
+            "answerIndex": 1,
+            "explanation": "Вариант 2 верен: `^^std::vector` отражает шаблон; `typename [:r:]<int>` конкретизирует его. Вариант 3 отражает уже конкретный тип `vector<int>`, а не шаблон. Вариант 4 не компилируется: `r` не `constexpr`, а `std::meta::info` — consteval-only."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l3",
+      "title": "Запросы: члены, имена, базовые классы",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Задумайтесь, сколько раз вам приходилось писать вручную: «для структуры `Foo` вывести все поля», «сравнить два объекта побитово по всем членам», «сериализовать каждое поле в JSON». Каждый раз это либо дублирование имён (`x, y, z` — и в структуре, и в функции), либо X-макросы (хрупкие и нечитаемые), либо `boost::pfr` (сторонняя зависимость с ограничениями), либо паттерн Visitor (много шаблонного кода).\n\nСтатическая рефлексия C++26 решает эту проблему в корне: `std::meta::nonstatic_data_members_of(^^T)` возвращает список всех полей типа `T` как набор `std::meta::info` — объектов, которые хранят всё, что известно компилятору о каждом члене. Из этих объектов можно узнать имя (`identifier_of`), тип (`type_of`), модификатор доступа (`is_public`/`is_private`/`is_protected`), статичность (`is_static_member`). А через splice-оператор `obj.[:m:]` можно прочитать значение поля прямо во время выполнения.\n\nРезультат: одна шаблонная функция работает для любой структуры — без кодогенерации, без макросов, без внешних библиотек.",
+      "theory": "## Ключевые функции запросов\n\nВсе функции `std::meta::*` — `consteval`, то есть вычисляются исключительно во время компиляции. Тип `std::meta::info` — «consteval-only»: значение этого типа можно хранить только в `constexpr`-переменных или использовать внутри consteval-контекстов.\n\n### nonstatic_data_members_of\n\n```cpp\nconstexpr auto mems = std::define_static_array(\n    std::meta::nonstatic_data_members_of(^^T,\n        std::meta::access_context::unchecked())\n);\n```\n\nВозвращает `std::vector<std::meta::info>` — по одному `info` на каждый нестатический член данных `T` в порядке объявления. В C++26 (P2996R10) требует второй аргумент — `access_context`, описывающий контекст доступа. `access_context::unchecked()` отключает проверку и даёт доступ ко всем членам.\n\n`std::define_static_array` конвертирует `vector<info>` в `std::span<const info>` с постоянным временем жизни — только такой span можно использовать в `template for`.\n\n### members_of\n\n```cpp\nconstexpr auto all = std::define_static_array(\n    std::meta::members_of(^^T, std::meta::access_context::unchecked())\n);\n```\n\nВключает **все** прямые члены: поля, методы, статические члены, конструкторы, операторы. Конструкторы и деструкторы не имеют идентификатора — прежде чем вызывать `identifier_of`, проверьте `has_identifier(m)`.\n\n### bases_of\n\n```cpp\nconstexpr auto bases = std::define_static_array(\n    std::meta::bases_of(^^T, std::meta::access_context::unchecked())\n);\n```\n\nВозвращает прямые базовые классы `T`. Для каждого элемента: `type_of(b)` — `info` базового типа, `display_string_of(type_of(b))` — его имя строкой, `is_public(b)` — публичность наследования.\n\n## Имена и типы членов\n\n| Функция | Возвращает | Когда применима |\n|---|---|---|\n| `identifier_of(m)` | `const char*` — идентификатор | только если `has_identifier(m)` |\n| `display_string_of(r)` | `const char*` — «читаемая» строка | всегда: поля, типы, классы |\n| `type_of(m)` | `std::meta::info` типа члена | для полей |\n| `display_string_of(type_of(m))` | `const char*` — имя типа | всегда — в отличие от `identifier_of(type_of(m))` |\n\n**Важно**: `identifier_of(type_of(m))` для встроенных типов (`int`, `double`, `float`) даёт ошибку компиляции — встроенные типы не имеют идентификатора в модели рефлексии. Всегда используйте `display_string_of(type_of(m))`.\n\n## Предикаты доступа и вида\n\n```cpp\nstd::meta::is_public(m)               // public\nstd::meta::is_private(m)              // private\nstd::meta::is_protected(m)            // protected\nstd::meta::is_nonstatic_data_member(m)// это нестатическое поле данных?\nstd::meta::is_static_member(m)        // это статический член?\nstd::meta::has_identifier(m)          // есть ли у члена идентификатор?\n```\n\nВсе предикаты — `consteval`-функции, возвращающие `bool`. В `template for` их используют внутри `if constexpr`.\n\n## Итерация: template for\n\n`template for` — expansion statement из P1306. С флагом `-fexpansion-statements` (уже включён в clang_bb_p2996 при передаче явно) он раскрывается в отдельный блок кода для каждого элемента — аналог `std::apply` для пак-раскрытий, но без lambda-обёрток.\n\n```cpp\ntemplate for (constexpr auto m : mems) {\n    // m — constexpr std::meta::info, уникальная в каждом «витке»\n    std::println(\"{}\", std::meta::identifier_of(m));\n}\n```\n\n`mems` должен быть `std::span<const std::meta::info>` (то есть результат `define_static_array`), а не `vector<info>` — последний использует heap и не является constexpr.\n\n## Чтение поля через splice\n\n```cpp\nobj.[:m:]   // читает поле, описанное info m, из объекта obj\n```\n\nВыражение `obj.[:m:]` — это lvalue (если `obj` — lvalue). Тип — тот же, что у поля. Для чтения нужна только доступность в точке splice; при `access_context::unchecked()` private-поля тоже доступны через splice.\n\n## Ограничения и ill-formed случаи\n\n- `nonstatic_data_members_of(^^int)` — **ill-formed**: `int` не является классом.\n- `identifier_of(type_of(m))` для `int`/`double` — **ill-formed**: встроенные типы анонимны в модели рефлексии.\n- Без `define_static_array` итерация `vector<info>` в `template for` — **ill-formed**: heap-allocated вектор не является constant expression.\n- `members_of(^^T)` без `access_context` — **deprecated** (P2996R10): добавляйте `access_context::unchecked()` или `access_context::current()`.\n\n## Исторические альтернативы\n\n| Подход | Ограничение |\n|---|---|\n| `boost::pfr` | только aggregate-типы без баз |\n| X-macros | хрупкость, нет типов |\n| Visitor + virtual | runtime, не constexpr |\n| `std::tuple` + `std::apply` | нужно вручную перечислить поля |\n\nРефлексия работает для любых структур и классов, включает типы, предикаты доступа и работает полностью в constexpr.",
+      "examples": [
+        {
+          "title": "Вывод полей и их типов",
+          "code": "#include <meta>\n#include <print>\n\nstruct Point3D {\n    float x;\n    float y;\n    float z;\n};\n\ntemplate <class T>\nvoid describe_fields() {\n    std::println(\"Fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  {} : {}\",\n            std::meta::identifier_of(m),\n            std::meta::display_string_of(std::meta::type_of(m)));\n    }\n}\n\nint main() {\n    describe_fields<Point3D>();\n}",
+          "expectedOutput": "Fields of Point3D:\n  x : float\n  y : float\n  z : float",
+          "explanation": "`nonstatic_data_members_of` возвращает `vector<info>` по одному на каждое нестатическое поле в порядке объявления. `define_static_array` конвертирует его в `span<const info>` — только он допустим как диапазон в `template for`. `display_string_of(type_of(m))` даёт читаемое имя типа (`float`) — в отличие от `identifier_of(type_of(m))`, которая не работает для встроенных типов."
+        },
+        {
+          "title": "Чтение значений полей через splice",
+          "code": "#include <meta>\n#include <print>\n\nstruct Packet {\n    int id;\n    int length;\n    int checksum;\n};\n\ntemplate <class T>\nvoid dump(const T& obj) {\n    std::println(\"{}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  {} = {}\",\n            std::meta::identifier_of(m),\n            obj.[:m:]);\n    }\n}\n\nint main() {\n    Packet p{7, 256, 0xAB};\n    dump(p);\n}",
+          "expectedOutput": "Packet:\n  id = 7\n  length = 256\n  checksum = 171",
+          "explanation": "`obj.[:m:]` — splice-оператор (из урока m5-l2): компилятор подставляет вместо `[:m:]` конкретное имя поля, описанного `info m`. Это lvalue того же типа, что и поле. Результат: одна обобщённая функция `dump` работает для любой структуры без знания её членов на этапе написания."
+        },
+        {
+          "title": "Иерархия классов: bases_of",
+          "code": "#include <meta>\n#include <print>\n\nstruct Animal { int id; };\nstruct Pet : Animal { int owner_id; };\nstruct Dog : Pet   { int breed_id; };\n\ntemplate <class T>\nvoid describe_hierarchy() {\n    std::println(\"Class: {}\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto bases = std::define_static_array(\n        std::meta::bases_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto b : bases) {\n        std::println(\"  base: {} (public={})\",\n            std::meta::display_string_of(std::meta::type_of(b)),\n            std::meta::is_public(b));\n    }\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"  field: {}\",\n                     std::meta::identifier_of(m));\n    }\n}\n\nint main() {\n    describe_hierarchy<Animal>();\n    describe_hierarchy<Pet>();\n    describe_hierarchy<Dog>();\n}",
+          "expectedOutput": "Class: Animal\n  field: id\nClass: Pet\n  base: Animal (public=true)\n  field: owner_id\nClass: Dog\n  base: Pet (public=true)\n  field: breed_id",
+          "explanation": "`bases_of` возвращает только **прямые** базовые классы — `Dog` видит `Pet`, но не `Animal`. Для полного обхода иерархии нужна рекурсия по `bases_of`. `nonstatic_data_members_of` тоже возвращает только **прямые** поля — поля из базовых классов (`id` у `Pet`, `id` и `owner_id` у `Dog`) в этот список не входят."
+        },
+        {
+          "title": "Фильтрация: только публичные нестатические поля",
+          "code": "#include <meta>\n#include <print>\n\nclass Config {\npublic:\n    int width  = 800;\n    int height = 600;\nprivate:\n    int    _version = 1;\n    double _scale   = 1.0;\npublic:\n    static int max_instances;\n};\nint Config::max_instances = 4;\n\ntemplate <class T>\nvoid list_public_fields() {\n    std::println(\"Public non-static fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto mems = std::define_static_array(\n        std::meta::members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_public(m)) {\n            std::println(\"  {} : {}\",\n                std::meta::identifier_of(m),\n                std::meta::display_string_of(std::meta::type_of(m)));\n        }\n    }\n}\n\nint main() {\n    list_public_fields<Config>();\n}",
+          "expectedOutput": "Public non-static fields of Config:\n  width : int\n  height : int",
+          "explanation": "Здесь используется `members_of` (все члены), а не `nonstatic_data_members_of`, чтобы иметь возможность проверять как нестатические поля, так и статические. Фильтр `is_nonstatic_data_member && is_public` оставляет только `width` и `height`. `max_instances` пропущен (`is_static_member`), `_version` и `_scale` — пропущены (`is_private`). Предикаты используются в `if constexpr`, потому что сами являются `consteval`-функциями."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l3-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nstruct Box { int w; int h; int d; };\n\ntemplate <class T>\nvoid print_values(const T& obj) {\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::print(\"{} \", obj.[:m:]);\n    }\n    std::println(\"\");\n}\n\nint main() {\n    Box b{10, 20, 30};\n    print_values(b);\n}",
+          "answer": "10 20 30 ",
+          "explanation": "`nonstatic_data_members_of` возвращает поля в порядке объявления: `w`, `h`, `d`. `obj.[:m:]` читает значение каждого поля. `std::print` добавляет пробел после каждого числа, включая последнее, поэтому в конце строки есть пробел перед переводом строки от `std::println`."
+        },
+        {
+          "id": "m5-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что вернёт `std::meta::display_string_of(std::meta::type_of(m))`, если `m` — это отражение поля `int x` структуры `Point`?",
+          "options": [
+            "\"x\"",
+            "\"int\"",
+            "\"Point::x\"",
+            "Ошибка компиляции: встроенные типы не имеют имени"
+          ],
+          "answerIndex": 1,
+          "explanation": "`type_of(m)` возвращает `info` для типа поля — в данном случае `int`. `display_string_of` возвращает читаемое представление рефлексии — строку `\"int\"`. Важно: `identifier_of(type_of(m))` для `int` **не работает** (ошибка компиляции), но `display_string_of` работает всегда."
+        },
+        {
+          "id": "m5-l3-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Reading { float temp; float pressure; };\n\ntemplate <class T>\nvoid show_types(const T& obj) {\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        std::println(\"{} : {} = {}\",\n            std::meta::identifier_of(m),\n            std::meta::identifier_of(std::meta::type_of(m)),\n            obj.[:m:]);\n    }\n}\n\nint main() {\n    Reading r{36.6f, 101.3f};\n    show_types(r);\n}",
+          "answerLine": 15,
+          "explanation": "Строка 15: `std::meta::identifier_of(std::meta::type_of(m))`. `type_of(m)` возвращает отражение встроенного типа (`float`). У встроенных типов нет «идентификатора» в модели рефлексии — `identifier_of` на них даёт ошибку компиляции. Исправление: заменить на `std::meta::display_string_of(std::meta::type_of(m))`."
+        },
+        {
+          "id": "m5-l3-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nclass Entity {\npublic:\n    int id;\n    static int count;\nprivate:\n    float x;\n    float y;\n};\nint Entity::count = 0;\n\nint main() {\n    constexpr auto mems = std::define_static_array(\n        std::meta::members_of(^^Entity,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_public(m)) {\n            std::println(\"pub: {}\", std::meta::identifier_of(m));\n        }\n    }\n    template for (constexpr auto m : mems) {\n        if constexpr (std::meta::is_nonstatic_data_member(m) &&\n                      std::meta::is_private(m)) {\n            std::println(\"priv: {}\", std::meta::identifier_of(m));\n        }\n    }\n}",
+          "answer": "pub: id\npriv: x\npriv: y",
+          "explanation": "`members_of` возвращает все прямые члены: `id` (public нестатическое поле), `count` (static, пропускается фильтром `is_nonstatic_data_member`), конструктор (пропускается), `x` и `y` (private нестатические поля). Первый `template for` печатает только `id`, второй — `x` и `y` в порядке объявления."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите обобщённую функцию `to_config_string(obj)`, которая принимает объект любой структуры и возвращает `std::string` в формате `\"поле=значение\\n поле=значение\\n...\"` для каждого нестатического поля данных. Проверьте на структуре:\n```cpp\nstruct Config {\n    int width;\n    int height;\n    int fps;\n    float gamma;\n};\nConfig cfg{1920, 1080, 60, 2.2f};\n```",
+        "referenceSolution": "#include <meta>\n#include <print>\n#include <string>\n\nstruct Config {\n    int width;\n    int height;\n    int fps;\n    float gamma;\n};\n\ntemplate <class T>\nstd::string to_config_string(const T& obj) {\n    std::string result;\n    constexpr auto mems = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : mems) {\n        if (!result.empty()) result += '\\n';\n        result += std::meta::identifier_of(m);\n        result += '=';\n        result += std::to_string(obj.[:m:]);\n    }\n    return result;\n}\n\nint main() {\n    Config cfg{1920, 1080, 60, 2.2f};\n    std::println(\"{}\", to_config_string(cfg));\n}",
+        "expectedOutput": "width=1920\nheight=1080\nfps=60\ngamma=2.200000",
+        "godboltUrl": "https://godbolt.org/#g:!((g:!((g:!((h:codeEditor,i:(filename:'1',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,selection:(endColumn:1,endLineNumber:1,startColumn:1,startLineNumber:1),source:'%23include+%3Cmeta%3E%0A%23include+%3Cprint%3E%0A%23include+%3Cstring%3E%0A%0Astruct+Config+%7B%0A++++int+width%3B%0A++++int+height%3B%0A++++int+fps%3B%0A++++float+gamma%3B%0A%7D%3B%0A%0Atemplate+%3Cclass+T%3E%0Astd::string+to_config_string(const+T%26+obj)+%7B%0A++++std::string+result%3B%0A++++constexpr+auto+mems+%3D+std::define_static_array(%0A++++++++std::meta::nonstatic_data_members_of(%5E%5ET,%0A++++++++++++std::meta::access_context::unchecked())%0A++++)%3B%0A++++template+for+(constexpr+auto+m+:+mems)+%7B%0A++++++++if+(!result.empty())+result+%2B%3D+%27%5Cn%27%3B%0A++++++++result+%2B%3D+std::meta::identifier_of(m)%3B%0A++++++++result+%2B%3D+%27%3D%27%3B%0A++++++++result+%2B%3D+std::to_string(obj.%5B:m:%5D)%3B%0A++++%7D%0A++++return+result%3B%0A%7D%0A%0Aint+main()+%7B%0A++++Config+cfg%7B1920,+1080,+60,+2.2f%7D%3B%0A++++std::println(%22%7B%7D%22,+to_config_string(cfg))%3B%0A%7D'),l:'5',n:'0',o:'C%2B%2B+source+%231',t:'0')),header:(),k:59.58245723104056,l:'4',n:'0',o:'',s:0,t:'0'),(g:!((h:executor,i:(argsPanelShown:'1',compilationPanelShown:'0',compiler:clang_bb_p2996,compilerName:'',compilerOutShown:'0',execArgs:'',execStdin:'',fontScale:14,fontUsePx:'0',j:1,lang:c%2B%2B,libs:!(),options:'-std%3Dc%2B%2B26+-O2+-stdlib%3Dlibc%2B%2B+-fexpansion-statements',source:1,stdinPanelShown:'1',tree:0,wrap:'1'),l:'5',n:'0',o:'Executor+x86-64+clang+(bb_p2996+trunk)+(Editor+%231)',t:'0')),k:40.41754276895944,l:'4',n:'0',o:'',s:0,t:'0')),l:'2',n:'0',o:'',t:'0')),version:4"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какая функция возвращает только нестатические поля данных класса (без методов, статических членов и конструкторов)?",
+            "options": [
+              "std::meta::members_of(^^T, ctx)",
+              "std::meta::nonstatic_data_members_of(^^T, ctx)",
+              "std::meta::bases_of(^^T, ctx)",
+              "std::meta::fields_of(^^T, ctx)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`nonstatic_data_members_of` возвращает ровно нестатические поля данных. `members_of` — все члены (включая методы и конструкторы). `bases_of` — базовые классы. `fields_of` не существует в стандарте."
+          },
+          {
+            "type": "choice",
+            "prompt": "Вы хотите вывести имя типа поля `double val`. Что правильно?",
+            "options": [
+              "std::meta::identifier_of(std::meta::type_of(m))",
+              "std::meta::display_string_of(std::meta::type_of(m))",
+              "std::meta::name_of(m)",
+              "std::meta::type_name_of(m)"
+            ],
+            "answerIndex": 1,
+            "explanation": "`identifier_of(type_of(m))` для `double` — ошибка компиляции (встроенные типы не имеют идентификатора). `display_string_of(type_of(m))` всегда работает и возвращает строку `\"double\"`. `name_of` и `type_name_of` не существуют в P2996R10."
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему нельзя писать `for (auto m : std::meta::nonstatic_data_members_of(^^T, ctx))` в обычной (не-consteval) функции?",
+            "options": [
+              "Потому что `nonstatic_data_members_of` возвращает пустой диапазон в runtime",
+              "Потому что `std::meta::info` — consteval-only тип: его можно использовать только в consteval-контекстах",
+              "Потому что `for` не поддерживает диапазоны рефлексии",
+              "Потому что нужен `constexpr for` вместо `for`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` — «consteval-only» тип. Переменные этого типа обязаны быть `constexpr` или находиться в consteval-контексте. Обычный `for`-цикл работает в runtime, где `info` недопустим. Решение: `template for` с `std::define_static_array`, или `consteval` лямбда."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что вернёт `bases_of(^^Dog)`, если определено: `struct A {}; struct B : A {}; struct Dog : B {}`?",
+            "options": [
+              "Список из двух элементов: A и B",
+              "Список из одного элемента: B",
+              "Пустой список",
+              "Список из одного элемента: A"
+            ],
+            "answerIndex": 1,
+            "explanation": "`bases_of` возвращает только **прямые** базовые классы. У `Dog` прямой базой является `B`, а `A` — косвенная база. Для полного обхода иерархии нужно рекурсивно применять `bases_of` к каждому базовому классу."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l4",
+      "title": "Рефлексия перечислений: enum→string и string→enum",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Каждый раз, когда нужно вывести значение `enum` в лог, получить его из конфига или сериализовать в JSON, приходится писать `switch` с ручными строками:\n\n```cpp\nstd::string_view to_string(Color c) {\n    switch (c) {\n        case Color::Red:   return \"Red\";\n        case Color::Green: return \"Green\";\n        case Color::Blue:  return \"Blue\";\n    }\n    return \"unknown\";\n}\n```\n\nПроблема: стоит добавить новый элемент перечисления — и `switch` молча остаётся неполным (если нет `-Wswitch`). Макросы X-macro решают поддержку, но делают код нечитаемым.\n\nСтатическая рефлексия C++26 устраняет эту проблему раз и навсегда: `enumerators_of(^^E)` возвращает список всех элементов перечисления в порядке объявления. Добавляете новый элемент — функции `to_string` и `from_string` автоматически узнают о нём без единого изменения кода.",
+      "theory": "## Ключевые функции рефлексии перечислений\n\n### `std::meta::enumerators_of(^^E)`\n\nВозвращает диапазон значений `std::meta::info` — по одному для каждого элемента перечисления, в порядке объявления:\n\n```cpp\nconstexpr auto enums = std::define_static_array(\n    std::meta::enumerators_of(^^Color));\n// enums — span<const std::meta::info>\n```\n\nВажно: `std::meta::info` — тип *только для consteval*. Это значит, что переменные этого типа можно хранить только в `constexpr`-контексте или передавать через `template for`.\n\n### `std::meta::identifier_of(e)` → `std::string_view`\n\nВозвращает имя элемента перечисления как `string_view` — ровно то, что написано в исходном коде:\n\n```cpp\nconstexpr auto name = std::meta::identifier_of(e); // \"Red\", \"Green\", ...\n```\n\nОбратите внимание: это *идентификатор*, не `display_string_of`. Для перечислений результат одинаков, но `identifier_of` семантически точнее.\n\n### Сплайсер `[:e:]` — получение значения элемента\n\nЧтобы получить само значение перечисления из его рефлексии, используется сплайсер `[:e:]`. Он допустим только в `constexpr`-контексте:\n\n```cpp\nif ([:e:] == value) return std::meta::identifier_of(e);\n```\n\n> **Исторический факт**: в ранних черновиках P2996 использовался `std::meta::value_of<E>(e)` для этой цели. В P2996R12 он переименован в `constant_of`, а сам `constant_of` возвращает `std::meta::info`, а не `E`. Сплайсер `[:e:]` — правильный и идиоматичный способ.\n\n### `template for` — обход элементов\n\nОбычный `for` не подходит для перебора `std::meta::info`, потому что этот тип consteval-only. Нужен специальный **expansion statement** (`template for`), который разворачивает итерацию в compile-time:\n\n```cpp\ntemplate for (constexpr auto e :\n              std::define_static_array(std::meta::enumerators_of(^^E))) {\n    // e здесь constexpr — сплайсер [:e:] работает\n}\n```\n\nФлаг компилятора: `-fexpansion-statements` (Clang).\n\n## Паттерн enum→string\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n```\n\nФункция работает с **любым** перечислением. Компилятор разворачивает `template for` в серию `if`-проверок — накладных расходов нет.\n\n## Паттерн string→enum\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n```\n\nВозвращает `std::nullopt`, если строка не совпадает ни с одним именем.\n\n## `std::meta::is_scoped_enum_type` vs `std::is_scoped_enum_v`\n\nДля проверки, является ли тип `enum class` (а не plain `enum`), доступны два способа:\n\n```cpp\n// Через type traits (стандартный, C++23):\nconstexpr bool scoped = std::is_scoped_enum_v<E>;\n\n// Через рефлексию (работает с std::meta::info):\nconstexpr bool scoped = std::meta::is_scoped_enum_type(^^E);\n```\n\nОба дают одинаковый результат. `is_scoped_enum_type` удобен, когда у вас уже есть `info`-значение типа (например, в шаблонной мета-функции).\n\n## Когда `switch`/X-macros всё ещё предпочтительнее\n\n- **Нет поддержки `-fexpansion-statements`** на вашем компиляторе (до стабилизации в C++26).\n- **Enum с gap-значениями** (`Red = 1, Blue = 10`) — `enumerators_of` возвращает их все, но `switch` может быть явнее.\n- **Специальные строки** отличаются от идентификаторов (`\"my-value\"` вместо `MyValue`) — тогда ручной `switch` или таблица.\n\n## Ограничения и SFINAE\n\nЕсли передать не перечисление в функцию, где ожидается `requires std::is_enum_v<E>`, — это `ill-formed` (ошибка компиляции), не UB. `enumerators_of` также не определён для не-перечислимых типов.",
+      "examples": [
+        {
+          "title": "Перебор элементов перечисления",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Color { Red, Green, Blue };\n\nint main() {\n    // enumerators_of возвращает диапазон std::meta::info\n    // template for — единственный способ итерировать consteval-only тип\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Color))) {\n        std::cout << std::meta::identifier_of(e) << \"\\n\";\n    }\n}",
+          "expectedOutput": "Red\nGreen\nBlue",
+          "explanation": "`enumerators_of(^^Color)` возвращает список из трёх `std::meta::info` — по одному на каждый элемент. `template for` разворачивает цикл в compile-time, делая `e` доступным как `constexpr`. `identifier_of(e)` возвращает `string_view` с именем элемента."
+        },
+        {
+          "title": "Паттерн enum→string (runtime значение)",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Direction { North, South, East, West };\n\nstd::string_view to_string(Direction d) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Direction))) {\n        if ([:e:] == d) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::cout << to_string(Direction::North) << \"\\n\";\n    std::cout << to_string(Direction::East)  << \"\\n\";\n    std::cout << to_string(Direction::South) << \"\\n\";\n    std::cout << to_string(Direction::West)  << \"\\n\";\n\n    Direction d = Direction::West;\n    std::cout << \"Runtime: \" << to_string(d) << \"\\n\";\n}",
+          "expectedOutput": "North\nEast\nSouth\nWest\nRuntime: West",
+          "explanation": "Функция принимает **runtime**-значение `Direction d`. `template for` разворачивается в серию `if`-проверок ещё на этапе компиляции: `if (North == d) ... if (South == d) ...`. Сплайсер `[:e:]` подставляет значение элемента, `identifier_of(e)` — его имя. Добавьте `Center` в перечисление — функция автоматически заработает с ним."
+        },
+        {
+          "title": "Паттерн string→enum и round-trip",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <optional>\n\nenum class Status { Pending, Running, Done, Failed };\n\nstd::string_view to_string(Status s) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Status))) {\n        if ([:e:] == s) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nstd::optional<Status> from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Status))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n\nint main() {\n    for (auto s : {Status::Pending, Status::Running, Status::Done, Status::Failed})\n        std::cout << to_string(s) << \"\\n\";\n\n    auto r1 = from_string(\"Done\");\n    std::cout << \"Done -> \" << (r1 ? to_string(*r1) : \"not found\") << \"\\n\";\n\n    auto r2 = from_string(\"Cancelled\");\n    std::cout << \"Cancelled -> \" << (r2 ? to_string(*r2) : \"not found\") << \"\\n\";\n}",
+          "expectedOutput": "Pending\nRunning\nDone\nFailed\nDone -> Done\nCancelled -> not found",
+          "explanation": "`from_string` сравнивает `std::meta::identifier_of(e)` (строковое представление) с входным именем и возвращает `[:e:]` — значение перечисления. `std::nullopt` при отсутствии совпадения делает ошибочный ввод явным. Round-trip `\"Done\"` → `Status::Done` → `\"Done\"` проходит через обе функции."
+        },
+        {
+          "title": "Обобщённый шаблон + `is_scoped_enum_type`",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <type_traits>\n\nenum class Planet { Mercury, Venus, Earth, Mars };\nenum Weekday { Mon, Tue, Wed, Thu, Fri, Sat, Sun };\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\ntemplate <typename E>\nvoid describe_enum() {\n    constexpr bool scoped = std::meta::is_scoped_enum_type(^^E);\n    std::cout << std::meta::identifier_of(^^E)\n              << \" is \" << (scoped ? \"scoped\" : \"plain\") << \"\\n\";\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        std::cout << \"  \" << std::meta::identifier_of(e) << \"\\n\";\n    }\n}\n\nint main() {\n    describe_enum<Planet>();\n    describe_enum<Weekday>();\n\n    std::cout << to_string(Planet::Earth) << \"\\n\";\n    std::cout << to_string(Wed) << \"\\n\";\n}",
+          "expectedOutput": "Planet is scoped\n  Mercury\n  Venus\n  Earth\n  Mars\nWeekday is plain\n  Mon\n  Tue\n  Wed\n  Thu\n  Fri\n  Sat\n  Sun\nEarth\nWed",
+          "explanation": "`is_scoped_enum_type(^^E)` возвращает `true` для `enum class`/`enum struct` и `false` для plain `enum`. В отличие от `std::is_scoped_enum_v<E>`, работает напрямую с `std::meta::info`, что удобно при рефлексии типов в мета-контексте. Обратите внимание: для plain `enum` элементы доступны без префикса (`Wed`, не `Weekday::Wed`), и `to_string` обрабатывает оба случая одинаково."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l4-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nenum class Suit { Clubs, Diamonds, Hearts, Spades };\n\nint main() {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^Suit))) {\n        std::cout << std::meta::identifier_of(e) << \"\\n\";\n    }\n}",
+          "answer": "Clubs\nDiamonds\nHearts\nSpades",
+          "explanation": "`enumerators_of(^^Suit)` возвращает элементы в порядке объявления. `identifier_of(e)` возвращает имя каждого элемента без префикса `Suit::` — просто `Clubs`, `Diamonds` и т.д."
+        },
+        {
+          "id": "m5-l4-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что возвращает `std::meta::identifier_of(e)`, когда `e` — рефлексия элемента `enum class Direction { North, South };`?",
+          "options": [
+            "`std::string_view` со значением `\"North\"` или `\"South\"` (без префикса `Direction::`)",
+            "`std::string_view` со значением `\"Direction::North\"` или `\"Direction::South\"`",
+            "`int` — числовое значение элемента перечисления",
+            "`std::meta::info` — рефлексию строки"
+          ],
+          "answerIndex": 0,
+          "explanation": "`identifier_of` возвращает именно *идентификатор* — то, что написано в исходном коде после `Direction::`. Квалифицированное имя (`Direction::North`) — это `display_string_of`, и то не гарантированно: для перечислений `identifier_of` — правильный выбор."
+        },
+        {
+          "id": "m5-l4-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n#include <string_view>\n\nenum class Phase { Solid, Liquid, Gas, Plasma };\n\nstd::string_view to_string(Phase p) {\n    for (constexpr auto e :\n         std::define_static_array(std::meta::enumerators_of(^^Phase))) {\n        if ([:e:] == p) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::cout << to_string(Phase::Gas) << \"\\n\";\n}",
+          "answerLine": 8,
+          "explanation": "Строка 8: написано `for`, а нужно `template for`. Тип `std::meta::info` — *consteval-only*: его нельзя хранить в обычной переменной цикла. `template for` (expansion statement) разворачивает итерацию на этапе компиляции, делая `e` `constexpr` — только тогда сплайсер `[:e:]` в строке 10 допустим."
+        },
+        {
+          "id": "m5-l4-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Вы пишете обобщённую функцию `from_string<E>`. Почему она должна возвращать `std::optional<E>`, а не просто `E`?",
+          "options": [
+            "Потому что `std::meta::info` — необязательный тип",
+            "Потому что входная строка может не совпасть ни с одним именем элемента, и тогда нужен способ сигнализировать об ошибке без исключений",
+            "Потому что `identifier_of` возвращает `optional<string_view>`",
+            "Потому что `enumerators_of` может вернуть пустой диапазон для любого перечисления"
+          ],
+          "answerIndex": 1,
+          "explanation": "Поиск по строке — частичная операция: строка `\"Cancelled\"` может просто не существовать среди элементов. `std::optional<E>` позволяет вернуть `std::nullopt` без исключений и заставляет вызывающий код явно обработать отсутствие совпадения. Перечисление всегда имеет хотя бы один элемент (пустое — ill-formed), так что `enumerators_of` не бывает пустым у корректных типов."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите два обобщённых шаблона:\n\n```cpp\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view enum_to_string(E value);\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> enum_from_string(std::string_view name);\n```\n\nПроверьте их на двух перечислениях:\n```cpp\nenum class LogLevel { Debug, Info, Warning, Error, Critical };\nenum class HttpMethod { GET, POST, PUT, DELETE, PATCH };\n```\n\nОжидаемый вывод:\n```\nWarning\nPOST\nError\nPATCH\nnot found\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n#include <string_view>\n#include <optional>\n#include <type_traits>\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::string_view enum_to_string(E value) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if ([:e:] == value) return std::meta::identifier_of(e);\n    }\n    return \"\";\n}\n\ntemplate <typename E>\n    requires std::is_enum_v<E>\nstd::optional<E> enum_from_string(std::string_view name) {\n    template for (constexpr auto e :\n                  std::define_static_array(std::meta::enumerators_of(^^E))) {\n        if (std::meta::identifier_of(e) == name) return [:e:];\n    }\n    return std::nullopt;\n}\n\nenum class LogLevel { Debug, Info, Warning, Error, Critical };\nenum class HttpMethod { GET, POST, PUT, DELETE, PATCH };\n\nint main() {\n    std::cout << enum_to_string(LogLevel::Warning) << \"\\n\";\n    std::cout << enum_to_string(HttpMethod::POST) << \"\\n\";\n\n    auto lv = enum_from_string<LogLevel>(\"Error\");\n    std::cout << (lv ? enum_to_string(*lv) : \"not found\") << \"\\n\";\n\n    auto hm = enum_from_string<HttpMethod>(\"PATCH\");\n    std::cout << (hm ? enum_to_string(*hm) : \"not found\") << \"\\n\";\n\n    auto missing = enum_from_string<LogLevel>(\"Verbose\");\n    std::cout << (missing ? enum_to_string(*missing) : \"not found\") << \"\\n\";\n}",
+        "expectedOutput": "Warning\nPOST\nError\nPATCH\nnot found",
+        "godboltUrl": "https://godbolt.org/z/clang_bb_p2996"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какая функция из `std::meta` возвращает имя элемента перечисления как `std::string_view`?",
+            "options": [
+              "`std::meta::identifier_of(e)`",
+              "`std::meta::value_of(e)`",
+              "`std::meta::name_of(e)`",
+              "`std::meta::display_string_of(e)` — это единственный правильный вариант"
+            ],
+            "answerIndex": 0,
+            "explanation": "`identifier_of(e)` возвращает имя элемента — идентификатор из исходного кода. `value_of` переименован в P2996R12 в `constant_of` и возвращает `std::meta::info`, а не строку. `name_of` в стандарте не существует."
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему для перебора результата `enumerators_of(^^E)` нужен `template for`, а не обычный `for`?",
+            "options": [
+              "Потому что `template for` быстрее во время выполнения",
+              "Потому что `std::meta::info` — тип consteval-only: его нельзя хранить в обычной переменной цикла `for`",
+              "Потому что `enumerators_of` возвращает не `std::vector`, а `std::span`, и обычный `for` с ним не работает",
+              "Потому что компилятор требует явного указания типа шаблонного параметра"
+            ],
+            "answerIndex": 1,
+            "explanation": "`std::meta::info` — consteval-only тип: значения этого типа существуют только в compile-time контексте. Обычный `for` создаёт рантайм-переменную `e`, что запрещено. `template for` разворачивает каждую итерацию как отдельный compile-time блок, где `e` — `constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Чем `std::meta::is_scoped_enum_type(^^E)` отличается от `std::is_scoped_enum_v<E>`?",
+            "options": [
+              "Они дают разные результаты для `enum class`",
+              "Первый работает с `std::meta::info`-значением и полезен в мета-контексте; второй — стандартный type trait, принимающий тип напрямую; оба дают одинаковый результат",
+              "`is_scoped_enum_type` возвращает `std::meta::info`, а не `bool`",
+              "`is_scoped_enum_type` проверяет только `enum struct`, но не `enum class`"
+            ],
+            "answerIndex": 1,
+            "explanation": "Оба предиката проверяют одно и то же, но принимают разные аргументы. `is_scoped_enum_type(^^E)` удобен, когда у вас уже есть отражение типа (`std::meta::info`), например, при написании мета-функций. `is_scoped_enum_v<E>` — классический type trait, требующий тип как шаблонный аргумент."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l5",
+      "title": "Генерация кода: define_aggregate и data_member_spec",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++"
+      },
+      "motivation": "До C++26 единственный способ программно породить новый тип — шаблонная магия: специализации, `enable_if`, паки параметров. Хотите struct с полями, имена которых определяются в runtime-данных? Невозможно без генерации кода или макросов. C++26 вводит **compile-time code generation**: функцию `std::meta::define_aggregate`, которая принимает список дескрипторов полей и «заполняет» заранее объявленный пустой struct прямо в consteval-контексте. Результат — полноценный тип, которым можно пользоваться наравне с любым вручную написанным struct. Это открывает целый класс паттернов: авто-генерация «patch»-структур, трансформация AoS → SoA, синтез DTO-типов из схем — всё без макросов и без кодогенераторов вне компилятора.",
+      "theory": "## Два ключевых инструмента\n\n### `std::meta::data_member_spec`\n\n```cpp\nconsteval std::meta::info\ndata_member_spec(std::meta::info type_reflection,\n                 data_member_options options = {});\n```\n\nСоздаёт **дескриптор поля** — объект типа `std::meta::info`, описывающий будущее нестатическое поле данных. Основные поля `options`:\n\n| Опция | Тип | Смысл |\n|-------|-----|-------|\n| `name` | `std::string_view` | Имя поля; обязательно для именованных полей |\n| `alignment` | `size_t` | Явное выравнивание (опционально) |\n| `width` | `size_t` | Ширина битового поля (опционально) |\n| `no_unique_address` | `bool` | `[[no_unique_address]]` (опционально) |\n\nФункция является `consteval`, значит вызывать её можно только в compile-time контексте.\n\n### `std::meta::define_aggregate`\n\n```cpp\nconsteval std::meta::info\ndefine_aggregate(std::meta::info class_reflection,\n                 /* range of */ std::meta::info members);\n```\n\nПринимает рефлексию **неполного** (forward-declared) типа и диапазон дескрипторов полей, и **определяет** этот тип как aggregate-struct с заданными полями.\n\n> **Важно:** В P2996R8 `define_class` переименован в `define_aggregate`. На clang_bb_p2996 старое имя вызывает предупреждение о deprecation — используйте `define_aggregate`.\n\n## Ключевое ограничение: «plainly constant-evaluated» контекст\n\n`define_aggregate` производит **инъекцию объявления** в программу — это принципиально другая операция по сравнению с обычными вычислениями. Компилятор требует, чтобы вызов происходил из «plainly constant-evaluated» контекста.\n\nЕдинственный надёжно работающий способ — **namespace-scope `consteval { }` блок**:\n\n```cpp\nstruct MyPoint;   // forward declaration\n\nconsteval {       // ← namespace-scope consteval block\n    std::meta::define_aggregate(^^MyPoint, {\n        std::meta::data_member_spec(^^float, {.name = \"x\"}),\n        std::meta::data_member_spec(^^float, {.name = \"y\"})\n    });\n}\n\n// MyPoint теперь полный тип: struct MyPoint { float x; float y; };\n```\n\n**Почему не `consteval` функция?** Вызов `consteval`-функции через `constexpr` переменную — не «plainly constant-evaluated» контекст по текущей спецификации; компилятор выдаст ошибку «cannot produce an injected declaration from a non-plainly constant-evaluated context».\n\n## Паттерн: программная генерация полей\n\nВнутри `consteval { }` блока можно использовать любые compile-time алгоритмы — `std::vector`, циклы, условия:\n\n```cpp\nstruct Generated;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (char c : {'x', 'y', 'z'}) {\n        fields.push_back(\n            std::meta::data_member_spec(^^double, {.name = std::string(1, c)})\n        );\n    }\n    std::meta::define_aggregate(^^Generated, fields);\n}\n```\n\n## Паттерн: трансформация типа\n\nОтражая существующий тип, можно систематически трансформировать его поля. Пример — обернуть каждое поле в `std::optional`:\n\n```cpp\nstruct Source { int a; float b; };\nstruct Patch;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Source, std::meta::access_context::unchecked())) {\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(\n            std::meta::data_member_spec(opt_type,\n                {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^Patch, fields);\n}\n// Patch эквивалентен: struct Patch { std::optional<int> a; std::optional<float> b; };\n```\n\n## Важные детали\n\n- **Forward declaration обязательна**: тип должен быть объявлен (`struct Foo;`) до того, как `define_aggregate` его определит.\n- **Нельзя переопределить**: если тип уже полный, `define_aggregate` завершится ошибкой.\n- **`nonstatic_data_members_of` требует `access_context`**: без него — deprecation warning (P2996R10 сделал этот аргумент обязательным). Используйте `std::meta::access_context::unchecked()`.\n- **`std::meta::substitute`** строит рефлексию шаблонной специализации: `substitute(^^std::optional, {^^int})` → рефлексия `std::optional<int>`.",
+      "examples": [
+        {
+          "title": "Базовый пример: struct Color из дескрипторов полей",
+          "code": "#include <meta>\n#include <iostream>\n#include <cstdint>\n\nstruct Color;  // forward declaration — пока неполный тип\n\nconsteval {    // namespace-scope consteval block\n    std::meta::define_aggregate(^^Color, {\n        std::meta::data_member_spec(^^uint8_t, {.name = \"r\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"g\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"b\"}),\n        std::meta::data_member_spec(^^uint8_t, {.name = \"a\"})\n    });\n}  // после блока Color — полный тип\n\nint main() {\n    Color red{255, 0, 0, 255};\n    std::cout << \"r=\" << (int)red.r\n              << \" g=\" << (int)red.g\n              << \" b=\" << (int)red.b\n              << \" a=\" << (int)red.a << \"\\n\";\n}",
+          "expectedOutput": "r=255 g=0 b=0 a=255",
+          "explanation": "Forward declaration `struct Color;` создаёт неполный тип — имя есть, определения нет. Блок `consteval { }` на уровне namespace выполняется компилятором при обработке единицы трансляции. `define_aggregate` заполняет тип четырьмя полями `uint8_t`. После блока `Color` — полноценный aggregate, который инициализируется aggregate-инициализатором `{255, 0, 0, 255}`."
+        },
+        {
+          "title": "Программная генерация полей в цикле",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n\nstruct Vertex3D;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    // Три поля x, y, z из цикла\n    for (char name : {'x', 'y', 'z'}) {\n        fields.push_back(\n            std::meta::data_member_spec(^^float, {.name = std::string(1, name)})\n        );\n    }\n    // Четвёртое поле w — добавляем вручную\n    fields.push_back(\n        std::meta::data_member_spec(^^float, {.name = \"w\"})\n    );\n    std::meta::define_aggregate(^^Vertex3D, fields);\n}\n\nint main() {\n    Vertex3D v{1.0f, 2.0f, 3.0f, 1.0f};\n    std::cout << \"x=\" << v.x << \" y=\" << v.y\n              << \" z=\" << v.z << \" w=\" << v.w << \"\\n\";\n}",
+          "expectedOutput": "x=1 y=2 z=3 w=1",
+          "explanation": "Внутри `consteval { }` блока доступны обычные `consteval`-совместимые алгоритмы: `std::vector`, цикл `for` по диапазону символов, `std::string`. На каждой итерации создаётся `data_member_spec` с именем из одного символа. Все поля собираются в вектор и передаются в `define_aggregate` одним вызовом."
+        },
+        {
+          "title": "Трансформация AoS в SoA: reflect + generate",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <array>\n\nstruct Particle { float x, y, z, mass; };  // Array-of-Structures\n\nstruct ParticleSoA;  // Structure-of-Arrays — будем генерировать\n\nconsteval {\n    constexpr size_t N = 4;\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Particle, std::meta::access_context::unchecked())) {\n        // Для каждого поля T генерируем поле std::array<T, N>\n        auto arr_type = std::meta::substitute(\n            ^^std::array,\n            {std::meta::type_of(m), std::meta::reflect_constant(N)});\n        fields.push_back(std::meta::data_member_spec(\n            arr_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ParticleSoA, fields);\n}\n\nint main() {\n    ParticleSoA soa;\n    soa.x    = {1.0f, 2.0f, 3.0f, 4.0f};\n    soa.y    = {0.1f, 0.2f, 0.3f, 0.4f};\n    soa.z    = {10.f, 20.f, 30.f, 40.f};\n    soa.mass = {1.0f, 2.0f, 1.5f, 3.0f};\n    for (int i = 0; i < 4; ++i)\n        std::cout << \"particle \" << i\n                  << \": x=\" << soa.x[i] << \" mass=\" << soa.mass[i] << \"\\n\";\n}",
+          "expectedOutput": "particle 0: x=1 mass=1\nparticle 1: x=2 mass=2\nparticle 2: x=3 mass=1.5\nparticle 3: x=4 mass=3",
+          "explanation": "Паттерн AoS → SoA классически требует ручного дублирования структуры. Здесь мы отражаем `Particle`, итерируем её поля с `access_context::unchecked()`, строим тип `std::array<T, N>` через `std::meta::substitute` и генерируем `ParticleSoA` автоматически. При изменении `Particle` достаточно перекомпилировать — `ParticleSoA` обновится сам."
+        },
+        {
+          "title": "Генерация «patch»-структуры: optional-поля автоматически",
+          "code": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <optional>\n\nstruct Config { int port; int max_connections; float timeout; };\n\nstruct ConfigPatch;  // автогенерированный «патч»\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^Config, std::meta::access_context::unchecked())) {\n        // Каждое поле T -> std::optional<T>\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(std::meta::data_member_spec(\n            opt_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ConfigPatch, fields);\n}\n\nvoid apply_patch(Config& cfg, const ConfigPatch& patch) {\n    if (patch.port)            cfg.port            = *patch.port;\n    if (patch.max_connections) cfg.max_connections = *patch.max_connections;\n    if (patch.timeout)         cfg.timeout         = *patch.timeout;\n}\n\nint main() {\n    Config cfg{8080, 100, 30.0f};\n    ConfigPatch patch{\n        .port            = 9090,\n        .max_connections = std::nullopt,\n        .timeout         = 60.0f\n    };\n    apply_patch(cfg, patch);\n    std::cout << \"port=\" << cfg.port\n              << \" max_conn=\" << cfg.max_connections\n              << \" timeout=\" << cfg.timeout << \"\\n\";\n}",
+          "expectedOutput": "port=9090 max_conn=100 timeout=60",
+          "explanation": "Паттерн «patch object»: отдельная структура с теми же именами полей, но каждое поле — `std::optional<T>`. `nullopt` означает «не трогать», значение — «применить». Генерация через `define_aggregate` устраняет необходимость вручную поддерживать синхронность `Config` и `ConfigPatch`. Обратите внимание: `max_connections=100` — осталось исходным, потому что в patch оно `nullopt`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l5-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "В каком контексте `std::meta::define_aggregate` корректно выполняет инъекцию объявления (без ошибки «cannot produce an injected declaration from a non-plainly constant-evaluated context»)?",
+          "options": [
+            "В `consteval`-функции, вызванной через `constexpr`-переменную",
+            "В namespace-scope `consteval { }` блоке",
+            "В `static_assert`",
+            "В теле `constexpr`-функции"
+          ],
+          "answerIndex": 1,
+          "explanation": "`define_aggregate` требует «plainly constant-evaluated» контекст. На практике им является namespace-scope `consteval { }` блок. `consteval`-функция, вызванная через `constexpr`-переменную, не является «plainly» CE контекстом по текущей спецификации, поэтому вызывает ошибку компиляции."
+        },
+        {
+          "id": "m5-l5-e2",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <iostream>\n\nstruct Pair;\n\nconsteval {\n    std::meta::define_aggregate(^^Pair, {\n        std::meta::data_member_spec(^^int,    {.name = \"first\"}),\n        std::meta::data_member_spec(^^double, {.name = \"second\"})\n    });\n}\n\nint main() {\n    Pair p{42, 3.14};\n    std::cout << p.first << \"\\n\" << p.second << \"\\n\";\n}",
+          "answer": "42\n3.14",
+          "explanation": "`define_aggregate` создаёт тип `Pair` с двумя полями: `int first` и `double second`. Aggregate-инициализатор `{42, 3.14}` заполняет их в порядке объявления. `p.first` = 42, `p.second` = 3.14."
+        },
+        {
+          "id": "m5-l5-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <iostream>\n\nstruct MyRect;\n\nconsteval void make_rect() {\n    std::meta::define_aggregate(^^MyRect, {\n        std::meta::data_member_spec(^^int, {.name = \"width\"}),\n        std::meta::data_member_spec(^^int, {.name = \"height\"})\n    });\n}\nconstexpr bool _ = (make_rect(), true);\n\nint main() {\n    MyRect r{640, 480};\n    std::cout << r.width << \"x\" << r.height << \"\\n\";\n}",
+          "answerLine": 6,
+          "explanation": "Ошибка на строке 6: `define_aggregate` вызывается из `consteval`-функции `make_rect()`, а не из namespace-scope `consteval { }` блока. Вызов `consteval`-функции через `constexpr bool _ = (make_rect(), true)` — не «plainly constant-evaluated» контекст, поэтому компилятор выдаёт ошибку «cannot produce an injected declaration from a non-plainly constant-evaluated context». Исправление: заменить `consteval void make_rect() { ... }` + вызов на `consteval { ... }` блок."
+        },
+        {
+          "id": "m5-l5-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Что произойдёт, если вызвать `std::meta::define_aggregate(^^T, members)` для типа `T`, который уже является полным (complete) типом?",
+          "options": [
+            "Поля будут добавлены к уже существующим полям T",
+            "T будет полностью переопределён с новыми полями",
+            "Ошибка компиляции — нельзя переопределять уже полный тип",
+            "Undefined behavior во время выполнения"
+          ],
+          "answerIndex": 2,
+          "explanation": "`define_aggregate` требует, чтобы целевой тип был **неполным** (forward-declared). Если тип уже полный — компилятор диагностирует ошибку. Это аналогично тому, что нельзя написать два определения одного и того же класса в одной программе (ODR). Именно поэтому шаблон всегда начинается с `struct T;` (forward declaration), а не с полного определения."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите код, который:\n1. Определяет struct `ServerConfig` с полями `int port`, `int max_connections`, `float timeout`.\n2. Используя `define_aggregate` и `nonstatic_data_members_of`, автоматически генерирует struct `ServerConfigPatch`, где каждое поле `T` заменено на `std::optional<T>`, а имена полей совпадают.\n3. В `main` создаёт `ServerConfigPatch` с `port=9090`, `max_connections=nullopt`, `timeout=60.0f` и распечатывает каждое поле: если значение есть — само значение, иначе строку `\"(unchanged)\"`.\n\nОжидаемый вывод:\n```\nport: 9090\nmax_connections: (unchanged)\ntimeout: 60\n```",
+        "referenceSolution": "#include <meta>\n#include <iostream>\n#include <vector>\n#include <optional>\n\nstruct ServerConfig {\n    int port;\n    int max_connections;\n    float timeout;\n};\n\nstruct ServerConfigPatch;\n\nconsteval {\n    std::vector<std::meta::info> fields;\n    for (auto m : std::meta::nonstatic_data_members_of(\n                      ^^ServerConfig, std::meta::access_context::unchecked())) {\n        auto opt_type = std::meta::substitute(\n            ^^std::optional, {std::meta::type_of(m)});\n        fields.push_back(std::meta::data_member_spec(\n            opt_type, {.name = std::meta::identifier_of(m)}));\n    }\n    std::meta::define_aggregate(^^ServerConfigPatch, fields);\n}\n\nvoid print_patch(const ServerConfigPatch& p) {\n    std::cout << \"port: \";\n    if (p.port) std::cout << *p.port; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n    std::cout << \"max_connections: \";\n    if (p.max_connections) std::cout << *p.max_connections; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n    std::cout << \"timeout: \";\n    if (p.timeout) std::cout << *p.timeout; else std::cout << \"(unchanged)\";\n    std::cout << \"\\n\";\n}\n\nint main() {\n    ServerConfigPatch patch{\n        .port            = 9090,\n        .max_connections = std::nullopt,\n        .timeout         = 60.0f\n    };\n    print_patch(patch);\n}",
+        "expectedOutput": "port: 9090\nmax_connections: (unchanged)\ntimeout: 60",
+        "godboltUrl": "https://godbolt.org/z/rnb59oEdc"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какой из следующих вызовов `define_aggregate` скомпилируется без ошибки?",
+            "options": [
+              "```cpp\nconsteval bool init() {\n    std::meta::define_aggregate(^^T, members);\n    return true;\n}\nconstexpr bool _ = init();\n```",
+              "```cpp\nconsteval {\n    std::meta::define_aggregate(^^T, members);\n}\n```",
+              "```cpp\nstatic_assert([] consteval {\n    std::meta::define_aggregate(^^T, members);\n    return true;\n}());\n```",
+              "```cpp\nconstexpr auto r = std::meta::define_aggregate(^^T, members);\n```"
+            ],
+            "answerIndex": 1,
+            "explanation": "Только namespace-scope `consteval { }` блок является «plainly constant-evaluated» контекстом, который разрешён для `define_aggregate`. Остальные варианты — consteval-функция через constexpr-переменную, consteval-лямбда в static_assert, constexpr-переменная — не удовлетворяют этому требованию."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что из перечисленного правильно описывает роль `data_member_spec` при использовании с `define_aggregate`?",
+            "options": [
+              "Добавляет поле в уже существующий полный тип",
+              "Создаёт дескриптор (`std::meta::info`) будущего поля — тип, имя, атрибуты — без немедленного эффекта на структуру",
+              "Объявляет статическое поле в классе",
+              "Возвращает рефлексию уже существующего поля данных"
+            ],
+            "answerIndex": 1,
+            "explanation": "`data_member_spec` — это pure consteval-функция, которая создаёт **дескриптор** (объект `std::meta::info`) без каких-либо немедленных эффектов. Реальная инъекция поля в тип происходит только при передаче этого дескриптора в `define_aggregate`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Вы хотите автоматически сгенерировать struct `Nullable<T>` для произвольного aggregate `T`, где каждое поле `FieldType field_name` заменяется на `std::optional<FieldType> field_name`. Какой набор функций для этого достаточен?",
+            "options": [
+              "`nonstatic_data_members_of`, `type_of`, `identifier_of`, `data_member_spec`, `define_aggregate`",
+              "Только `members_of` и `define_aggregate`",
+              "`type_of`, `name_of`, `define_class`",
+              "`reflect_invoke`, `substitute`, `define_aggregate`"
+            ],
+            "answerIndex": 0,
+            "explanation": "Минимально необходимый набор: `nonstatic_data_members_of` — чтобы получить список полей T; `type_of` — чтобы получить рефлексию типа каждого поля; `identifier_of` — чтобы получить имя поля; `substitute(^^std::optional, {type})` — чтобы построить `std::optional<T>`; `data_member_spec` — чтобы создать дескриптор нового поля; `define_aggregate` — чтобы определить итоговый тип. `name_of` и `define_class` не существуют (или deprecated) в P2996R8; `reflect_invoke` не нужен."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l6",
+      "title": "Аннотации: отражаемые метки на объявлениях",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -freflection-latest"
+      },
+      "motivation": "До C++26 единственный способ разметить поля структуры для генератора кода — использовать теги-типы, специальные соглашения имён или комментарии. Ни один из этих способов не виден при отражении: `[[deprecated]]` и `[[nodiscard]]` — атрибуты компилятора, не значения, и `std::meta` не может их прочитать.\n\n**Аннотации** (P3394) меняют это: `[[=Serialize{}]]` прикрепляет к объявлению произвольное значение времени компиляции, а `std::meta::annotations_of` возвращает список таких значений во время `consteval`-вычислений. Это делает возможными сериализаторы, ORM-маппинги, генераторы схем и любые другие инструменты, которые читают «намерение» автора прямо из кода — без макросов, без внешних файлов конфигурации, без накладных расходов во время выполнения.",
+      "theory": "## Синтаксис аннотаций\n\nАннотация — это атрибут вида `= выражение` внутри `[[...]]`:\n\n```cpp\n[[=42]] int x;\n[[=Serialize{}]] std::string_view name;\n[[=Range{0, 100}]] int brightness;\n```\n\nКлючевое отличие от обычных атрибутов (`[[nodiscard]]`, `[[deprecated]]`): аннотация — это **значение времени компиляции**, а не инструкция компилятору. Значение сохраняется в метаданных объявления и доступно через отражение.\n\n**Правила**:\n- В одних `[[...]]` могут быть только аннотации (несколько через запятую: `[[=A{}, =B{}]]`) — смешивать обычные атрибуты и аннотации в одном спецификаторе нельзя. Используйте отдельные `[[...]]`:\n  ```cpp\n  [[nodiscard]] [[=42]] int f();  // OK: раздельные спецификаторы\n  [[nodiscard, =42]] int f();     // ОШИБКА: нельзя смешивать\n  ```\n- Значение аннотации должно быть константным выражением со **структурным типом** (structural type): допускаются целые числа, перечисления, структуры только из структурных полей, без указателей — требование, аналогичное нетиповым параметрам шаблона.\n- Аннотация со строковым литералом `[[=Label{\"text\"}]]` **не работает**, если `Label` содержит `const char*` или `std::string_view` с литеральной инициализацией — указатель на подстроку строкового литерала не является допустимым аргументом шаблона.\n\n## Запрос аннотаций\n\nФункция `std::meta::annotations_of(r)` — **consteval**, возвращает `vector<info>` — отражения значений аннотаций в порядке объявления:\n\n```cpp\nconsteval bool has_serialize(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}\n```\n\nИзвлечение значения аннотации — `std::meta::extract<T>(ann)` — также consteval:\n\n```cpp\nconsteval Range get_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range)\n            return std::meta::extract<Range>(ann);\n    return {0, 0};\n}\n```\n\n## Сравнение с атрибутами\n\n| | Обычный атрибут | Аннотация |\n|---|---|---|\n| Синтаксис | `[[nodiscard]]` | `[[=expr]]` |\n| Значение | нет | произвольное констант. выражение |\n| Видна через отражение | нет | да — `annotations_of` |\n| Влияет на семантику | да (предупреждение и т.п.) | нет |\n| Цель | компилятор | ваш consteval-код |\n\n## Старые альтернативы и почему они хуже\n\n- **Тег-типы** (`struct Serialize{};` как параметр шаблона): требуют изменения сигнатуры или обёртки каждого поля.\n- **Именование по соглашению** (`serialize_name`): хрупко, нет проверки на этапе компиляции.\n- **Атрибуты компилятора** (`[[clang::annotate(\"serialize\")]]`): строки — не типизированные значения, не проверяются компилятором, не отражаемы через стандартный `std::meta`.\n\n## Поддержка компилятором\n\nАннотации описаны в P3394 и входят в стандарт C++26. В экспериментальной сборке `clang_bb_p2996` они доступны при добавлении флага **`-freflection-latest`**. Без этого флага `[[=expr]]` даёт ошибку компилятора даже при `-std=c++26 -O2`. При использовании `clang_bb_p2996` добавляйте этот флаг всегда, когда работаете с аннотациями.",
+      "examples": [
+        {
+          "title": "Разметка полей для сериализации",
+          "code": "#include <meta>\n#include <print>\n\n// Тег-тип: маркер для сериализации\nstruct Serialize {};\n\nstruct User {\n    [[=Serialize{}]] std::string_view name;\n    [[=Serialize{}]] int age;\n    std::string_view password_hash;  // не сериализуется\n};\n\n// Проверяет: есть ли на поле аннотация Serialize?\nconsteval bool is_serializable(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}\n\ntemplate <class T>\nvoid list_serializable_fields() {\n    std::println(\"Serializable fields of {}:\",\n                 std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        if constexpr (is_serializable(m)) {\n            std::println(\"  + {}\", std::meta::identifier_of(m));\n        } else {\n            std::println(\"  - {} (skipped)\", std::meta::identifier_of(m));\n        }\n    }\n}\n\nint main() {\n    list_serializable_fields<User>();\n}",
+          "expectedOutput": "Serializable fields of User:\n  + name\n  + age\n  - password_hash (skipped)",
+          "explanation": "Аннотация `[[=Serialize{}]]` прикрепляет к полю структурный объект `Serialize{}`. В `consteval`-функции `is_serializable` вызываем `annotations_of(m)` и сравниваем тип каждой аннотации с `^^Serialize` через `type_of`. В шаблоне `list_serializable_fields` результат проверки используется в `if constexpr` — ветка выбирается статически для каждого поля. Нет макросов, нет строк, нет накладных расходов во время выполнения."
+        },
+        {
+          "title": "Аннотация с данными: ограничение диапазона",
+          "code": "#include <meta>\n#include <print>\n\n// Аннотация с данными: структурный тип с двумя int-полями\nstruct Range {\n    int min;\n    int max;\n};\n\nstruct Config {\n    [[=Range{0, 100}]]   int brightness;\n    [[=Range{1, 16}]]    int threads;\n    [[=Range{0, 65535}]] int port;\n    std::string_view name;  // нет аннотации\n};\n\nconsteval bool has_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range) return true;\n    return false;\n}\n\nconsteval Range get_range(std::meta::info m) {\n    for (auto ann : std::meta::annotations_of(m))\n        if (std::meta::type_of(ann) == ^^Range)\n            return std::meta::extract<Range>(ann);\n    return {0, 0};\n}\n\ntemplate <class T>\nvoid print_constraints() {\n    std::println(\"Constraints for {}:\", std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        if constexpr (has_range(m)) {\n            constexpr Range r = get_range(m);\n            std::println(\"  {} in [{}, {}]\",\n                         std::meta::identifier_of(m), r.min, r.max);\n        }\n    }\n}\n\nint main() {\n    print_constraints<Config>();\n}",
+          "expectedOutput": "Constraints for Config:\n  brightness in [0, 100]\n  threads in [1, 16]\n  port in [0, 65535]",
+          "explanation": "`Range` — структурный тип (только `int`-поля), поэтому `Range{0,100}` допустим как аннотация. `std::meta::extract<Range>(ann)` извлекает значение в виде `Range` прямо в `consteval`-функции. Имя `name` не имеет аннотации `Range`, поэтому `has_range` возвращает `false` и поле пропускается в `if constexpr`."
+        },
+        {
+          "title": "Несколько независимых аннотаций на одном поле",
+          "code": "#include <meta>\n#include <print>\n\n// Несколько независимых тегов\nstruct Indexed {};\nstruct NotNull {};\n\nstruct Table {\n    [[=NotNull{}]] [[=Indexed{}]] int id;\n    [[=NotNull{}]] std::string_view email;\n    std::string_view nickname;  // nullable, not indexed\n};\n\nconsteval bool has_ann(std::meta::info m, std::meta::info type) {\n    for (auto a : std::meta::annotations_of(m))\n        if (std::meta::type_of(a) == type) return true;\n    return false;\n}\n\ntemplate <class T>\nvoid describe_schema() {\n    std::println(\"Schema for {}:\", std::meta::display_string_of(^^T));\n    constexpr auto fields = std::define_static_array(\n        std::meta::nonstatic_data_members_of(^^T,\n            std::meta::access_context::unchecked())\n    );\n    template for (constexpr auto m : fields) {\n        constexpr bool nn      = has_ann(m, ^^NotNull);\n        constexpr bool indexed = has_ann(m, ^^Indexed);\n        std::println(\"  {} : NOT NULL={} INDEX={}\",\n            std::meta::identifier_of(m), nn, indexed);\n    }\n}\n\nint main() {\n    describe_schema<Table>();\n}",
+          "expectedOutput": "Schema for Table:\n  id : NOT NULL=true INDEX=true\n  email : NOT NULL=true INDEX=false\n  nickname : NOT NULL=false INDEX=false",
+          "explanation": "Поле `id` несёт две независимые аннотации — каждая в своём `[[...]]`. `annotations_of` возвращает их обе. Функция `has_ann` принимает второй аргумент `std::meta::info type` — отражение типа аннотации — и сравнивает `type_of(a) == type` для каждой аннотации. `constexpr bool nn = has_ann(m, ^^NotNull)` вычисляется статически для каждого поля в `template for`."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l6-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Какое из следующих объявлений является синтаксически **корректным** в C++26?",
+          "options": [
+            "[[=42]] int x;",
+            "[[nodiscard, =42]] int f();",
+            "[[= std::string(\"hello\")]] int y;",
+            "[[annotation(42)]] int z;"
+          ],
+          "answerIndex": 0,
+          "explanation": "`[[=42]]` — корректная аннотация: единственный элемент в спецификаторе, `42` — структурный тип. `[[nodiscard, =42]]` нельзя: атрибут и аннотация в одном `[[...]]`. `[[= std::string(\"hello\")]]` нельзя: `std::string` не является структурным типом. `[[annotation(42)]]` — не синтаксис аннотаций C++26 (это формат обычного атрибута)."
+        },
+        {
+          "id": "m5-l6-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Функция `std::meta::annotations_of(r)` возвращает:\n\n```cpp\nconsteval auto get_anns(std::meta::info m) {\n    return std::meta::annotations_of(m);\n}\n```\n\nЧто именно содержит возвращаемый вектор?",
+          "options": [
+            "Список `std::meta::info`, каждый из которых является отражением значения аннотации",
+            "Список строк с именами аннотаций",
+            "Список типов `std::type_info` аннотаций",
+            "Отражение единственной (первой) аннотации"
+          ],
+          "answerIndex": 0,
+          "explanation": "`annotations_of` возвращает `vector<std::meta::info>` — каждый элемент является `info`, отражающим конкретное значение аннотации. Чтобы получить сам тип, используют `std::meta::type_of(ann) == ^^MyTag`, а чтобы извлечь значение — `std::meta::extract<MyTag>(ann)`."
+        },
+        {
+          "id": "m5-l6-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Следующий код должен проверить, есть ли на отражении поля аннотация `Serialize`. Найдите строку с ошибкой.",
+          "code": "struct Serialize {};\n\nstruct Foo {\n    [[=Serialize{}]] int x;\n    int y;\n};\n\nbool has_serialize(std::meta::info m) {\n    auto anns = std::meta::annotations_of(m);\n    for (auto ann : anns)\n        if (std::meta::type_of(ann) == ^^Serialize) return true;\n    return false;\n}",
+          "answerLine": 8,
+          "explanation": "Строка 8: функция `has_serialize` объявлена как обычная `bool`-функция, а не `consteval`. `std::meta::annotations_of` — `consteval`-функция: её можно вызывать только в контексте вычисления константного выражения. Исправление: добавить `consteval` к объявлению: `consteval bool has_serialize(std::meta::info m)`."
+        },
+        {
+          "id": "m5-l6-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Почему следующее объявление **не скомпилируется**?\n\n```cpp\nstruct Label { const char* text; };\n\nstruct Foo {\n    [[=Label{\"hello\"}]] int x;\n};\n```",
+          "options": [
+            "Тип `Label` не является структурным: содержит указатель на `char`, и строковый литерал не является допустимым аргументом шаблона",
+            "Аннотации поддерживают только целочисленные типы (`int`, `enum`)",
+            "`const char*` нельзя использовать в структурах-аннотациях вообще",
+            "Аннотации нельзя применять к полям структуры, только к функциям"
+          ],
+          "answerIndex": 0,
+          "explanation": "Значение аннотации должно быть «usable as a template argument» — то есть структурным типом. Структурный тип не может содержать указатели, а `Label{\"hello\"}` создаёт указатель на подстроку строкового литерала, что не является допустимым аргументом шаблона. Решение: использовать `int`-поля, перечисления или другие структурные типы без указателей."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Чем аннотации (`[[=expr]]`) принципиально отличаются от обычных атрибутов C++ (`[[nodiscard]]`, `[[deprecated]]`)?",
+            "options": [
+              "Аннотации хранят произвольное константное значение и доступны через `std::meta::annotations_of`; обычные атрибуты видны только компилятору и не отражаемы",
+              "Аннотации влияют на генерацию кода компилятором; атрибуты не влияют",
+              "Атрибуты хранят значения, а аннотации — только маркеры без значений",
+              "Аннотации и атрибуты идентичны по назначению, разница только в синтаксисе"
+            ],
+            "answerIndex": 0,
+            "explanation": "Обычные атрибуты — инструкции компилятору (предупреждения, оптимизации). `std::meta` не предоставляет функций для их чтения. Аннотации — это значения, прикреплённые к объявлению, которые `std::meta::annotations_of` возвращает в `consteval`-коде."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что нужно добавить к вызовам `std::meta::annotations_of` и `std::meta::extract<T>`, чтобы они работали?",
+            "options": [
+              "Вызывать их только в `consteval`-функциях или других константно-вычисляемых контекстах",
+              "Обернуть в блок `static_assert`",
+              "Вызывать только из `main`",
+              "Добавить `#include <annotations>`"
+            ],
+            "answerIndex": 0,
+            "explanation": "`annotations_of` и `extract` — consteval-функции: они работают только в контексте вычисления константного выражения. Типичный паттерн — объявить вспомогательную `consteval`-функцию, которую вызывают из шаблонной функции или `if constexpr`."
+          },
+          {
+            "type": "choice",
+            "prompt": "Какое из следующих утверждений о синтаксисе аннотаций **верно**?",
+            "options": [
+              "Несколько аннотаций на одном объявлении допустимы через отдельные `[[...]]`: `[[=A{}]] [[=B{}]] int x;`",
+              "Аннотация и обычный атрибут могут находиться в одном `[[...]]`: `[[nodiscard, =42]] int f();`",
+              "Аннотация накапливается только с первого объявления функции; повторные объявления игнорируются",
+              "Аннотации можно применять только к типам (`struct`, `class`), но не к полям"
+            ],
+            "answerIndex": 0,
+            "explanation": "Несколько аннотаций через раздельные `[[...]]` на одном объявлении — корректный синтаксис. Нельзя смешивать обычные атрибуты и аннотации в одном спецификаторе. По спецификации аннотации с нескольких объявлений одной функции/переменной накапливаются. Аннотации применимы к любым объявлениям: переменным, функциям, полям, типам."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m5-l7",
+      "title": "Capstone: универсальные утилиты через рефлексию",
+      "prerequisites": [
+        "m5-l1",
+        "m5-l2",
+        "m5-l3",
+        "m5-l4",
+        "m5-l5",
+        "m5-l6"
+      ],
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "clang_bb_p2996",
+        "flags": "-std=c++26 -O2 -stdlib=libc++ -fexpansion-statements"
+      },
+      "motivation": "Уроки l1–l6 ввели все ключевые примитивы статической рефлексии: оператор `^^`, `std::meta::info`, итерацию по членам и перечислителям через `template for`, splice-синтаксис `[: :]`, аннотации. Каждый примитив полезен по отдельности, но настоящая мощь появляется, когда они складываются в **обобщённые утилиты** — функции, которые работают с *любым* типом или перечислением без кодогенерации и макросов.\n\nВ этом capstone-уроке мы пишем три утилиты, которые классически требовали ручного кода для каждого типа:\n- `enum_name<E>(value)` — преобразование значения enum в строку;\n- `print_fields(obj)` — автоматический вывод всех полей структуры;\n- `auto_equal(a, b)` — сравнение двух экземпляров структуры поле за полем.\n\nВсё это — около 10 строк кода каждое, полностью обобщённое, с нулевыми накладными расходами в рантайме.",
+      "theory": "## Паттерн: consteval-таблица + рантаймовый поиск\n\nИтерация через `template for` разворачивается **во время компиляции**. Чтобы выбрать ветку по рантаймовому значению (например, по значению `enum`), нужен один из двух подходов:\n\n**Подход A — сравнение внутри `template for`:**\n```cpp\ntemplate for (constexpr auto e : std::define_static_array(\n        std::meta::enumerators_of(^^E))) {\n    if ([:e:] == value) return std::meta::identifier_of(e);\n}\n```\nЗдесь `[:e:]` — splice перечислителя (не `value_of<E>()`) — производит само значение enumerator'а. Конструкция компилируется в линейный if-else по числу перечислителей.\n\n**Подход B — `if constexpr` при итерации по членам структуры:**\nДля типобезопасного доступа к разнородным полям (`int`, `double`, `std::string_view`) splice `obj.[: m :]` возвращает ссылку на поле нужного типа — компилятор обрабатывает каждую итерацию `template for` отдельно, как отдельную инстанцию.\n\n## Ключевые комбинации примитивов\n\n| Задача | Примитивы |\n|---|---|\n| Имя enumerator по значению | `enumerators_of` + `[:e:]` (splice значения) + `identifier_of` |\n| Вывод полей структуры | `nonstatic_data_members_of` + `obj.[: m :]` + `identifier_of` |\n| Поле-за-полем сравнение | `nonstatic_data_members_of` + `a.[: m :] != b.[: m :]` |\n| Поля, где значения отличаются | то же + условный вывод |\n\n## Почему это лучше старых подходов\n\n- **Нет макросов.** `REFLECT_ENUM(Color, Red, Green, Blue)` — весь этот шаблон уходит.\n- **Нет кодогенерации.** Не нужен отдельный инструмент, который читает заголовки и генерирует `switch`.\n- **Нет рантаймовых таблиц вручную.** Компилятор генерирует оптимальный код.\n- **Расширяется автоматически.** Добавили новый enumerator или поле — утилита подхватывает его без изменений.\n\n## `std::define_static_array` — зачем он нужен\n\n`nonstatic_data_members_of` и `enumerators_of` возвращают `std::vector<std::meta::info>`. Чтобы использовать это в `template for` (который требует constexpr-диапазон), необходимо превратить вектор в статический массив через `std::define_static_array`. Это специальная функция C++26, обёртывающая вектор в `constexpr`-доступный диапазон:\n```cpp\nconstexpr auto members = std::define_static_array(\n    std::meta::nonstatic_data_members_of(^^T, std::meta::access_context::unchecked()));\ntemplate for (constexpr auto m : members) { ... }\n```",
+      "examples": [
+        {
+          "title": "Универсальная функция enum → строка",
+          "code": "#include <meta>\n#include <print>\n#include <string_view>\n\nenum class Color { Red, Green, Blue };\n\nconsteval std::string_view enum_name(Color c) {\n    template for (constexpr auto e : std::define_static_array(\n            std::meta::enumerators_of(^^Color))) {\n        if ([:e:] == c) return std::meta::identifier_of(e);\n    }\n    return \"unknown\";\n}\n\nint main() {\n    std::println(\"{}\", enum_name(Color::Red));\n    std::println(\"{}\", enum_name(Color::Green));\n    std::println(\"{}\", enum_name(Color::Blue));\n}",
+          "expectedOutput": "Red\nGreen\nBlue",
+          "explanation": "`enumerators_of(^^Color)` возвращает список рефлексий перечислителей. `[:e:]` — splice, который производит само значение enumerator'а (аналог `Color::Red`, `Color::Green` и т.д.). Сравнение `[:e:] == c` выбирает нужный перечислитель; `identifier_of(e)` возвращает его имя как `string_view`. Функция помечена `consteval` — вся логика выполняется во время компиляции. Чтобы вызвать её из `main`, значение `c` должно быть константой (здесь — `Color::Red` и т.д.)."
+        },
+        {
+          "title": "Универсальный вывод полей структуры",
+          "code": "#include <meta>\n#include <print>\n\nstruct Point { int x; double y; };\n\ntemplate <class T>\nvoid print_fields(const T& obj) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        std::println(\"{}: {}\", std::meta::identifier_of(m), obj.[: m :]);\n    }\n}\n\nint main() {\n    Point p{1, 2.5};\n    print_fields(p);\n}",
+          "expectedOutput": "x: 1\ny: 2.5",
+          "explanation": "`nonstatic_data_members_of(^^T, access_context::unchecked())` возвращает все нестатические поля типа `T` (флаг `unchecked` разрешает доступ к приватным полям — здесь все поля публичные). `obj.[: m :]` — member-splice: для каждого члена `m` это эквивалентно `obj.x`, `obj.y` и т.д. `std::println` умеет форматировать `int` и `double` единообразно, поэтому смешанные типы проблем не создают. Функция `print_fields` шаблонная — работает с **любой** структурой без изменений."
+        },
+        {
+          "title": "Обобщённое сравнение поле за полем",
+          "code": "#include <meta>\n#include <print>\n\nstruct Vec2 { float x, y; };\n\ntemplate <class T>\nconstexpr bool auto_equal(const T& a, const T& b) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        if (a.[: m :] != b.[: m :]) return false;\n    }\n    return true;\n}\n\nint main() {\n    Vec2 v1{1.0f, 2.0f};\n    Vec2 v2{1.0f, 2.0f};\n    Vec2 v3{1.0f, 3.0f};\n    std::println(\"{}\", auto_equal(v1, v2));\n    std::println(\"{}\", auto_equal(v1, v3));\n}",
+          "expectedOutput": "true\nfalse",
+          "explanation": "`auto_equal` итерирует по всем полям типа `T` и сравнивает пару `a.[: m :]` и `b.[: m :]` — при первом несовпадении возвращает `false`. `v1` и `v2` идентичны → `true`; `v1` и `v3` отличаются по полю `y` → `false`. Функция помечена `constexpr`, что позволяет использовать её как в `if constexpr`, так и в рантаймовых условиях. В отличие от ручного `operator==`, функция не требует обновления при добавлении нового поля в структуру."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m5-l7-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "code": "#include <meta>\n#include <print>\n\nenum class Dir { North, South, East, West };\n\nint main() {\n    template for (constexpr auto e : std::define_static_array(\n            std::meta::enumerators_of(^^Dir))) {\n        std::println(\"{}\", std::meta::identifier_of(e));\n    }\n}",
+          "answer": "North\nSouth\nEast\nWest",
+          "explanation": "`enumerators_of(^^Dir)` возвращает рефлексии перечислителей в порядке объявления. `identifier_of(e)` для каждого возвращает строковое представление имени: `\"North\"`, `\"South\"`, `\"East\"`, `\"West\"`."
+        },
+        {
+          "id": "m5-l7-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Чем `[:e:]` в контексте итерации по `enumerators_of(^^E)` отличается от `value_of<E>(e)`?",
+          "options": [
+            "`[:e:]` — это splice, который производит само значение перечислителя как константное выражение; `value_of<E>()` не существует в стандарте C++26",
+            "`value_of<E>(e)` возвращает целочисленный underlying-тип; `[:e:]` возвращает значение типа `E`",
+            "`[:e:]` требует `consteval`-контекста; `value_of<E>(e)` работает в рантайме",
+            "Оба варианта эквивалентны — это синонимы"
+          ],
+          "answerIndex": 0,
+          "explanation": "`value_of<E>()` — несуществующее имя в `std::meta`. Правильный способ получить значение перечислителя из `std::meta::info e` — это splice `[:e:]`. Он производит само значение как константное выражение типа `E` (или другого типа, если `e` отражает другую сущность)."
+        },
+        {
+          "id": "m5-l7-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <meta>\n#include <print>\n\nstruct Box { int w; int h; };\n\ntemplate <class T>\nvoid print_fields(const T& obj) {\n    for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        std::println(\"{}: {}\", std::meta::identifier_of(m), obj.[: m :]);\n    }\n}",
+          "answerLine": 8,
+          "explanation": "Строка 8: `for` вместо `template for`. Обычный `for`-цикл не может итерировать по `constexpr`-диапазону `std::meta::info` — каждый элемент должен быть `constexpr`, что возможно только в `template for`. Без `template` компилятор выдаст ошибку о невозможности использовать `constexpr` в обычном range-for."
+        },
+        {
+          "id": "m5-l7-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Функция `print_fields` работает для структуры с полями `int` и `double`. Что произойдёт, если добавить поле типа `std::string_view`?",
+          "options": [
+            "Ошибка компиляции: `obj.[: m :]` возвращает разные типы, `std::println` не может обработать `string_view` и числа в одном вызове",
+            "Всё скомпилируется и распечатается корректно: `std::println` форматирует `string_view` так же, как `int` и `double`",
+            "Рантаймовая ошибка: `std::println` не знает формат для `string_view`",
+            "Поле `string_view` будет пропущено: `template for` обрабатывает только числовые типы"
+          ],
+          "answerIndex": 1,
+          "explanation": "`template for` генерирует отдельный блок кода для каждого поля — каждый блок имеет свой тип `obj.[: m :]`. `std::println(\"{}\", obj.[: m :])` работает для `int`, `double` и `string_view` одинаково, поскольку все три типа поддерживают стандартный форматтер `{}`. Никакой ошибки не будет."
+        }
+      ],
+      "challenge": {
+        "prompt": "Напишите функцию `diff(a, b)`, которая принимает два экземпляра одного типа и выводит только те поля, значения которых отличаются, в формате `fieldname: old -> new`. Проверьте на структуре `Config { int width; int height; float scale; }` с экземплярами `{1920, 1080, 1.0f}` и `{1280, 1080, 1.5f}`.",
+        "referenceSolution": "#include <meta>\n#include <print>\n\nstruct Config {\n    int width;\n    int height;\n    float scale;\n};\n\ntemplate <class T>\nvoid diff(const T& a, const T& b) {\n    template for (constexpr auto m : std::define_static_array(\n            std::meta::nonstatic_data_members_of(^^T,\n                std::meta::access_context::unchecked()))) {\n        if (a.[: m :] != b.[: m :]) {\n            std::println(\"{}: {} -> {}\",\n                std::meta::identifier_of(m),\n                a.[: m :],\n                b.[: m :]);\n        }\n    }\n}\n\nint main() {\n    Config c1{1920, 1080, 1.0f};\n    Config c2{1280, 1080, 1.5f};\n    diff(c1, c2);\n}",
+        "expectedOutput": "width: 1920 -> 1280\nscale: 1 -> 1.5",
+        "godboltUrl": "https://godbolt.org/z/placeholder"
+      },
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какой результат возвращает `std::meta::enumerators_of(^^E)`?",
+            "options": [
+              "`std::vector<std::meta::info>` — список рефлексий перечислителей",
+              "`std::vector<std::string_view>` — список имён перечислителей",
+              "`std::initializer_list<E>` — список значений перечислителей",
+              "Целое число — количество перечислителей"
+            ],
+            "answerIndex": 0,
+            "explanation": "`enumerators_of` возвращает `std::vector<std::meta::info>` — рефлексии перечислителей. Из каждой рефлексии можно получить имя (`identifier_of`) или значение (`[:e:]`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Зачем в `template for (constexpr auto m : ...)` используется `std::define_static_array(...)` вместо прямого вызова `nonstatic_data_members_of`?",
+            "options": [
+              "Для производительности: `define_static_array` кэширует результат",
+              "`nonstatic_data_members_of` возвращает `std::vector`, который нельзя напрямую использовать как constexpr-диапазон в `template for`; `define_static_array` преобразует его в статический массив",
+              "`define_static_array` фильтрует приватные поля",
+              "`template for` не умеет работать с `std::vector` из-за ограничений move-семантики"
+            ],
+            "answerIndex": 1,
+            "explanation": "`nonstatic_data_members_of` возвращает `std::vector<std::meta::info>` — это констектный вектор, не подходящий напрямую для `template for`. `std::define_static_array` преобразует его в статический constexpr-массив, который `template for` может развернуть в набор независимых блоков кода."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что означает `obj.[: m :]` в контексте, где `m` — это `std::meta::info` поля?",
+            "options": [
+              "Вызов метода `m` на объекте `obj`",
+              "Member-splice: синтаксис для доступа к полю `obj`, отражённому в `m`, — эквивалент `obj.fieldname`",
+              "Взятие адреса поля `m` в объекте `obj`",
+              "Создание копии поля `m` из объекта `obj`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`obj.[: m :]` — это member-splice: он подставляет идентификатор поля, отражённого в `m`, аналогично прямому `obj.x`. Результат — ссылка на поле (lvalue), тип которой соответствует типу поля."
+          },
+          {
+            "type": "choice",
+            "prompt": "Аннотация `[[=Serialize{}]]` (из урока l6) видна через `std::meta::annotations_of`. Какое из следующих утверждений верно?",
+            "options": [
+              "Аннотацию можно проверить в рантаймовой функции, она хранится в бинарнике",
+              "Аннотация видна только в `consteval`-контексте; `annotations_of` — consteval-функция",
+              "Аннотации хранятся как `[[nodiscard]]` и влияют на поведение компилятора",
+              "Аннотация автоматически задокументирует поле в отладчике"
+            ],
+            "answerIndex": 1,
+            "explanation": "`annotations_of` — consteval-функция: её можно вызвать только в `consteval`/`constexpr`-контексте. Аннотации являются compile-time-метаданными и не добавляют ни байта в рантаймовый бинарник и не меняют поведение компилятора (в отличие от `[[nodiscard]]`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Функция `auto_equal(a, b)` написана через `template for` + `obj.[: m :]`. В чём её преимущество перед явным `operator==`?",
+            "options": [
+              "Работает быстрее в рантайме благодаря SIMD-оптимизации",
+              "Автоматически учитывает новые поля при добавлении в структуру — не требует изменений",
+              "Работает только с `constexpr`-объектами",
+              "Не требует `#include <meta>`"
+            ],
+            "answerIndex": 1,
+            "explanation": "Главное преимущество — автоматическое расширение: если добавить новое поле в структуру, `auto_equal` сравнит его автоматически. Ручной `operator==` потребовал бы явного добавления нового поля в тело функции — что легко забыть."
+          }
+        ]
+      }
     }
   ]
 }

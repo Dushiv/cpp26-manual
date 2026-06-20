@@ -6,8 +6,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "Оператор рефлексии ^ и std::meta::info" }).click();
-  await expect(page.locator("h1")).toContainText("Оператор рефлексии ^ и std::meta::info");
+  await page.getByRole("listitem").filter({ hasText: "Модель Senders/Receivers: основы" }).click();
+  await expect(page.locator("h1")).toContainText("Модель Senders/Receivers: основы");
   await expect(page.locator(".empty-big")).toContainText("ещё не написан");
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();
