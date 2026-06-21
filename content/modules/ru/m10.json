@@ -4,5 +4,7 @@
   "title": "Отладка, формат, удалённое",
   "significance": "завершающий",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m10-l1", "title": "<debugging>: breakpoint и is_debugger_present", "stub": true }
+  ]
 }

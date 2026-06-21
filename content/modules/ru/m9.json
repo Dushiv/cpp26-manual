@@ -5,6 +5,361 @@
   "significance": "специальный",
   "prerequisites": [],
   "lessons": [
-    { "id": "m9-l1", "title": "std::hazard_pointer", "stub": true }
+    {
+      "id": "m9-l1",
+      "title": "std::hazard_pointer — безопасное освобождение",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Lock-free структуры данных привлекательны: они избегают мьютексов и обещают масштабируемость под высокой нагрузкой. Но отсутствие блокировок порождает новую проблему — **use-after-free**. Когда один поток удаляет узел списка, другой поток, только что прочитавший указатель на этот узел, может обратиться к уже освобождённой памяти.\n\nИспользовать `std::shared_ptr` в качестве решения кажется логичным, но `atomic<shared_ptr<T>>` требует атомарного инкремента счётчика ссылок при каждом чтении — сама эта операция становится узким местом под высокой нагрузкой.\n\n**Hazard pointers** — механизм безопасного освобождения памяти для lock-free структур, стандартизированный в C++26 (P0566/P2530). Поток, который хочет разыменовать указатель, сначала *регистрирует* его как «опасный» (hazardous). Освобождающая сторона обязана проверить все зарегистрированные hazard pointers, прежде чем удалить объект. Если адрес объекта появляется в любом слоте hazard pointer, удаление откладывается.",
+      "theory": "**Примечание:** `std::hazard_pointer` (`<hazard_pointer>`, P0566/P2530) включён в C++26, но ещё не реализован ни одним компилятором. Все примеры кода соответствуют спецификации.\n\n## Проблема: use-after-free в lock-free коде\n\nRace condition при освобождении указателя в lock-free стеке:\n\n```\nПоток A: читает top → получает указатель P на узел N\nПоток B: выталкивает N из стека → вызывает delete N\nПоток A: разыменовывает P → CRASH (use-after-free)\n```\n\nКритический момент: между чтением указателя и его использованием другой поток успевает удалить объект. Мьютекс решает это ценой блокировки. `atomic<shared_ptr<T>>` решает это ценой атомарного инкремента счётчика ссылок при каждом `load` — под высокой нагрузкой на чтение эта операция становится bottleneck'ом. Hazard pointers избегают и того, и другого.\n\n## Идея hazard pointers\n\nПрежде чем разыменовать общий указатель, поток *регистрирует* этот указатель как «опасный»: «я использую этот адрес, не освобождайте объект». Сторона, освобождающая объект, обязана проверить все зарегистрированные hazard pointers перед `delete`. Если адрес объекта найден хотя бы в одном слоте, удаление откладывается.\n\nАлгоритм (со стороны читателя):\n1. Читатель загружает указатель `P` из атомарной переменной.\n2. Регистрирует `P` в своём слоте hazard pointer.\n3. Перечитывает атомарную переменную — если `P` всё ещё совпадает (ABA-обмена не произошло), теперь безопасно разыменовывать `P`.\n4. Использует объект по `P`.\n5. Очищает слот hazard pointer.\n\nАлгоритм (со стороны освобождающего):\n- При вызове `retire()` на объекте среда выполнения проверяет все слоты hazard pointers в домене. Если адрес объекта встречается — удаление откладывается. Повторная попытка происходит позже (или при уничтожении домена).\n\n## C++26 API\n\n### `std::hazard_pointer_domain`\n\nОтслеживает все hazard pointers и отложенные удаления. `std::hazard_pointer_default_domain()` возвращает общий для всего процесса домен по умолчанию. Можно создавать собственные домены для изоляции.\n\n### `std::hazard_pointer`\n\nОбъект-охранник. Один `hazard_pointer` защищает один указатель одновременно. Создаётся через `std::make_hazard_pointer(domain)`.\n\n### `hp.protect(atomic_ptr)`\n\nАтомарно загружает из `atomic<T*>` и регистрирует результат как опасный. Возвращает загруженный `T*`. Необходимо использовать вместо обычного `.load()`. Паттерн с повторной проверкой:\n\n```cpp\nT* p;\ndo {\n    p = hp.protect(shared_atomic_ptr);\n} while (p != shared_atomic_ptr.load(std::memory_order_acquire));\n// теперь p безопасно разыменовывать\n```\n\nПочему нужен цикл? Между `hp.protect()` и проверкой другой поток мог заменить указатель в атомарной переменной. Если значение изменилось, регистрация защищает уже не тот объект — нужно повторить.\n\n### `hp.reset_protection()`\n\nОчищает слот hazard pointer (объект больше не защищён). Вызывать после завершения работы с указателем.\n\n### `std::hazard_pointer_obj_base<T, Deleter>`\n\nCRTP-базовый класс для объектов, которые должны защищаться hazard pointers. Добавляет метод `retire()`.\n\n### `obj.retire()`\n\nПланирует удаление `obj`. Среда выполнения откладывает фактическое `delete` до тех пор, пока ни один hazard pointer в домене не указывает на этот объект.\n\n## Модель производительности\n\n| Операция | Стоимость |\n|---|---|\n| `hp.protect()` + проверка | O(1) — один атомарный store + load + compare |\n| `retire()` | O(N) — сканирование всех слотов, N = потоки × HP на поток |\n| Память | O(потоки × K), K — HP на поток (обычно 1–2) |\n\nПо сравнению с `atomic<shared_ptr<T>>`: при каждом чтении не нужен атомарный инкремент счётчика ссылок. Под высокой нагрузкой на чтение hazard pointers масштабируются значительно лучше.\n\n## Когда применять\n\n- Lock-free односвязные и двусвязные списки\n- Lock-free стеки и очереди\n- Любые pointer-based lock-free структуры, где важна безопасность освобождения\n- **Не подходит** для деревьев со сложной достижимостью (для таких структур лучше epoch-based reclamation)",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m9-l1-ex1",
+          "level": "basic",
+          "title": "Безопасное чтение через hp.protect()",
+          "code": "// spec-based — <hazard_pointer> ещё не реализован ни одним компилятором\n#include <hazard_pointer>\n#include <atomic>\n#include <print>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n};\n\nstd::atomic<Node*> global_node{nullptr};\n\nvoid reader_thread() {\n    auto hp = std::make_hazard_pointer(std::hazard_pointer_default_domain());\n    Node* p;\n    do {\n        p = hp.protect(global_node);\n    } while (p != global_node.load(std::memory_order_acquire));\n\n    if (p) {\n        std::println(\"value: {}\", p->value); // безопасно разыменовывать\n    }\n    hp.reset_protection(); // закончили работу с p\n}",
+          "expectedOutput": "",
+          "explanation": "`hp.protect(global_node)` атомарно загружает указатель и регистрирует его как опасный. Цикл do-while гарантирует, что между регистрацией и проверкой не произошёл ABA-обмен. После `reset_protection()` освободитель может безопасно удалить объект."
+        },
+        {
+          "id": "m9-l1-ex2",
+          "level": "advanced",
+          "title": "Писатель откладывает удаление через retire()",
+          "code": "// spec-based — <hazard_pointer> ещё не реализован ни одним компилятором\n#include <hazard_pointer>\n#include <atomic>\n#include <print>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n    Node(int v) : value(v) {}\n};\n\nstd::atomic<Node*> current{new Node(1)};\n\nvoid writer_update(int new_val) {\n    Node* old_node = current.exchange(new Node(new_val),\n                                      std::memory_order_acq_rel);\n    // old_node недостижим из current, но читатели могут его держать\n    old_node->retire(); // фактическое delete отложено до освобождения всех HP\n}\n\nvoid reader_snapshot() {\n    auto hp = std::make_hazard_pointer(std::hazard_pointer_default_domain());\n    Node* p;\n    do {\n        p = hp.protect(current);\n    } while (p != current.load(std::memory_order_acquire));\n\n    std::println(\"read value: {}\", p->value);\n    hp.reset_protection();\n}",
+          "expectedOutput": "",
+          "explanation": "`writer_update()` атомарно заменяет узел, а затем вызывает `retire()` на старом. Среда выполнения проверяет все слоты hazard pointer в домене. Пока хотя бы один читатель держит hazard pointer на `old_node`, удаление не произойдёт. Как только все читатели вызовут `reset_protection()`, объект будет удалён."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Зачем нужен повторный `load` после `hp.protect()` в паттерне с hazard pointer?\n\n```cpp\nNode* p;\ndo {\n    p = hp.protect(global_ptr);\n} while (p != global_ptr.load(std::memory_order_acquire));\n```",
+          "options": [
+            "Чтобы убедиться, что объект не был удалён другим потоком до регистрации указателя",
+            "Для инкремента счётчика ссылок",
+            "Это требование компилятора для инлайнинга",
+            "Чтобы очистить кэш-линию перед обращением"
+          ],
+          "answerIndex": 0,
+          "explanation": "Между вызовом `hp.protect()` (регистрация) и проверкой другой поток мог атомарно заменить указатель в `global_ptr`. Если значение изменилось, слот hazard pointer защищает уже не тот объект — нужно повторить цикл с новым значением. Повторный `load` обнаруживает именно такое изменение."
+        },
+        {
+          "id": "m9-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что делает `obj.retire()` у объекта, унаследованного от `hazard_pointer_obj_base`?",
+          "options": [
+            "Немедленно вызывает `delete obj`",
+            "Планирует удаление obj, откладывая его до тех пор, пока ни один hazard pointer не ссылается на него",
+            "Помечает объект как устаревший, но не удаляет его никогда",
+            "Уменьшает счётчик ссылок"
+          ],
+          "answerIndex": 1,
+          "explanation": "`retire()` передаёт объект домену hazard pointer для отложенного удаления. Домен периодически сканирует зарегистрированные hazard pointers: если адрес объекта не найден ни в одном слоте, вызывается `delete`. Это ключевое отличие от немедленного `delete` — именно здесь достигается безопасность."
+        },
+        {
+          "id": "m9-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <hazard_pointer>\n#include <atomic>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n};\n\nstd::atomic<Node*> head{nullptr};\n\nvoid unsafe_read() {\n    Node* p = head.load(std::memory_order_acquire);\n    if (p) {\n        int v = p->value; // потенциальный use-after-free\n    }\n}",
+          "answerLine": 11,
+          "explanation": "Строка 11: указатель загружается напрямую через `head.load()` без `hp.protect()`. Между этим `load` и последующим разыменованием `p->value` другой поток может вызвать `old->retire()` и среда выполнения может удалить узел — итог: use-after-free. Исправление: создать `hazard_pointer` и использовать `hp.protect(head)` в цикле do-while с повторной проверкой."
+        },
+        {
+          "id": "m9-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Чем hazard pointers лучше `atomic<shared_ptr<T>>` для lock-free структур с высокой нагрузкой на чтение?",
+          "options": [
+            "shared_ptr не работает в многопоточной среде",
+            "Hazard pointers не требуют атомарного обновления счётчика ссылок при каждом чтении, что снижает contention",
+            "Hazard pointers автоматически предотвращают ABA без повторной проверки",
+            "Hazard pointers требуют меньше памяти в абсолютных значениях"
+          ],
+          "answerIndex": 1,
+          "explanation": "`atomic<shared_ptr<T>>` при каждом `load` атомарно инкрементирует счётчик ссылок — под высокой нагрузкой на чтение эта операция становится bottleneck'ом из-за конкуренции за кэш-линию со счётчиком. Hazard pointer выполняет один атомарный store в слот + load + compare — без разделяемого счётчика, поэтому масштабируется значительно лучше. ABA при этом всё равно требует повторной проверки."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что гарантирует hazard pointer для зарегистрированного указателя?",
+            "options": [
+              "Что объект никогда не будет изменён другим потоком",
+              "Что объект не будет освобождён, пока hazard pointer зарегистрирован",
+              "Что указатель всегда указывает на актуальное значение",
+              "Что никакой другой поток не прочитает этот объект"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему `hp.protect()` возвращает указатель, а не просто регистрирует его?",
+            "options": [
+              "Для удобства — чтобы не делать отдельный load",
+              "Потому что регистрация и загрузка должны быть единой операцией (иначе между ними возможен race)",
+              "Потому что это возвращает умный указатель с подсчётом ссылок",
+              "Это просто синтаксический сахар"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Когда объект, для которого вызван `retire()`, действительно будет удалён?",
+            "options": [
+              "Немедленно при вызове retire()",
+              "После завершения текущего потока",
+              "Когда ни один hazard pointer в домене не указывает на этот объект",
+              "После следующего вызова `std::gc_run()`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой overhead у чтения через hazard pointer по сравнению с чтением через mutex?",
+            "options": [
+              "Hazard pointer медленнее — он делает 2 атомарных операции вместо 1",
+              "Примерно одинаково",
+              "Hazard pointer быстрее под высокой нагрузкой: нет блокировки, один атомарный store + load + compare",
+              "Hazard pointer быстрее потому что не использует атомарных операций вообще"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m9-l2",
+      "title": "std::rcu — read-copy-update",
+      "background": null,
+      "outputsVerified": false,
+      "theory": "Примечание: `std::rcu` (`<rcu>`, P1122) включён в C++26, но ещё не реализован ни одним компилятором. Все примеры кода соответствуют спецификации.\n\n## Проблема: много читателей, редкие записи\n\n`std::mutex` сериализует всех читателей и писателей. Для структур данных, где чтений значительно больше, чем записей (таблицы маршрутизации, объекты конфигурации, таблицы системных вызовов), это расточительно — читатели блокируют друг друга, даже если не изменяют данные. `std::shared_mutex` помогает, но читатели всё равно выполняют атомарные операции и могут конкурировать.\n\nRCU (Read-Copy-Update) использует принципиально другой подход: **чтения полностью lock-free и obstruction-free** — никаких атомарных операций и барьеров памяти на пути чтения (во многих реализациях). Записи дороже, но редки.\n\nRCU возник в ядре Linux (активно используется с ~2002 года); C++26 стандартизирует версию для C++ через P1122.\n\n## Паттерн RCU\n\n**Протокол писателя:**\n1. **Прочитать** текущую версию данных.\n2. **Скопировать** её в новый объект.\n3. **Обновить** копию (оригинал не тронут — читатели продолжают безопасно его использовать).\n4. **Опубликовать** новую версию атомарно (`atomic::store(release)`). Новые читатели видят новую версию.\n5. **Подождать** окончания всех читателей, начавших до публикации (grace period).\n6. **Освободить** старую версию — теперь безопасно, так как ни один читатель не может до неё добраться.\n\n**Протокол читателя:**\n1. Войти в read-side critical section (создать guard `rcu_reader`).\n2. Загрузить указатель (acquire). Объект гарантированно не будет освобождён на протяжении критической секции.\n3. Использовать объект.\n4. Выйти из критической секции (деструктор guard-а).\n\n## C++26 API (по спецификации)\n\n**`std::rcu_obj_base<T, Deleter>`** — CRTP-базовый класс для объектов, защищённых RCU. Добавляет метод `retire(domain)` для планирования удаления после следующего grace period.\n\n**`std::rcu_domain`** — отслеживает читателей. `std::rcu_default_domain()` возвращает глобальный домен.\n\n**`std::rcu_reader`** — RAII-guard. Конструктор помечает текущий поток как находящийся в read-side critical section. Деструктор выходит из неё. Пока существует хоть один `rcu_reader` в потоке, ни один объект, retire()-нутый до создания этого reader-а, не будет освобождён.\n\n**`std::rcu_synchronize(domain)`** — блокирует вызывающий поток до окончания всех существующих read-side critical sections (ожидает один grace period). Вызывается писателем после публикации новой версии и перед освобождением старой. Не масштабируется: для производительных писателей используйте `retire()`.\n\n**`std::rcu_retire(obj, deleter, domain)`** — планирует удаление `obj` после следующего grace period (неблокирующая альтернатива `rcu_synchronize`). Предпочтительнее блокирования.\n\n**`std::rcu_barrier(domain)`** — ожидает вызова всех pending retire()-колбэков. Используйте перед завершением программы или уничтожением домена.\n\n## `rcu_synchronize` против `retire`\n\n- **`rcu_synchronize(domain)`** — блокирующий. Прост в понимании. Писатель: публикует новое → вызывает `rcu_synchronize` → освобождает старое. Подходит для редких обновлений, где простота важнее производительности.\n- **`retire()`** — неблокирующий. Писатель возвращается сразу; рантайм откладывает удаление. Лучше для частых обновлений. Используйте `rcu_barrier` при завершении программы.\n\n## RCU против hazard pointers\n\n| | `std::hazard_pointer` | `std::rcu` |\n|---|---|---|\n| Накладные расходы читателя | Запись в HP-слот + повторная проверка | RAII-guard (часто просто счётчик) |\n| Защищает | Отдельные указатели | Целые критические секции |\n| Гранулярность рекламации | На объект (после очистки всех HP) | На домен (после grace period) |\n| Память для старых версий | Пока не очистятся все HP | До окончания grace period |\n| Лучше для | Защиты отдельного указателя в lock-free структурах | Read-heavy данные, конфигурация, таблицы маршрутизации |\n\n## Когда использовать\n\n- Часто читаемая общая конфигурация\n- Таблицы маршрутизации, DNS-кэши\n- Списки наблюдателей, реестры плагинов\n- Любые структуры данных, где чтения никогда не должны блокироваться, а записи могут быть медленнее",
+      "examples": [
+        {
+          "id": "m9-l2-ex1",
+          "level": "basic",
+          "title": "Читатель получает конфигурацию через rcu_reader",
+          "code": "// spec-based — <rcu> ещё не реализован компиляторами\n#include <rcu>\n#include <atomic>\n#include <string>\n#include <print>\n\nstruct Config : std::rcu_obj_base<Config> {\n    std::string endpoint;\n    int timeout_ms;\n};\n\nstd::atomic<Config*> current_config{new Config{\"localhost\", 5000}};\n\nvoid handle_request() {\n    std::rcu_reader reader; // войти в read-side critical section\n    Config* cfg = current_config.load(std::memory_order_acquire);\n    // cfg гарантированно валиден на протяжении жизни reader\n    std::println(\"connecting to {} with {}ms timeout\",\n                 cfg->endpoint, cfg->timeout_ms);\n    // деструктор reader: выйти из критической секции\n}",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m9-l2-ex2",
+          "level": "advanced",
+          "title": "Писатель обновляет конфигурацию через retire()",
+          "code": "// spec-based — <rcu> ещё не реализован компиляторами\n#include <rcu>\n#include <atomic>\n#include <string>\n\nstruct Config : std::rcu_obj_base<Config> {\n    std::string endpoint;\n    int timeout_ms;\n};\n\nstd::atomic<Config*> current_config{new Config{\"localhost\", 5000}};\n\nvoid update_config(std::string new_endpoint, int new_timeout) {\n    Config* old = current_config.load(std::memory_order_acquire);\n    Config* updated = new Config{new_endpoint, new_timeout}; // копия + изменения\n\n    // атомарно публикуем новую версию\n    current_config.store(updated, std::memory_order_release);\n\n    // планируем удаление старого конфига после следующего grace period\n    // (old может всё ещё использоваться существующими читателями)\n    old->retire();\n    // retire() не блокирует — писатель возвращается немедленно\n    // рантайм вызовет delete old после окончания grace period\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что гарантирует `std::rcu_reader` во время своего существования?",
+          "options": [
+            "Что никакой другой поток не может читать данные",
+            "Что ни один объект, retire()-нутый до создания этого reader-а, не будет освобождён",
+            "Что текущий поток имеет эксклюзивный доступ к данным",
+            "Что операции записи блокируются"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m9-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что делает `std::rcu_synchronize(domain)` на стороне писателя?",
+          "options": [
+            "Немедленно удаляет все retire()-нутые объекты",
+            "Блокирует текущий поток до окончания всех существующих read-side критических секций (grace period)",
+            "Запрещает новым читателям входить в критическую секцию",
+            "Публикует новую версию данных"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m9-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Найдите ошибку в коде обновления конфигурации:",
+          "code": "#include <rcu>\n#include <atomic>\n\nstruct Config : std::rcu_obj_base<Config> {\n    int timeout_ms;\n};\n\nstd::atomic<Config*> cfg{new Config{5000}};\n\nvoid update(int new_timeout) {\n    Config* old = cfg.load(std::memory_order_acquire);\n    cfg.store(new Config{new_timeout}, std::memory_order_release);\n    delete old; // немедленно освободить старый конфиг\n}",
+          "answerLine": 13,
+          "explanation": "`delete old` вызывается сразу после публикации новой конфигурации, но существующие читатели могут всё ещё держать указатель на `old` внутри своих `rcu_reader` критических секций. Это неопределённое поведение (use-after-free). Исправление: использовать `old->retire()` вместо `delete old` — это откладывает удаление до окончания grace period, когда все предыдущие читатели гарантированно завершились."
+        },
+        {
+          "id": "m9-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Чем `retire()` предпочтительнее `rcu_synchronize()` для частых обновлений?",
+          "options": [
+            "`retire()` немедленно освобождает память, тогда как rcu_synchronize ждёт",
+            "`retire()` не блокирует писателя — он возвращается сразу и позволяет делать несколько обновлений без ожидания grace period на каждое",
+            "`retire()` работает без rcu_domain",
+            "`rcu_synchronize` устарел в C++26"
+          ],
+          "answerIndex": 1
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "В чём суть паттерна Read-Copy-Update?",
+            "options": [
+              "Читатели блокируют писателей на время чтения",
+              "Писатель создаёт изменённую копию данных, атомарно публикует её, а старую версию удаляет после окончания grace period",
+              "Данные никогда не копируются — всегда обновляются на месте",
+              "RCU — это просто shared_mutex с другим названием"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Когда можно безопасно удалить старую версию объекта после RCU-обновления?",
+            "options": [
+              "Сразу после атомарной публикации новой версии",
+              "После вызова `rcu_barrier()`",
+              "После окончания grace period — когда все читатели, начавшие чтение до публикации, завершились",
+              "Никогда — RCU не удаляет объекты"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Для какого сценария `std::rcu` подходит лучше всего?",
+            "options": [
+              "Частые записи с редкими чтениями",
+              "Редкие записи с частыми конкурентными чтениями (например, конфигурация сервера)",
+              "Обмен сообщениями между потоками",
+              "Защита отдельного указателя в lock-free стеке"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что такое grace period в контексте RCU?",
+            "options": [
+              "Время ожидания перед началом записи",
+              "Период, в течение которого рантайм ждёт окончания всех читателей, начавших до публикации новой версии, прежде чем удалить старую",
+              "Таймаут между двумя обновлениями данных",
+              "Время жизни объекта rcu_reader"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m9-l3",
+      "title": "Модель памяти и связь с Module 6",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Краткое повторение std::memory_order\n\nПять порядков памяти, которые важны на практике:\n\n| Порядок | Смысл |\n|---|---|\n| `memory_order_relaxed` | Только атомарность, без синхронизации. Подходит для per-thread счётчиков. |\n| `memory_order_acquire` | Этот load видит все stores, произошедшие до любого `release` в другом потоке. |\n| `memory_order_release` | Stores перед этой операцией видны любому `acquire` в другом потоке. |\n| `memory_order_acq_rel` | Одновременно acquire и release — для read-modify-write операций (`fetch_add`). |\n| `memory_order_seq_cst` | Полный глобальный порядок. Умолчание. Безопасно, но потенциально дороже. |\n\nКанонический паттерн — передача данных от производителя к потребителю:\n\n```cpp\n// Поток A (производитель):\ndata = 42;                                    // не-атомарная запись\nflag.store(true, memory_order_release);       // публикация\n\n// Поток B (потребитель):\nwhile (!flag.load(memory_order_acquire)) {}   // ожидание\nuse(data);                                    // безопасно: data == 42\n```\n\n`release`-store в A «синхронизируется с» `acquire`-load в B — всё, что A записал до `release`, гарантированно видно B после его `acquire`.\n\n## Как hazard pointers используют модель памяти (связь с m9-l1)\n\n- `hp.protect(atomic_ptr)` выполняет `acquire`-load — читатель видит все данные, записанные до публикации указателя.\n- Когда освободитель проверяет слоты hazard pointers перед удалением объекта, он тоже использует `acquire`-семантику — видит актуальные регистрации HP.\n- Цикл повторной проверки в `hp.protect()` защищает от ABA: если указатель изменился между записью HP и перечитыванием, выполняется повтор.\n\n## Как RCU использует модель памяти (связь с m9-l2)\n\n- Писатель публикует новый указатель через `store(release)` — все читатели с соответствующим `load(acquire)` видят полный новый объект.\n- Механизм grace period гарантирует: когда `rcu_synchronize` вернётся, все читатели, запущенные до публикации, завершились — это основано на упорядочивании их выходов с помощью барьера памяти.\n\n## Связь с std::execution (Module 6)\n\nВнутри sender-pipeline ручные `std::atomic` не нужны — контракт sender/receiver уже обеспечивает happens-before между операциями:\n\n- `connect(sender, receiver)` + `start(op)` вместе гарантируют: completion-функции receiver видят все эффекты работы sender.\n- При переносе выполнения на другой поток через scheduler фреймворк неявно обеспечивает acquire/release-барьеры на границе потоков.\n- **Правило:** используйте `std::atomic` для разделяемого мутируемого состояния *вне* sender-pipeline; внутри пайплайна синхронизацию обеспечивает фреймворк.\n\n## Практический гид — когда что применять\n\n| Инструмент | Когда использовать |\n|---|---|\n| `std::mutex` | Длинные критические секции, сложные инварианты, корректность важнее производительности |\n| `std::atomic` + acq/rel | Простые флаги, однократная инициализация, передача данных производитель/потребитель |\n| `std::hazard_pointer` | Lock-free структуры с указателями и безопасным освобождением памяти |\n| `std::rcu` | Данные с редкими записями и частыми чтениями: конфиги, таблицы маршрутизации |\n| `std::execution` | Компонуемые асинхронные пайплайны — не управляйте потоками вручную |",
+      "examples": [
+        {
+          "id": "m9-l3-ex1",
+          "title": "Паттерн acquire/release (базовый)",
+          "description": "Демонстрация синхронизации через пару store(release)/load(acquire) на одном потоке — семантика идентична многопоточному случаю.",
+          "code": "#include <atomic>\n#include <print>\n\nint main() {\n    std::atomic<bool> ready{false};\n    int data = 0;\n\n    // Сторона производителя\n    data = 99;\n    ready.store(true, std::memory_order_release);\n\n    // Сторона потребителя (тот же поток — семантика memory_order та же)\n    bool seen = ready.load(std::memory_order_acquire);\n    std::println(\"ready={} data={}\", seen, data);\n}",
+          "expectedOutput": "ready=true data=99"
+        },
+        {
+          "id": "m9-l3-ex2",
+          "title": "atomic_thread_fence с relaxed-операциями (продвинутый)",
+          "description": "Явные барьеры памяти позволяют отделить атомарность от упорядочивания: relaxed-операции обеспечивают только атомарность, а fence — синхронизацию.",
+          "code": "#include <atomic>\n#include <print>\n\nint main() {\n    std::atomic<int> x{0}, y{0};\n\n    // relaxed-stores + release-барьер\n    x.store(1, std::memory_order_relaxed);\n    y.store(2, std::memory_order_relaxed);\n    std::atomic_thread_fence(std::memory_order_release);\n\n    // acquire-барьер + relaxed-loads\n    std::atomic_thread_fence(std::memory_order_acquire);\n    int vx = x.load(std::memory_order_relaxed);\n    int vy = y.load(std::memory_order_relaxed);\n    std::println(\"x={} y={}\", vx, vy);\n}",
+          "expectedOutput": "x=1 y=2"
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l3-e1",
+          "type": "predict-output",
+          "difficulty": "basic",
+          "prompt": "Что выведет программа?",
+          "code": "#include <atomic>\n#include <print>\nint main() {\n    std::atomic<int> counter{0};\n    counter.fetch_add(5, std::memory_order_relaxed);\n    counter.fetch_add(3, std::memory_order_relaxed);\n    std::println(\"{}\", counter.load(std::memory_order_relaxed));\n}",
+          "expectedOutput": "8",
+          "level": "basic"
+        },
+        {
+          "id": "m9-l3-e2",
+          "type": "choice",
+          "difficulty": "basic",
+          "prompt": "Какой порядок памяти гарантирует, что все записи потока-производителя видны потоку-потребителю после чтения флага?",
+          "options": [
+            "memory_order_relaxed на обоих концах",
+            "memory_order_release при записи флага и memory_order_acquire при чтении",
+            "memory_order_seq_cst только при чтении",
+            "memory_order_acq_rel на флаге в обоих потоках"
+          ],
+          "answerIndex": 1,
+          "level": "basic"
+        },
+        {
+          "id": "m9-l3-e3",
+          "type": "find-bug",
+          "difficulty": "advanced",
+          "prompt": "Найдите ошибку синхронизации: потребитель может прочитать устаревшие данные, несмотря на ожидание ненулевого указателя.",
+          "code": "#include <atomic>\n\nstd::atomic<int*> ptr{nullptr};\nint data = 0;\n\nvoid producer() {\n    data = 42;\n    ptr.store(new int(data), std::memory_order_relaxed); // публикация\n}\n\nvoid consumer() {\n    int* p;\n    while ((p = ptr.load(std::memory_order_relaxed)) == nullptr) {}\n    int v = *p; // использование\n}",
+          "answerLine": 8,
+          "explanation": "store(memory_order_relaxed) не синхронизируется с load(memory_order_relaxed) в потребителе. Потребитель может увидеть новый указатель, но прочитать устаревшее значение data (или устаревшие данные по указателю). Исправление: использовать memory_order_release в store и memory_order_acquire в load, чтобы установить happens-before.",
+          "level": "advanced"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что гарантирует пара store(release) + load(acquire) на одном атомарном объекте?",
+            "options": [
+              "Что хранимое значение не изменится",
+              "Что все записи потока-производителя до store становятся видимы потоку-потребителю после acquire-load",
+              "Что операция выполнится за O(1) тактов",
+              "Что операции выполнятся в порядке, совпадающем с порядком исходного кода"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Зачем внутри sender-pipeline std::execution не нужны ручные std::atomic?",
+            "options": [
+              "Потому что senders однопоточны",
+              "Потому что контракт sender/receiver уже обеспечивает happens-before между операциями в пайплайне",
+              "Потому что std::atomic запрещён в корутинах",
+              "Потому что компилятор автоматически добавляет барьеры памяти"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Когда стоит предпочесть std::rcu вместо std::mutex?",
+            "options": [
+              "Когда критическая секция содержит сложные инварианты",
+              "Когда данные изменяются редко, а читаются многими потоками одновременно и блокировка чтения недопустима",
+              "Когда нужна строгая последовательная консистентность",
+              "Когда нет доступа к C++26"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Реализуйте call_once_atomic",
+        "description": "Напишите функцию `call_once_atomic(fn)`, которая вызывает `fn` ровно один раз, используя `std::atomic<bool>` и `compare_exchange_strong` с подходящими порядками памяти. Результат должен быть безопасно виден всем потокам, вызывающим функцию после первого вызова.",
+        "starterCode": "#include <atomic>\n#include <print>\n#include <functional>\n\nstd::atomic<bool> done{false};\n\nvoid call_once_atomic(std::function<void()> fn) {\n    // ваш код здесь\n}\n\nint main() {\n    call_once_atomic([]{ std::println(\"called\"); });\n    call_once_atomic([]{ std::println(\"called again\"); });\n    call_once_atomic([]{ std::println(\"called third\"); });\n}",
+        "referenceSolution": "#include <atomic>\n#include <print>\n#include <functional>\n\nstd::atomic<bool> done{false};\n\nvoid call_once_atomic(std::function<void()> fn) {\n    bool expected = false;\n    if (done.compare_exchange_strong(expected, true,\n                                      std::memory_order_acq_rel)) {\n        fn();\n    }\n}\n\nint main() {\n    call_once_atomic([]{ std::println(\"called\"); });\n    call_once_atomic([]{ std::println(\"called again\"); }); // не должно печатать\n    call_once_atomic([]{ std::println(\"called third\"); }); // не должно печатать\n}",
+        "expectedOutput": "called",
+        "godboltLink": null
+      }
+    }
   ]
 }

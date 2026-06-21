@@ -4,5 +4,7 @@
   "title": "Debugging, formatting, removed features",
   "significance": "final",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m10-l1", "title": "<debugging>: breakpoint and is_debugger_present", "stub": true }
+  ]
 }

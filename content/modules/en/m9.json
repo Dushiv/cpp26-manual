@@ -5,6 +5,361 @@
   "significance": "special",
   "prerequisites": [],
   "lessons": [
-    { "id": "m9-l1", "title": "std::hazard_pointer", "stub": true }
+    {
+      "id": "m9-l1",
+      "title": "std::hazard_pointer — Safe reclamation in lock-free structures",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Lock-free data structures are attractive: they avoid mutexes and promise scalability under high load. But the absence of locks creates a new hazard — **use-after-free**. When one thread deletes a list node, another thread that just read a pointer to that node may dereference already-freed memory.\n\nUsing `std::shared_ptr` as a fix seems natural, but `atomic<shared_ptr<T>>` requires an atomic increment of the reference count on every read — that operation itself becomes a bottleneck under high contention.\n\n**Hazard pointers** are a mechanism for safe memory reclamation in lock-free structures, standardized in C++26 (P0566/P2530). A thread that wants to dereference a shared pointer first *registers* it as \"hazardous\". The reclaiming side must check all registered hazard pointers before deleting an object. If the object's address appears in any slot, deletion is deferred.",
+      "theory": "**Note:** `std::hazard_pointer` (`<hazard_pointer>`, P0566/P2530) is included in C++26 but has not yet been implemented by any compiler. All code examples conform to the specification.\n\n## The problem: use-after-free in lock-free code\n\nA race condition when freeing a pointer in a lock-free stack:\n\n```\nThread A: reads top → gets pointer P to node N\nThread B: pops N off the stack → calls delete N\nThread A: dereferences P → CRASH (use-after-free)\n```\n\nThe critical window: between reading a pointer and using it, another thread deletes the object. A mutex solves this at the cost of blocking. `atomic<shared_ptr<T>>` solves this at the cost of an atomic refcount increment on every `load` — under heavy read load this operation becomes a bottleneck. Hazard pointers avoid both.\n\n## The hazard pointer idea\n\nBefore dereferencing a shared pointer, a thread *registers* that pointer as \"hazardous\": \"I am using this address, do not free the object.\" The reclaimer must check all registered hazard pointers before `delete`. If the object's address is found in any slot, deletion is deferred.\n\nAlgorithm (reader side):\n1. Load pointer `P` from an atomic variable.\n2. Register `P` in the hazard pointer slot.\n3. Re-read the atomic variable — if `P` still matches (no ABA swap happened), it is now safe to dereference `P`.\n4. Use the object via `P`.\n5. Clear the hazard pointer slot.\n\nAlgorithm (reclaimer side):\n- When `retire()` is called on an object, the runtime scans all hazard pointer slots in the domain. If the address is found — deletion is deferred. A retry happens later (or at domain destruction).\n\n## C++26 API\n\n### `std::hazard_pointer_domain`\n\nTracks all hazard pointers and pending retirements. `std::hazard_pointer_default_domain()` returns the process-wide default domain. Custom domains can be created for isolation.\n\n### `std::hazard_pointer`\n\nA guard object. One `hazard_pointer` protects one pointer at a time. Obtained via `std::make_hazard_pointer(domain)`.\n\n### `hp.protect(atomic_ptr)`\n\nAtomically loads from `atomic<T*>` and registers the result as hazardous. Returns the loaded `T*`. Must be used instead of a plain `.load()`. Pattern with re-check:\n\n```cpp\nT* p;\ndo {\n    p = hp.protect(shared_atomic_ptr);\n} while (p != shared_atomic_ptr.load(std::memory_order_acquire));\n// now p is safe to dereference\n```\n\nWhy the loop? Between `hp.protect()` and the check, another thread may have replaced the pointer in the atomic variable. If the value changed, the registration protects the wrong object — repeat.\n\n### `hp.reset_protection()`\n\nClears the hazard pointer slot (object no longer protected). Call after you are done using the pointer.\n\n### `std::hazard_pointer_obj_base<T, Deleter>`\n\nCRTP base class for objects to be protected by hazard pointers. Adds the `retire()` method.\n\n### `obj.retire()`\n\nSchedules `obj` for deletion. The runtime defers the actual `delete` until no hazard pointer in the domain points to this object.\n\n## Performance model\n\n| Operation | Cost |\n|---|---|\n| `hp.protect()` + check | O(1) — one atomic store + load + compare |\n| `retire()` | O(N) — scan all slots, N = threads × HP per thread |\n| Memory | O(threads × K), K — HP per thread (usually 1–2) |\n\nCompared to `atomic<shared_ptr<T>>`: no atomic refcount increment on every read. Under heavy read load, hazard pointers scale significantly better.\n\n## When to use\n\n- Lock-free singly and doubly linked lists\n- Lock-free stacks and queues\n- Any pointer-based lock-free structure where reclamation safety matters\n- **Not suitable** for trees with complex reachability (use epoch-based reclamation instead)",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m9-l1-ex1",
+          "level": "basic",
+          "title": "Safe reading with hp.protect()",
+          "code": "// spec-based — <hazard_pointer> not yet implemented by any compiler\n#include <hazard_pointer>\n#include <atomic>\n#include <print>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n};\n\nstd::atomic<Node*> global_node{nullptr};\n\nvoid reader_thread() {\n    auto hp = std::make_hazard_pointer(std::hazard_pointer_default_domain());\n    Node* p;\n    do {\n        p = hp.protect(global_node);\n    } while (p != global_node.load(std::memory_order_acquire));\n\n    if (p) {\n        std::println(\"value: {}\", p->value); // safe to dereference\n    }\n    hp.reset_protection(); // done with p\n}",
+          "expectedOutput": "",
+          "explanation": "`hp.protect(global_node)` atomically loads the pointer and registers it as hazardous. The do-while loop ensures no ABA swap occurred between registration and the check. After `reset_protection()`, the reclaimer may safely delete the object."
+        },
+        {
+          "id": "m9-l1-ex2",
+          "level": "advanced",
+          "title": "Writer retiring an old node via retire()",
+          "code": "// spec-based — <hazard_pointer> not yet implemented by any compiler\n#include <hazard_pointer>\n#include <atomic>\n#include <print>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n    Node(int v) : value(v) {}\n};\n\nstd::atomic<Node*> current{new Node(1)};\n\nvoid writer_update(int new_val) {\n    Node* old_node = current.exchange(new Node(new_val),\n                                      std::memory_order_acq_rel);\n    // old_node is no longer reachable from current,\n    // but readers may still hold it via hazard pointers\n    old_node->retire(); // actual delete deferred until no HP references it\n}\n\nvoid reader_snapshot() {\n    auto hp = std::make_hazard_pointer(std::hazard_pointer_default_domain());\n    Node* p;\n    do {\n        p = hp.protect(current);\n    } while (p != current.load(std::memory_order_acquire));\n\n    std::println(\"read value: {}\", p->value);\n    hp.reset_protection();\n}",
+          "expectedOutput": "",
+          "explanation": "`writer_update()` atomically replaces the node, then calls `retire()` on the old one. The runtime scans all hazard pointer slots in the domain. As long as any reader holds a hazard pointer to `old_node`, deletion is deferred. Once all readers call `reset_protection()`, the object is deleted."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Why is the re-check `load` needed after `hp.protect()` in the hazard pointer pattern?\n\n```cpp\nNode* p;\ndo {\n    p = hp.protect(global_ptr);\n} while (p != global_ptr.load(std::memory_order_acquire));\n```",
+          "options": [
+            "To confirm the object was not deleted by another thread before the pointer was registered",
+            "To increment the reference count",
+            "It is a compiler requirement for inlining",
+            "To flush the cache line before access"
+          ],
+          "answerIndex": 0,
+          "explanation": "Between `hp.protect()` (which registers the pointer) and the check, another thread may have atomically replaced the pointer in `global_ptr`. If the value changed, the hazard pointer slot protects the wrong object — the loop must restart with the new value. The re-check detects exactly this race."
+        },
+        {
+          "id": "m9-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `obj.retire()` do for an object that inherits from `hazard_pointer_obj_base`?",
+          "options": [
+            "Immediately calls `delete obj`",
+            "Schedules obj for deletion, deferring it until no hazard pointer references it",
+            "Marks the object as stale but never deletes it",
+            "Decrements a reference count"
+          ],
+          "answerIndex": 1,
+          "explanation": "`retire()` hands the object to the hazard pointer domain for deferred deletion. The domain periodically scans registered hazard pointers: if the object's address is not found in any slot, `delete` is called. This is the key distinction from an immediate `delete` — it is where reclamation safety is achieved."
+        },
+        {
+          "id": "m9-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <hazard_pointer>\n#include <atomic>\n\nstruct Node : std::hazard_pointer_obj_base<Node> {\n    int value;\n};\n\nstd::atomic<Node*> head{nullptr};\n\nvoid unsafe_read() {\n    Node* p = head.load(std::memory_order_acquire);\n    if (p) {\n        int v = p->value; // potential use-after-free\n    }\n}",
+          "answerLine": 11,
+          "explanation": "Line 11: the pointer is loaded directly via `head.load()` without `hp.protect()`. Between this load and the subsequent dereference `p->value`, another thread may call `old->retire()` and the runtime may delete the node — resulting in use-after-free. Fix: create a `hazard_pointer` and use `hp.protect(head)` in a do-while loop with a re-check."
+        },
+        {
+          "id": "m9-l1-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why are hazard pointers preferable to `atomic<shared_ptr<T>>` for lock-free structures under heavy read load?",
+          "options": [
+            "shared_ptr does not work in a multithreaded environment",
+            "Hazard pointers do not require an atomic refcount update on every read, reducing contention",
+            "Hazard pointers automatically prevent ABA without a re-check loop",
+            "Hazard pointers use less memory in absolute terms"
+          ],
+          "answerIndex": 1,
+          "explanation": "`atomic<shared_ptr<T>>` atomically increments the reference count on every `load` — under heavy read load this operation becomes a bottleneck as threads contend for the cache line holding the count. A hazard pointer performs one atomic store into a slot + load + compare — no shared counter — so it scales significantly better. ABA still requires the re-check loop."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does a hazard pointer guarantee for the registered pointer?",
+            "options": [
+              "That the object will never be modified by another thread",
+              "That the object will not be freed while the hazard pointer is registered",
+              "That the pointer always points to the current value",
+              "That no other thread will read the object"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Why does `hp.protect()` return the pointer rather than just registering it?",
+            "options": [
+              "Convenience — so you don't need a separate load call",
+              "Because registration and loading must be a single operation (otherwise a race is possible between them)",
+              "Because it returns a smart pointer with reference counting",
+              "It is purely syntactic sugar"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "When is an object for which `retire()` was called actually deleted?",
+            "options": [
+              "Immediately when retire() is called",
+              "After the current thread exits",
+              "When no hazard pointer in the domain points to that object",
+              "After the next call to `std::gc_run()`"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the read overhead of hazard pointers compared to a mutex-protected read?",
+            "options": [
+              "Hazard pointers are slower — they perform 2 atomic operations instead of 1",
+              "Roughly the same",
+              "Hazard pointers are faster under high load: no locking, just one atomic store + load + compare",
+              "Hazard pointers are faster because they use no atomic operations at all"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m9-l2",
+      "title": "std::rcu — Read-Copy-Update",
+      "background": null,
+      "outputsVerified": false,
+      "theory": "Note: `std::rcu` (`<rcu>`, P1122) is part of C++26 but has not yet been implemented by any compiler. All code examples conform to the specification.\n\n## The read-heavy synchronization problem\n\n`std::mutex` serializes all readers and writers. For data structures where reads vastly outnumber writes (routing tables, config objects, system call tables), this is wasteful — readers block each other even though they don't modify data. `std::shared_mutex` helps, but readers still perform atomic operations and may contend.\n\nRCU (Read-Copy-Update) takes a different approach: **reads are completely lock-free and obstruction-free** — no atomic operations, no memory barriers on the read path (in many implementations). Writes are more expensive but rare.\n\nRCU originated in the Linux kernel (used extensively since ~2002) and C++26 standardizes a C++ version via P1122.\n\n## The RCU pattern\n\n**Write-side protocol:**\n1. **Read** the current version of the data.\n2. **Copy** it to a new allocation.\n3. **Update** the copy (the original is untouched — readers still use it safely).\n4. **Publish** the new version atomically (`atomic::store(release)`). New readers now see the new version.\n5. **Wait** for all pre-publish readers to finish (the \"grace period\").\n6. **Free** the old version — safe now because no reader can reach it anymore.\n\n**Read-side protocol:**\n1. Enter a read-side critical section (create an `rcu_reader` guard).\n2. Load the pointer (acquire). The object is guaranteed not to be freed during the critical section.\n3. Use the object.\n4. Exit the critical section (guard destructor).\n\n## C++26 API (spec-based)\n\n**`std::rcu_obj_base<T, Deleter>`** — CRTP base class for RCU-protected objects. Adds a `retire(domain)` method to schedule deletion after the next grace period.\n\n**`std::rcu_domain`** — tracks readers. `std::rcu_default_domain()` returns the global domain.\n\n**`std::rcu_reader`** — RAII guard. Constructor marks the current thread as in a read-side critical section. Destructor exits it. While any `rcu_reader` exists in a thread, no object retired before the reader was constructed will be freed.\n\n**`std::rcu_synchronize(domain)`** — blocks the calling thread until all pre-existing read-side critical sections have ended (waits for one grace period). Called by writers after publishing the new version and before freeing the old one. Non-scalable: use `retire()` instead for high-performance writers.\n\n**`std::rcu_retire(obj, deleter, domain)`** — schedules `obj` for deletion after the next grace period (non-blocking alternative to `rcu_synchronize`). Prefer this over blocking.\n\n**`std::rcu_barrier(domain)`** — waits until all pending `retire()` callbacks have been invoked. Use before program shutdown or domain destruction.\n\n## `rcu_synchronize` vs `retire`\n\n- **`rcu_synchronize(domain)`** — blocking. Simple. Write: publish new → call `rcu_synchronize` → free old. Use for infrequent updates where simplicity beats performance.\n- **`retire()`** — non-blocking. Writer returns immediately; runtime defers deletion. Better for high-frequency updates. Use `rcu_barrier` at shutdown.\n\n## RCU vs hazard pointers\n\n| | `std::hazard_pointer` | `std::rcu` |\n|---|---|---|\n| Reader overhead | Store to HP slot + re-check | RAII guard (often just a counter) |\n| Protects | Individual pointers | Entire critical sections |\n| Reclamation granularity | Per-object (after all HPs to it clear) | Per domain (after grace period) |\n| Memory for old versions | Until all HPs clear | Until grace period ends |\n| Best for | Individual pointer protection in lock-free structures | Read-heavy data, config, routing tables |\n\n## When to use\n\n- Read-heavy shared configuration\n- Routing tables, DNS caches\n- Observer lists, plugin registries\n- Any data structure where reads must never block but writes can be slower",
+      "examples": [
+        {
+          "id": "m9-l2-ex1",
+          "level": "basic",
+          "title": "Reader accessing config via rcu_reader",
+          "code": "// spec-based — <rcu> not yet implemented by any compiler\n#include <rcu>\n#include <atomic>\n#include <string>\n#include <print>\n\nstruct Config : std::rcu_obj_base<Config> {\n    std::string endpoint;\n    int timeout_ms;\n};\n\nstd::atomic<Config*> current_config{new Config{\"localhost\", 5000}};\n\nvoid handle_request() {\n    std::rcu_reader reader; // enter read-side critical section\n    Config* cfg = current_config.load(std::memory_order_acquire);\n    // cfg is guaranteed valid for the lifetime of reader\n    std::println(\"connecting to {} with {}ms timeout\",\n                 cfg->endpoint, cfg->timeout_ms);\n    // reader destructor: exit critical section\n}",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m9-l2-ex2",
+          "level": "advanced",
+          "title": "Writer updating config via retire()",
+          "code": "// spec-based — <rcu> not yet implemented by any compiler\n#include <rcu>\n#include <atomic>\n#include <string>\n\nstruct Config : std::rcu_obj_base<Config> {\n    std::string endpoint;\n    int timeout_ms;\n};\n\nstd::atomic<Config*> current_config{new Config{\"localhost\", 5000}};\n\nvoid update_config(std::string new_endpoint, int new_timeout) {\n    Config* old = current_config.load(std::memory_order_acquire);\n    Config* updated = new Config{new_endpoint, new_timeout}; // copy + modify\n\n    // atomically publish new version\n    current_config.store(updated, std::memory_order_release);\n\n    // schedule old config for deletion after next grace period\n    // (old may still be in use by existing readers)\n    old->retire();\n    // retire() is non-blocking — writer returns immediately\n    // the runtime will call delete old after the grace period ends\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::rcu_reader` guarantee for its entire lifetime?",
+          "options": [
+            "That no other thread can read the data",
+            "That no object retired before this reader was constructed will be freed",
+            "That the current thread has exclusive access to the data",
+            "That write operations are blocked"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m9-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::rcu_synchronize(domain)` do on the writer side?",
+          "options": [
+            "Immediately deletes all retired objects",
+            "Blocks the calling thread until all existing read-side critical sections have ended (the grace period)",
+            "Prevents new readers from entering the critical section",
+            "Publishes the new version of the data"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m9-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Find the bug in this config-update function:",
+          "code": "#include <rcu>\n#include <atomic>\n\nstruct Config : std::rcu_obj_base<Config> {\n    int timeout_ms;\n};\n\nstd::atomic<Config*> cfg{new Config{5000}};\n\nvoid update(int new_timeout) {\n    Config* old = cfg.load(std::memory_order_acquire);\n    cfg.store(new Config{new_timeout}, std::memory_order_release);\n    delete old; // immediately free old config\n}",
+          "answerLine": 13,
+          "explanation": "`delete old` is called immediately after publishing the new config, but existing readers may still hold a pointer to `old` inside their `rcu_reader` critical sections. This is undefined behavior (use-after-free). Fix: call `old->retire()` instead of `delete old` — this defers deletion until after the grace period, when all pre-existing readers are guaranteed to have finished."
+        },
+        {
+          "id": "m9-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why is `retire()` preferable to `rcu_synchronize()` for frequent updates?",
+          "options": [
+            "`retire()` frees memory immediately, while rcu_synchronize waits",
+            "`retire()` does not block the writer — it returns immediately and allows multiple updates without waiting for a grace period on each one",
+            "`retire()` works without an rcu_domain",
+            "`rcu_synchronize` is deprecated in C++26"
+          ],
+          "answerIndex": 1
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the core idea of the Read-Copy-Update pattern?",
+            "options": [
+              "Readers block writers for the duration of the read",
+              "The writer creates a modified copy of the data, atomically publishes it, and frees the old version after the grace period ends",
+              "Data is never copied — it is always updated in place",
+              "RCU is just a shared_mutex under a different name"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "When is it safe to delete the old version of an object after an RCU update?",
+            "options": [
+              "Immediately after atomically publishing the new version",
+              "After calling `rcu_barrier()`",
+              "After the grace period ends — when all readers that started before the publish have finished",
+              "Never — RCU does not delete objects"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Which scenario is `std::rcu` best suited for?",
+            "options": [
+              "Frequent writes with rare reads",
+              "Rare writes with frequent concurrent reads (e.g. server configuration)",
+              "Message passing between threads",
+              "Protecting a single pointer in a lock-free stack"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the grace period in the context of RCU?",
+            "options": [
+              "A waiting interval before a write begins",
+              "The period during which the runtime waits for all readers that started before the new version was published to finish, before freeing the old version",
+              "A timeout between two successive data updates",
+              "The lifetime of an rcu_reader object"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m9-l3",
+      "title": "Memory model & execution model integration",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Quick recap of std::memory_order\n\nFive memory orders matter in practice:\n\n| Order | Meaning |\n|---|---|\n| `memory_order_relaxed` | Atomicity only, no synchronization. Use for per-thread counters. |\n| `memory_order_acquire` | This load sees all stores that happened before any `release` in another thread. |\n| `memory_order_release` | Stores before this are visible to any `acquire` in another thread. |\n| `memory_order_acq_rel` | Both acquire and release — for read-modify-write ops like `fetch_add`. |\n| `memory_order_seq_cst` | Total global order. Default. Safest but potentially most expensive. |\n\nThe canonical pattern — producer/consumer handoff:\n\n```cpp\n// Thread A (producer):\ndata = 42;                                    // non-atomic\nflag.store(true, memory_order_release);       // publish\n\n// Thread B (consumer):\nwhile (!flag.load(memory_order_acquire)) {}   // wait\nuse(data);                                    // safe: sees data = 42\n```\n\nThe `release` store in A \"synchronizes-with\" the `acquire` load in B — everything A wrote before the `release` is visible to B after its `acquire`.\n\n## How hazard pointers use the memory model (connecting m9-l1)\n\n- `hp.protect(atomic_ptr)` does an `acquire` load — the reader sees all data written before the pointer was published.\n- When the reclaimer checks hazard pointer slots before freeing, it uses `acquire` semantics — it sees the most recent HP registrations.\n- The re-check loop in `hp.protect()` guards against ABA: if the pointer changed between the HP store and the re-read, we retry.\n\n## How RCU uses the memory model (connecting m9-l2)\n\n- The writer publishes the new pointer via `store(release)` — all readers with a matching `load(acquire)` see the complete new object.\n- The grace period mechanism ensures that when `rcu_synchronize` returns, all pre-publish readers have completed — this relies on sequencing their exits with a fence.\n\n## Connection to std::execution (Module 6)\n\nInside a sender pipeline, manual `std::atomic` is not needed — the sender/receiver contract already provides happens-before guarantees:\n\n- `connect(sender, receiver)` + `start(op)` together ensure that the receiver's completion functions see all effects of the sender's work.\n- When a scheduler transfers execution to another thread, it implicitly provides acquire/release fencing at the thread boundary.\n- **Rule:** use `std::atomic` for shared mutable state *outside* sender pipelines; inside a pipeline, the framework handles synchronization.\n\n## Practical guide — when to use each tool\n\n| Tool | When to use |\n|---|---|\n| `std::mutex` | Long critical sections, complex invariants, correctness > performance |\n| `std::atomic` + acq/rel | Simple flags, one-time init, producer/consumer handoff |\n| `std::hazard_pointer` | Lock-free pointer structures needing safe reclamation |\n| `std::rcu` | Read-heavy data, config objects, routing tables |\n| `std::execution` | Composable async pipelines — don't manage threads manually |",
+      "examples": [
+        {
+          "id": "m9-l3-ex1",
+          "title": "Acquire/release pattern (basic)",
+          "description": "Demonstrates synchronization via a store(release)/load(acquire) pair in a single thread — the memory_order semantics are identical to the multi-threaded case.",
+          "code": "#include <atomic>\n#include <print>\n\nint main() {\n    std::atomic<bool> ready{false};\n    int data = 0;\n\n    // Simulate producer side\n    data = 99;\n    ready.store(true, std::memory_order_release);\n\n    // Simulate consumer side (same thread — but same memory_order semantics apply)\n    bool seen = ready.load(std::memory_order_acquire);\n    std::println(\"ready={} data={}\", seen, data);\n}",
+          "expectedOutput": "ready=true data=99"
+        },
+        {
+          "id": "m9-l3-ex2",
+          "title": "atomic_thread_fence with relaxed operations (advanced)",
+          "description": "Explicit memory fences separate atomicity from ordering: relaxed operations provide only atomicity, while the fence provides synchronization.",
+          "code": "#include <atomic>\n#include <print>\n\nint main() {\n    std::atomic<int> x{0}, y{0};\n\n    // relaxed stores + release fence\n    x.store(1, std::memory_order_relaxed);\n    y.store(2, std::memory_order_relaxed);\n    std::atomic_thread_fence(std::memory_order_release);\n\n    // acquire fence + relaxed loads\n    std::atomic_thread_fence(std::memory_order_acquire);\n    int vx = x.load(std::memory_order_relaxed);\n    int vy = y.load(std::memory_order_relaxed);\n    std::println(\"x={} y={}\", vx, vy);\n}",
+          "expectedOutput": "x=1 y=2"
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m9-l3-e1",
+          "type": "predict-output",
+          "difficulty": "basic",
+          "prompt": "What does this program print?",
+          "code": "#include <atomic>\n#include <print>\nint main() {\n    std::atomic<int> counter{0};\n    counter.fetch_add(5, std::memory_order_relaxed);\n    counter.fetch_add(3, std::memory_order_relaxed);\n    std::println(\"{}\", counter.load(std::memory_order_relaxed));\n}",
+          "expectedOutput": "8",
+          "level": "basic"
+        },
+        {
+          "id": "m9-l3-e2",
+          "type": "choice",
+          "difficulty": "basic",
+          "prompt": "Which memory order combination guarantees that all writes made by the producer thread are visible to the consumer thread after it reads the flag?",
+          "options": [
+            "memory_order_relaxed on both ends",
+            "memory_order_release on the flag write and memory_order_acquire on the flag read",
+            "memory_order_seq_cst only on the read side",
+            "memory_order_acq_rel on the flag in both threads"
+          ],
+          "answerIndex": 1,
+          "level": "basic"
+        },
+        {
+          "id": "m9-l3-e3",
+          "type": "find-bug",
+          "difficulty": "advanced",
+          "prompt": "Find the synchronization bug: the consumer may read stale data despite waiting for a non-null pointer.",
+          "code": "#include <atomic>\n\nstd::atomic<int*> ptr{nullptr};\nint data = 0;\n\nvoid producer() {\n    data = 42;\n    ptr.store(new int(data), std::memory_order_relaxed); // publish\n}\n\nvoid consumer() {\n    int* p;\n    while ((p = ptr.load(std::memory_order_relaxed)) == nullptr) {}\n    int v = *p; // use\n}",
+          "answerLine": 8,
+          "explanation": "store(memory_order_relaxed) does not synchronize with load(memory_order_relaxed) in the consumer. The consumer may see the new pointer but read stale data (or stale pointee contents). Fix: use memory_order_release on the store and memory_order_acquire on the load to establish the happens-before relationship.",
+          "level": "advanced"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does a store(release) + load(acquire) pair on the same atomic object guarantee?",
+            "options": [
+              "That the stored value will not change",
+              "That all writes made by the producer thread before the store are visible to the consumer thread after the acquire load",
+              "That the operation completes in O(1) cycles",
+              "That operations execute in source-code order"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Why is manual std::atomic not needed inside a std::execution sender pipeline?",
+            "options": [
+              "Because senders are single-threaded",
+              "Because the sender/receiver contract already provides happens-before guarantees between operations in the pipeline",
+              "Because std::atomic is forbidden in coroutines",
+              "Because the compiler automatically inserts memory barriers"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "When should you prefer std::rcu over std::mutex?",
+            "options": [
+              "When the critical section contains complex invariants",
+              "When data changes rarely but is read by many threads simultaneously and blocking readers is unacceptable",
+              "When you need strict sequential consistency",
+              "When C++26 is unavailable"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Implement call_once_atomic",
+        "description": "Write a function `call_once_atomic(fn)` that calls `fn` exactly once using `std::atomic<bool>` and `compare_exchange_strong` with appropriate memory orders. The result must be safely visible to all threads that call the function after the first invocation.",
+        "starterCode": "#include <atomic>\n#include <print>\n#include <functional>\n\nstd::atomic<bool> done{false};\n\nvoid call_once_atomic(std::function<void()> fn) {\n    // your code here\n}\n\nint main() {\n    call_once_atomic([]{ std::println(\"called\"); });\n    call_once_atomic([]{ std::println(\"called again\"); });\n    call_once_atomic([]{ std::println(\"called third\"); });\n}",
+        "referenceSolution": "#include <atomic>\n#include <print>\n#include <functional>\n\nstd::atomic<bool> done{false};\n\nvoid call_once_atomic(std::function<void()> fn) {\n    bool expected = false;\n    if (done.compare_exchange_strong(expected, true,\n                                      std::memory_order_acq_rel)) {\n        fn();\n    }\n}\n\nint main() {\n    call_once_atomic([]{ std::println(\"called\"); });\n    call_once_atomic([]{ std::println(\"called again\"); }); // should not print\n    call_once_atomic([]{ std::println(\"called third\"); }); // should not print\n}",
+        "expectedOutput": "called",
+        "godboltLink": null
+      }
+    }
   ]
 }
