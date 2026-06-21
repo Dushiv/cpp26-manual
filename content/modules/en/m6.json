@@ -7,8 +7,809 @@
   "lessons": [
     {
       "id": "m6-l1",
-      "title": "Senders/Receivers model: fundamentals",
-      "stub": true
+      "title": "Concepts: sender, receiver, operation_state",
+      "prerequisites": [],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet available on Compiler Explorer"
+      },
+      "motivation": "C++ concurrency has long relied on two main tools: `std::thread` + synchronization primitives, or `std::async` / `std::future`. Both technically work, but neither scales well.\n\n**Problems with `std::async` / `std::future`:**\n\n- **Mandatory heap allocation.** Every `std::async` creates a `shared_ptr`-based shared state: atomic reference count overhead, dynamic allocation — unavoidable, even for a trivial task.\n- **Exceptions are the only error channel.** Want to return `std::error_code` without throwing? You have to wrap everything by hand. `future::get()` either throws or returns a value — there is no third option.\n- **No cancellation.** A started task runs to completion. There is no way to stop it — only wait or ignore the result.\n- **Composition requires blocking.** To chain two futures, you need `.get()` — which blocks the thread. A pipeline of three futures blocks three times.\n\n**Problems with raw threads:**\n\n- Manual synchronization via mutexes and condition variables — easy to get wrong.\n- Exceptions from a thread are not propagated automatically.\n- Thread lifetimes must be managed explicitly (`join` / `detach`).\n- No structured guarantees: it is hard to prove that all execution paths finished.\n\n**`std::execution` (P2300) rethinks the model.** Instead of starting work right now, you *describe* it as a graph of operations — a **sender**. The description is lazy: on its own, it does nothing. When the graph is ready, you **connect** a result handler — a **receiver** — and only then start execution. All storage fits inside the **operation state** without a single heap allocation.",
+      "theory": "## The three core abstractions\n\n### Sender — a description of work\n\nA **sender** is a description of work to be performed. Not the work itself — a description. Analogy: a sender is like a function you haven't called yet. Creating a sender does nothing.\n\n```cpp\nauto s = std::execution::just(42);\n// s is a sender. It says: \"when started, immediately produce the value 42\".\n// No threads, no allocations — just a description object.\n```\n\nA sender is a value type: it can be copied, moved, and passed to functions. It has no side effects on its own — it does not start running until you explicitly say so.\n\n### Receiver — the handler for all three outcomes\n\nA **receiver** is an object that knows what to do with the result. A receiver has exactly three completion channels:\n\n- `set_value(values...)` — success; work completed and produced values\n- `set_error(err)` — error; the error type is arbitrary: `int`, `std::error_code`, `std::exception_ptr`, your own type\n- `set_stopped()` — cancellation; the task was stopped before it finished\n\nWhy exactly three channels? Because these are three fundamentally different events:\n\n- Success and error are the two poles of normal operation.\n- **Cancellation is not an error.** A cancelled task is not broken. Conflating it with an error (as `std::future` does by throwing `future_error`) is a semantic lie. The handler type must distinguish them.\n\n```\nSender completes via exactly ONE of:\n  ──► set_value(v)    → success path\n  ──► set_error(e)    → error path  (e: int, error_code, exception_ptr, ...)\n  ──► set_stopped()   → cancellation path\n```\n\n### Operation state — the live, in-flight object\n\n**Operation state** is created by `connect(sender, receiver)`. This is no longer a description — it is a concrete, ready-to-run unit of work. To execute it, call `start(op)`.\n\n## The operation lifecycle\n\n```cpp\n// 1. Describe the work — nothing happens\nauto sender = std::execution::just(42);\n\n// 2. Connect with a handler — no heap allocation\nauto op = std::execution::connect(sender, my_receiver{});\n\n// 3. Now work begins\nstd::execution::start(op);\n\n// Eventually, exactly one of these is called:\n//   my_receiver::set_value(42)\n//   my_receiver::set_error(...)\n//   my_receiver::set_stopped()\n```\n\n**Critical:** `op` must stay alive until the sender completes. Destroying `op` early is undefined behavior. Lifetime management is the caller's responsibility.\n\n**Second rule:** `start()` must not be called twice on the same `op`. A second `start()` is UB. An operation state is a single-use object.\n\n## The zero-allocation guarantee\n\nThe type of the operation state is statically known at compile time: `connect(S, R)` returns a concrete type `operation_state<S, R>`, encoded in its template parameters. The compiler knows its size ahead of time. All storage fits inside this object.\n\nNo `new`. No `shared_ptr`. No type erasure through virtual tables. This is what allows building long sender chains without overhead at every link.\n\nCompare with `std::future`: the shared state lives on the heap by design — otherwise it cannot be shared between the caller and the background thread. In `std::execution` there is no such problem, because lifetime is explicit: the op state owns everything and lives exactly as long as needed.\n\n## Architecture diagram\n\n```\n┌──────────┐   connect()   ┌─────────────┐\n│  Sender  │ ────────────► │ Op State    │ ──start()──► [work runs]\n└──────────┘               └─────────────┘                    │\n  (recipe)                 (no heap alloc)               one of:\n                                                    ┌───────────────────┐\n                                                    │ set_value(v)      │\n                                                    │ set_error(e)      │◄── ┌──────────┐\n                                                    │ set_stopped()     │    │ Receiver │\n                                                    └───────────────────┘    └──────────┘\n```\n\n## Comparison table\n\n| | `std::future`/`async` | Raw threads | Senders |\n|---|---|---|---|\n| Lazy? | No (eager) | No | Yes |\n| Heap allocation? | Always | Manual | Never |\n| Error channel | Exceptions only | Manual | Any type |\n| Cancellation | No | Manual | Yes (`set_stopped`) |\n| Composable? | Difficult | Manual | First-class |\n\n## Pipeline sugar (preview for l2)\n\nIn practice you almost never write `connect()` and `start()` by hand. Instead, high-level adaptors build a sender chain using `operator|` and trigger everything with a single call:\n\n```cpp\n// This builds a chain of senders.\n// sync_wait() calls connect + start internally.\nauto result = std::execution::sync_wait(\n    std::execution::just(42)\n    | std::execution::then([](int x){ return x * 2; })\n);\n// result == std::optional<std::tuple<int>>{84}\n```\n\nIn l2 you will write code like this. Here, we covered *why* it works.\n\n## Key nuances\n\n- **Sender is a value type.** It can be copied and moved. Creating a sender never has side effects.\n- **Runtime only.** Senders are runtime computations, not `constexpr`.\n- **Double start is UB.** Calling `start(op)` twice on the same op is undefined behavior.\n- **Lifetime is the caller's responsibility.** The op state must outlive the work it represents.",
+      "examples": [
+        {
+          "title": "Conceptual: just + sync_wait",
+          "code": "// Note: requires C++26 std::execution (P2300).\n// Shown as a spec-based example — not compiled.\n#include <execution>\n#include <print>\n\nint main() {\n    // just(42) is a sender that immediately completes with the value 42.\n    // sync_wait blocks the current thread until the sender completes,\n    // returning optional<tuple<int>>.\n    auto result = std::execution::sync_wait(\n        std::execution::just(42)\n    );\n\n    // *result is tuple<int>{42}\n    std::println(\"{}\", std::get<0>(*result)); // prints: 42\n}",
+          "expectedOutput": "",
+          "explanation": "`just(42)` creates a sender — a description of \"produce the value 42\". By itself this does nothing. `sync_wait` calls `connect` + `start` internally and blocks until completion. The result arrives via `set_value(42)` on the receiver that `sync_wait` creates internally. The return type is `optional<tuple<int>>`: the `optional` handles the cancellation case, where `nullopt` is returned."
+        },
+        {
+          "title": "Conceptual: the three completion channels",
+          "code": "// Three sender types — three completion channels.\n// Shown as a spec-based example.\n#include <execution>\n#include <print>\n\nint main() {\n    // Channel 1: set_value(42)\n    auto val_sender = std::execution::just(42);\n    auto r1 = std::execution::sync_wait(val_sender);\n    // r1 == optional<tuple<int>>{42}\n\n    // Channel 2: set_error(exception_ptr)\n    auto err_sender = std::execution::just_error(\n        std::make_exception_ptr(std::runtime_error{\"fail\"}));\n    // sync_wait will rethrow the exception_ptr\n\n    // Channel 3: set_stopped()\n    auto stop_sender = std::execution::just_stopped();\n    auto r3 = std::execution::sync_wait(stop_sender);\n    // r3 == std::nullopt  (cancellation — not an error, just no result)\n\n    std::println(\"value: {}\",   std::get<0>(*r1)); // 42\n    std::println(\"stopped: {}\", !r3.has_value());   // true\n}",
+          "expectedOutput": "",
+          "explanation": "`just` completes via `set_value`, `just_error` via `set_error`, `just_stopped` via `set_stopped`. Notice that `sync_wait` on `just_stopped()` returns `nullopt` rather than throwing an exception. Cancellation is a standalone outcome, not an error. This is a fundamental difference from `std::future`, where cancellation is expressed as a `std::future_error` exception."
+        },
+        {
+          "title": "Conceptual: then — chaining senders",
+          "code": "// then() takes a sender and a function, returns a new sender.\n// The chain is built lazily — nothing runs until sync_wait.\n#include <execution>\n#include <print>\n\nint main() {\n    // Each | builds a new sender without starting anything.\n    auto pipeline =\n        std::execution::just(10)\n        | std::execution::then([](int x) { return x * 3; })\n        | std::execution::then([](int x) { return x + 2; });\n\n    // sync_wait launches the entire graph in one shot.\n    auto result = std::execution::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // (10 * 3) + 2 == 32\n}",
+          "expectedOutput": "",
+          "explanation": "Each `then` wraps the previous sender in a new one. The type of `pipeline` encodes the entire graph statically: `then_sender<then_sender<just_sender<int>, lambda1>, lambda2>`. No virtual calls, no intermediate allocations. `sync_wait` launches the graph with a single `connect` + `start`. It is precisely this laziness that allows adaptors to freely reschedule work onto other threads, pool resources, and plan execution — topics for l2 and l3."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What happens at the moment a sender is created?\n\n```cpp\nauto s = std::execution::just(42);\n```",
+          "options": [
+            "A background thread is launched to perform the work",
+            "Nothing: a sender is a lazy description of work that has not yet started",
+            "A shared state is heap-allocated (as with std::future)",
+            "An exception is thrown if 42 is invalid"
+          ],
+          "answerIndex": 1,
+          "explanation": "A sender is a description of work (a recipe), not the work itself. Creating a sender has no side effects: no threads, no allocations, no computations. Work only begins after `connect()` + `start()`."
+        },
+        {
+          "id": "m6-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Which function actually triggers the execution of work in the `std::execution` model?",
+          "options": [
+            "`connect(sender, receiver)` — connects a sender and receiver",
+            "`start(op)` — starts an operation state",
+            "`just(value)` — creates a sender with a value",
+            "`set_value(v)` — called by the receiver on success"
+          ],
+          "answerIndex": 1,
+          "explanation": "`connect()` creates the operation state but does not start work. `start(op)` is the point where actual execution begins. It is analogous to `.get()` on a future, but without blocking and without allocations: start simply signals the op state to begin work."
+        },
+        {
+          "id": "m6-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "A receiver is called with `set_stopped()`. What does this mean?",
+          "options": [
+            "An error occurred, analogous to an exception",
+            "The sender completed with a `std::stop_requested` exception",
+            "The task was cancelled — this is not an error, but a standalone outcome",
+            "Work completed successfully but the result is discarded"
+          ],
+          "answerIndex": 2,
+          "explanation": "`set_stopped()` is the third completion channel, separate from success and error. A cancelled task is not broken: it was legitimately stopped. `std::execution::sync_wait` returns `std::nullopt` on cancellation — it does not throw. This is a fundamental difference from `std::future`, where cancellation is expressed as a `std::future_error` exception."
+        },
+        {
+          "id": "m6-l1-e4",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "// Conceptual example (requires P2300)\n#include <execution>\n\nstruct print_receiver {\n    void set_value(int v) const { /* print v */ }\n    void set_error(auto) const noexcept {}\n    void set_stopped() const noexcept {}\n};\n\nint main() {\n    auto s  = std::execution::just(42);\n    auto op = std::execution::connect(s, print_receiver{});\n    std::execution::start(op);   // first start\n    std::execution::start(op);   // second start on the same op\n}",
+          "answerLine": 14,
+          "explanation": "Line 14: `start(op)` is called a second time on the same operation state. Per the C++26 standard, an operation state is a single-use object: calling `start()` more than once is undefined behavior. An operation state must be started exactly once, and must not be destroyed until the sender has completed (i.e., one of `set_value`/`set_error`/`set_stopped` has been called)."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "How does a sender differ from `std::async`?",
+            "options": [
+              "A sender starts work in a separate thread immediately when created",
+              "A sender is a lazy description of work: creation does not start execution, and there is no heap allocation",
+              "A sender is always single-threaded and does not support parallelism",
+              "A sender can only be used inside a `co_await` expression"
+            ],
+            "answerIndex": 1,
+            "explanation": "The key differences are laziness (work does not start when the sender is created) and the absence of mandatory heap allocation. `std::async` creates shared state on the heap immediately and may start a thread right away. A sender is just a description object with no side effects."
+          },
+          {
+            "type": "choice",
+            "prompt": "Receiver `R` receives a call `set_error(42)`, where `42` has type `int`. Is this valid in `std::execution`?",
+            "options": [
+              "No: errors in std::execution must be of type std::exception_ptr",
+              "No: set_error only accepts strings (const char*)",
+              "Yes: the set_error channel accepts an error of any type",
+              "No: errors are signalled via set_stopped, not set_error"
+            ],
+            "answerIndex": 2,
+            "explanation": "In `std::execution`, the `set_error` channel accepts an error of any type: `int`, `std::error_code`, `std::exception_ptr`, a user-defined type — anything. This is one of the key advantages over `std::future`, where errors can only be communicated via exceptions."
+          },
+          {
+            "type": "choice",
+            "prompt": "Why does the operation state not require heap allocation?",
+            "options": [
+              "Because std::execution uses a global memory pool",
+              "Because the type of the operation state is statically known from the sender and receiver types, so the compiler knows its size at compile time",
+              "Because the C++26 standard mandates that operation states always live on the stack",
+              "Because C++26 prohibits heap allocation in concurrent code"
+            ],
+            "answerIndex": 1,
+            "explanation": "`connect(S, R)` returns a concrete type `operation_state<S, R>`, known at compile time. The compiler knows the size of this object and can place it anywhere — on the stack, inside another object, in static storage. No type erasure, no `new`, no `shared_ptr`. This is precisely what makes sender chains cheap."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l2",
+      "title": "just, sync_wait, and first pipelines",
+      "prerequisites": [
+        "m6-l1"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet available on Compiler Explorer"
+      },
+      "motivation": "`std::execution` introduces a new way to describe asynchronous work — through **senders**. But a sender by itself does nothing: it merely describes what should happen. To get a result back into normal synchronous code, you need a bridge between the world of senders and the familiar world of values and exceptions.\n\nThis lesson introduces three essential building blocks:\n- `just(v...)` — the simplest sender, immediately carrying ready-made values,\n- `sync_wait(s)` — the bridge back to normal C++: blocks the thread until the sender completes and returns the result,\n- the `|` operator — syntactic sugar for composing senders into pipelines.\n\nTogether they enable writing first meaningful pipeline expressions and understanding exactly what runs and when in the `std::execution` model.",
+      "theory": "## `std::execution::just(v...)` — the simplest sender\n\n`just` creates a sender that completes immediately with the given values via `set_value`. \"Immediately\" does not mean \"right now at the point of the call\": `just` is **lazy**, like all senders in `std::execution`. The actual delivery of the value only happens once the sender is connected to a receiver and started.\n\n```cpp\nauto s = std::execution::just(42);   // nothing happens yet\n// ... can be stored, passed around, copied ...\n// 42 will be delivered only when started\n```\n\n`just` can carry **multiple values**:\n\n```cpp\nauto s = std::execution::just(1, 2.0, 'x');   // three values of different types\n```\n\nThe value types are encoded directly in the sender's type — the type system guarantees at compile time that the receiver can accept exactly `int`, `double`, and `char`.\n\n---\n\n## `std::execution::sync_wait(s)` — bridge back to normal C++\n\n`sync_wait` blocks the current thread until sender `s` completes — through any of the three channels.\n\n**Return type:** `std::optional<std::tuple<values...>>`\n\n| How the sender completed | What `sync_wait` returns |\n|---|---|\n| `set_value(v...)` | `optional<tuple<...>>` containing the values |\n| `set_stopped()` (cancellation) | `std::nullopt` |\n| `set_error(exception_ptr)` | rethrows the exception |\n\nInternally `sync_wait` performs exactly what was described in m6-l1: `connect(s, receiver)` creates an operation object, `start(op)` launches it. `sync_wait` acts as its own receiver and knows how to block the current thread and return the result after completion. No magic — just the connect/start mechanism from the previous lesson.\n\n```cpp\nauto result = std::execution::sync_wait(std::execution::just(42));\n// result : std::optional<std::tuple<int>>\n// *result = std::tuple<int>{42}\nstd::get<0>(*result);  // 42\n```\n\n**Note:** `sync_wait` uses the **current thread** as the execution context — it does not spawn a new thread. For real multithreaded execution you need a scheduler, which is the topic of m6-l4.\n\n---\n\n## The `|` operator — syntactic sugar for pipelines\n\nThe `|` operator is literally a shorthand for a function call:\n\n```cpp\nsender | adaptor   ≡   adaptor(sender)\n```\n\nIt does nothing new: it simply lets you read a chain of transformations left-to-right instead of as nested calls.\n\n```cpp\nnamespace ex = std::execution;\n\n// Functional form (nested calls):\nauto s1 = ex::then(ex::just(1), [](int x){ return x * 2; });\n\n// Pipeline form (identical):\nauto s2 = ex::just(1) | ex::then([](int x){ return x * 2; });\n```\n\nBoth expressions produce **the same sender**. The pipeline remains lazy: `fn` is not called at `|`, nor before `sync_wait`.\n\n---\n\n## `std::execution::then(s, fn)` — value transformation (preview)\n\n`then` wraps sender `s`: when `s` completes via `set_value(v...)`, `then` calls `fn(v...)` and forwards the result as a new `set_value`. Errors and cancellation pass through `then` **unchanged** — `then` does not touch the `set_error` or `set_stopped` channels.\n\nFull coverage of `then` is in m6-l3. Here it is only used to demonstrate pipelines.\n\n---\n\n## `just_error` and `just_stopped`\n\n```cpp\nstd::execution::just_error(e)   // immediately calls set_error(e)\nstd::execution::just_stopped()  // immediately calls set_stopped()\n```\n\n- `just_error(std::make_exception_ptr(std::runtime_error{\"oops\"}))` → `sync_wait` rethrows the exception.\n- `just_stopped()` → `sync_wait` returns `std::nullopt`.\n\nUse cases: testing error handling, conditional pipelines, short-circuit patterns.\n\n---\n\n## Multi-value senders\n\n`just(1, 2, 3)` carries three values. Extract them with structured bindings:\n\n```cpp\nauto result = std::execution::sync_wait(std::execution::just(1, 2, 3));\nauto& [a, b, c] = *result;   // result : optional<tuple<int,int,int>>\n```\n\nWhen passed to `then`, the function receives all values as separate arguments:\n\n```cpp\nex::just(3, 4) | ex::then([](int a, int b){ return a + b; })\n// → carries one int value (7)\n```\n\n---\n\n## Diagram\n\n```\njust(42) ──| then([](int x){ return x*2; }) |──► sync_wait\n   │                       │                          │\nproduces 42          transforms to 84        returns optional<tuple<int>>\n                                                     {84}\n\njust_stopped() ──────────────────────────────► sync_wait\n                                                returns nullopt\n```\n\n---\n\n## Why not just use a lambda?\n\nA lambda is a value; it executes immediately when called and knows nothing about errors or cancellation. A sender is a **description of work** that:\n- can be created now and run later,\n- can be passed around, stored, returned from a function,\n- can be composed with other senders via `|`,\n- automatically carries three channels: value, error, and cancellation.\n\nA lambda does not compose with error handling automatically; a sender does.",
+      "examples": [
+        {
+          "title": "just + sync_wait: the simplest case",
+          "code": "#include <execution>\n#include <print>\n#include <tuple>\n\nint main() {\n    auto result = std::execution::sync_wait(\n        std::execution::just(42)\n    );\n    // result : std::optional<std::tuple<int>>\n    std::println(\"{}\", std::get<0>(*result)); // 42\n}",
+          "expectedOutput": "",
+          "explanation": "`just(42)` creates a sender carrying `int`. `sync_wait` connects an internal receiver, starts the operation, and blocks the thread. The sender immediately calls `set_value(42)`, the receiver unwraps the value into `optional<tuple<int>>`, and `sync_wait` returns it. Dereferencing `*result` is safe — `just` can never produce `nullopt`."
+        },
+        {
+          "title": "Pipeline with multiple then steps",
+          "code": "#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(10)\n        | ex::then([](int x){ return x * x; })   // 10*10 = 100\n        | ex::then([](int x){ return x + 1; })   // 100+1 = 101\n    );\n\n    std::println(\"{}\", std::get<0>(*result)); // 101\n}",
+          "expectedOutput": "",
+          "explanation": "The `|` operator builds a new sender at each step — no lambda is called until `sync_wait`. When launched, the value `10` flows through the pipeline: `just(10)` delivers `10`, the first `then` transforms it to `100`, the second to `101`. `sync_wait` returns `optional<tuple<int>>{101}`."
+        },
+        {
+          "title": "just_stopped and just_error",
+          "code": "#include <execution>\n#include <print>\n#include <stdexcept>\n\nint main() {\n    namespace ex = std::execution;\n\n    // Cancellation: sync_wait returns nullopt\n    auto r1 = ex::sync_wait(ex::just_stopped());\n    if (!r1) {\n        std::println(\"cancelled\");  // prints\n    }\n\n    // Error: sync_wait rethrows the exception\n    try {\n        ex::sync_wait(\n            ex::just_error(\n                std::make_exception_ptr(std::runtime_error{\"oops\"})\n            )\n        );\n    } catch (const std::runtime_error& e) {\n        std::println(\"error: {}\", e.what());  // error: oops\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`just_stopped()` immediately calls `set_stopped()` on the receiver. `sync_wait` intercepts this and returns `std::nullopt` — an unambiguous cancellation signal. `just_error(ptr)` calls `set_error(ptr)`, and `sync_wait` responds by calling `std::rethrow_exception`, so a normal C++ `try/catch` block catches it as an ordinary exception."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::execution::sync_wait(std::execution::just_stopped())` return?",
+          "options": [
+            "std::nullopt",
+            "std::optional<std::tuple<>>{} (empty tuple)",
+            "Throws std::execution::cancelled",
+            "0"
+          ],
+          "answerIndex": 0,
+          "explanation": "`just_stopped()` calls `set_stopped()` on the receiver. `sync_wait` treats the stopped channel as cancellation and returns `std::nullopt` — not an exception, and not an empty-but-present optional."
+        },
+        {
+          "id": "m6-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Consider this code:\n```cpp\nauto s = std::execution::just(1)\n         | std::execution::then([](int x){ return x * 2; });\n```\nWhen is the lambda `[](int x){ return x * 2; }` called?",
+          "options": [
+            "When `just(1)` is evaluated",
+            "When the `|` operator is evaluated",
+            "When `s` is passed to `sync_wait` (or another consumer)",
+            "Never — `|` only stores the lambda, it never calls it"
+          ],
+          "answerIndex": 2,
+          "explanation": "All senders are lazy. The `|` operator is just `then(just(1), fn)`: it builds a new sender object and stores the lambda inside it. The lambda is only called when the operation is started, i.e. when the sender is connected to a receiver and launched via `sync_wait` or another consumer."
+        },
+        {
+          "id": "m6-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n    auto result = ex::sync_wait(ex::just_stopped());\n    std::println(\"{}\", std::get<0>(*result));\n}",
+          "answerLine": 7,
+          "explanation": "After `just_stopped()` the sender completes via `set_stopped()`, and `sync_wait` returns `std::nullopt`. Line 7 dereferences `*result` without checking `result.has_value()` — this is undefined behavior. The fix: check `if (!result) { /* handle cancellation */ }` before accessing `*result`."
+        },
+        {
+          "id": "m6-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "What is the type of the value returned by `sync_wait` in the following code?\n```cpp\nnamespace ex = std::execution;\nauto r = ex::sync_wait(\n    ex::just(1, 2)\n    | ex::then([](int a, int b){ return a + b; })\n);\n```",
+          "options": [
+            "std::optional<std::tuple<int, int>>",
+            "std::optional<std::tuple<int>>",
+            "int",
+            "std::optional<int>"
+          ],
+          "answerIndex": 1,
+          "explanation": "`just(1, 2)` carries two values (`int`, `int`). `then([](int a, int b){ return a + b; })` receives both and returns a single `int` — the sum. The resulting sender carries one `int` value, so `sync_wait` returns `std::optional<std::tuple<int>>`."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does `sync_wait` do when the sender completes via `set_error(exception_ptr)`?",
+            "options": [
+              "Returns std::nullopt",
+              "Returns std::optional<std::tuple<std::exception_ptr>>",
+              "Rethrows the exception",
+              "Returns std::optional<std::tuple<>> with an empty tuple"
+            ],
+            "answerIndex": 2,
+            "explanation": "Of the three completion channels: `set_value` → `optional<tuple<...>>`, `set_stopped` → `nullopt`, `set_error(exception_ptr)` → `sync_wait` calls `std::rethrow_exception` and the exception propagates into the caller's call stack."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does the `|` operator do in the expression `sender | adaptor`?",
+            "options": [
+              "Immediately executes `adaptor` with the value from `sender`",
+              "It is exactly equivalent to `adaptor(sender)` — pure syntactic sugar",
+              "Creates a new thread to run `adaptor`",
+              "Merges the channels of two senders into one"
+            ],
+            "answerIndex": 1,
+            "explanation": "The `|` operator for senders is purely syntactic sugar: `s | f` means exactly `f(s)`. There is no execution, no threading, no merging — just a convenient left-to-right notation for building pipelines."
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the type of the value returned by `sync_wait(just(1, 2, 3))`?",
+            "options": [
+              "std::optional<int>",
+              "std::tuple<int, int, int>",
+              "std::optional<std::tuple<int, int, int>>",
+              "int[3]"
+            ],
+            "answerIndex": 2,
+            "explanation": "`just(1, 2, 3)` carries three `int` values. `sync_wait` wraps everything in `optional<tuple<...>>`: on successful completion via `set_value(1, 2, 3)` it returns `std::optional<std::tuple<int,int,int>>` containing `{1, 2, 3}`."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l3",
+      "title": "then, upon_error, upon_stopped and schedulers",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "We can already create senders (`just`) and run them (`sync_wait`). But pipelines are only useful when we can **transform** results and **handle errors** at each step. Three adaptors — `then`, `upon_error`, `upon_stopped` — address exactly these needs: each intercepts one of the three channels (`set_value` / `set_error` / `set_stopped`) and passes the other two through unchanged. Schedulers add another dimension: **where** each step in the pipeline executes. Combined with `schedule` and `transfer`, they let you move work between threads with a single call — no callbacks, no mutexes, no manual lifetime management.",
+      "theory": "## The three completion channels — a reminder\n\nEvery sender completes in exactly one of three ways:\n\n- **`set_value(v...)`** — success, delivers value(s);\n- **`set_error(e)`** — error, delivers an error object;\n- **`set_stopped()`** — cancellation, carries no data.\n\nEach transformer adaptor sits between two senders. Its job: react to one channel and pass the other two through unchanged.\n\n---\n\n## `std::execution::then(s, fn)` — transforming the value channel\n\n`then` takes a sender `s` and a function `fn`. When `s` completes via `set_value`, `then` calls `fn` with the delivered values and makes `fn`'s return value the new value channel output:\n\n```\nset_value(v...) → fn(v...) → set_value(fn(v...))\n```\n\nIf `fn` returns `void`, the resulting sender completes via `set_value()` with no arguments.\n\n**Key properties:**\n\n- `then` is **lazy** — `fn` is not called until the entire operation starts (typically when `sync_wait` or a similar consumer triggers it);\n- `then` is **transparent** to `set_error` and `set_stopped` — they pass through unchanged;\n- Multiple values: `just(1, 2) | then([](int a, int b){ return a + b; })` collapses two `int`s into one.\n\n### Channel pass-through diagram for `then`\n\n```\n             ┌──── set_value ────► then(fn) ──► new set_value\nSender ──────┤──── set_error ────────────────► set_error (unchanged)\n             └──── set_stopped ───────────────► set_stopped (unchanged)\n```\n\n---\n\n## `std::execution::upon_error(s, fn)` — handling the error channel\n\n`upon_error` is the mirror image of `then`, but fires on `set_error`:\n\n```\nset_error(e)    → fn(e) → set_value(fn(e))  // error becomes a value (recovery)\nset_value(v...) → set_value(v...)            // value passes through unchanged\nset_stopped()   → set_stopped()              // cancellation passes through unchanged\n```\n\nTypical use case — **error recovery**: instead of propagating the error further, `fn` returns a fallback value and the pipeline continues normally.\n\n### Diagram for `upon_error`\n\n```\n             ┌──── set_value ────────────────► set_value (unchanged)\nSender ──────┤──── set_error ─────► upon_error(fn) ──► new set_value\n             └──── set_stopped ───────────────► set_stopped (unchanged)\n```\n\n---\n\n## `std::execution::upon_stopped(s, fn)` — handling the cancellation channel\n\n`upon_stopped` fires on `set_stopped`. Unlike `fn` in `then` and `upon_error`, this function **takes no arguments** (cancellation carries no data):\n\n```\nset_stopped()   → fn() → set_value(fn())  // cancellation becomes a value\nset_value(v...) → set_value(v...)         // value passes through unchanged\nset_error(e)    → set_error(e)            // error passes through unchanged\n```\n\nUseful for providing a fallback result when an operation is cancelled.\n\n### Diagram for `upon_stopped`\n\n```\n             ┌──── set_value ────────────────► set_value (unchanged)\nSender ──────┤──── set_error ────────────────► set_error (unchanged)\n             └──── set_stopped ─► upon_stopped(fn) ──► new set_value\n```\n\n---\n\n## The three-channel rule — summary\n\n| Adaptor | Handles | Passes through unchanged |\n|---|---|---|\n| `then(fn)` | `set_value` | `set_error`, `set_stopped` |\n| `upon_error(fn)` | `set_error` | `set_value`, `set_stopped` |\n| `upon_stopped(fn)` | `set_stopped` | `set_value`, `set_error` |\n\nBecause of this rule, adaptors can be combined in any order without accidentally swallowing errors.\n\n---\n\n## Schedulers: what they are\n\nA **scheduler** is a lightweight handle to an execution context. The context could be:\n\n- a thread pool;\n- an I/O reactor;\n- an inline executor that runs tasks on the calling thread;\n- any other implementation.\n\nA scheduler is a **factory for senders**: `schedule(sch)` returns a sender that, when started, transfers execution to the corresponding context. The scheduler itself is just a value — it can be stored, copied, and passed as a function argument.\n\nThe `std::execution::scheduler` concept defines the minimal interface any scheduler must satisfy.\n\n---\n\n## `std::execution::schedule(sch)` — the scheduler sender\n\n```cpp\nauto sender = std::execution::schedule(sch);\n```\n\nWhen started, this sender:\n1. transfers control to `sch`'s execution context;\n2. completes via `set_value()` (no arguments).\n\nAll subsequent `then` adaptors in the chain execute **in that context**.\n\n---\n\n## `std::execution::transfer(s, sch)` — switching context mid-pipeline\n\n```cpp\ntransfer(s, sch)\n```\n\n- When `s` completes via `set_value`, execution is transferred to `sch`'s context, after which the `set_value` signal with the same arguments continues down the chain.\n- Everything **before** `transfer` runs in the previous context.\n- Everything **after** `transfer` runs in `sch`'s context.\n\nThis is equivalent to manually handing a task off between threads — without a single line of explicit synchronization.\n\n---\n\n## Mental model: source → context → transforms → consumer\n\n```\nschedule(pool)                        // start: transfer to thread pool\n  | then([](){ return 42; })          // runs on pool\n  | then([](int x){ return x * 2; }) // also on pool\n  | sync_wait                         // blocks calling thread;\n                                      // result — tuple{84}\n```\n\n`sync_wait` blocks the **calling** thread until the operation completes and returns `std::optional<std::tuple<...>>` with the result (or `nullopt` on cancellation).\n\n---\n\n## Standard schedulers (brief)\n\n- **`std::execution::run_loop::scheduler`** — single-thread event loop; used in tests and examples (as in lesson 2).\n- **`std::execution::thread_pool::scheduler`** — standard thread pool (covered in detail in l4).\n\nBoth are just handle values — nothing special about them.",
+      "examples": [
+        {
+          "title": "then chain: transforming types at each step",
+          "code": "#include <execution>\n#include <string>\n#include <iostream>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(std::string{\"hello\"})\n        | ex::then([](std::string s) { return s + \" world\"; })\n        | ex::then([](std::string s) { return s.size(); })\n    );\n\n    // result is std::optional<std::tuple<std::size_t>>\n    // *result == tuple{11ul}\n    auto [n] = *result;\n    std::cout << n << '\\n';  // 11\n}",
+          "expectedOutput": "",
+          "explanation": "The first `then` receives `std::string` from `just` and returns a new string. The second `then` receives that string and returns its length — a `std::size_t`. The value type changes at each step and the compiler deduces it automatically. Neither `then` executes until `sync_wait` is called — the chain is **lazy**."
+        },
+        {
+          "title": "upon_error: recovering from errors",
+          "code": "#include <execution>\n#include <stdexcept>\n#include <iostream>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just_error(\n            std::make_exception_ptr(std::runtime_error{\"oops\"})\n        )\n        | ex::upon_error([](std::exception_ptr) {\n            return -1;  // error → fallback value\n        })\n        | ex::then([](int v) { return v * 2; })\n    );\n\n    // upon_error intercepted set_error and returned -1\n    // then(-1 * 2) = -2\n    // *result == tuple{-2}\n    auto [v] = *result;\n    std::cout << v << '\\n';  // -2\n}",
+          "expectedOutput": "",
+          "explanation": "`just_error` sends a `set_error` signal carrying an `std::exception_ptr`. `upon_error` intercepts it, ignores the specific exception type, and returns `-1` — now on the value channel. The subsequent `then` works with an `int` and has no idea there was ever an error. This is the **recovery pattern**: an error becomes a normal result without `try/catch`."
+        },
+        {
+          "title": "schedule and run_loop: executing on a specific context",
+          "code": "#include <execution>\n#include <iostream>\n#include <thread>\n\nint main() {\n    namespace ex = std::execution;\n\n    ex::run_loop loop;\n    auto sch = loop.get_scheduler();\n\n    // Launch the chain asynchronously\n    // (in real code loop.run() is called on a separate thread)\n    std::jthread worker([&loop]{ loop.run(); });\n\n    auto result = ex::sync_wait(\n        ex::schedule(sch)                      // transfer to loop's context\n        | ex::then([](){ return 42; })         // runs on loop\n        | ex::then([](int x){ return x * 2; }) // also on loop\n    );\n\n    loop.finish();\n\n    // *result == tuple{84}\n    auto [v] = *result;\n    std::cout << v << '\\n';  // 84\n}",
+          "expectedOutput": "",
+          "explanation": "`schedule(sch)` creates a sender that, when started, transfers execution to the `run_loop`'s context. Both subsequent `then` calls run in that same context — no extra configuration needed. `sync_wait` blocks the calling thread and waits for the result. `transfer` would let you switch to a different context mid-chain."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l3-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "When is `fn` called in the chain `just(42) | then(fn)`?",
+          "options": [
+            "Immediately when the expression `just(42) | then(fn)` is evaluated",
+            "When the result chain is passed to `sync_wait` and the operation starts",
+            "When `just(42)` executes",
+            "When the sender object returned by `then` is destroyed"
+          ],
+          "answerIndex": 1,
+          "explanation": "`then` is a lazy adaptor. The expression `just(42) | then(fn)` only builds a sender graph — no computation happens. `fn` is called only after the operation **starts** — i.e. when a consumer (like `sync_wait`) connects a receiver and calls `start` on the `operation_state`."
+        },
+        {
+          "id": "m6-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "A sender completes via `set_value(99)`. What does `upon_error(s, fn)` do next in the chain?",
+          "options": [
+            "Calls `fn(99)` and replaces the value with the result",
+            "Passes the value `99` through without calling `fn`",
+            "Swallows the value and passes nothing",
+            "Converts the value into an error"
+          ],
+          "answerIndex": 1,
+          "explanation": "`upon_error` handles **only the `set_error` channel**. If the sender completes via `set_value`, `upon_error` passes the value through unchanged — `fn` is never called. This is the transparency rule: each adaptor touches exactly one channel."
+        },
+        {
+          "id": "m6-l3-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "namespace ex = std::execution;\n\nauto result = ex::sync_wait(\n    ex::just_error(\n        std::make_exception_ptr(std::runtime_error{\"fail\"})\n    )\n    | ex::then([](std::exception_ptr) {\n        return 0;\n    })\n);",
+          "answerLine": 7,
+          "explanation": "`then` reacts exclusively to the `set_value` channel. If the sender completed via `set_error`, `then` **transparently passes** the error through — the lambda inside `then` is never called. To intercept an error, use `upon_error`: it fires on `set_error` and lets you return a recovered value."
+        },
+        {
+          "id": "m6-l3-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "In which context does the lambda execute in this chain?\n\n```cpp\nex::sync_wait(\n    ex::schedule(pool_scheduler)\n    | ex::then([](){ return 42; })\n);\n```",
+          "options": [
+            "On the thread that called `sync_wait`",
+            "On `pool_scheduler`'s execution context",
+            "On a new thread created specifically for this lambda",
+            "Undefined — context depends on the implementation"
+          ],
+          "answerIndex": 1,
+          "explanation": "`schedule(pool_scheduler)` creates a sender that, when started, **transfers** execution to `pool_scheduler`'s context. `then` adaptors that follow it in the chain run **in that same context** — the lambda executes on the thread pool, not on the calling thread. That is exactly what schedulers are for."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What happens to a `set_error` signal passing through `then(s, fn)`?",
+            "options": [
+              "`fn` is called with the error object",
+              "The `set_error` signal is passed through unchanged",
+              "The error is converted to `set_stopped`",
+              "An exception is thrown on the caller's side"
+            ],
+            "answerIndex": 1,
+            "explanation": "`then` handles only `set_value`. A `set_error` signal passes through it **transparently** — `fn` is not called, and the error is delivered to the next receiver in the chain without modification."
+          },
+          {
+            "type": "choice",
+            "prompt": "What is a scheduler (`scheduler`) in `std::execution`?",
+            "options": [
+              "A thread on which tasks execute",
+              "A lightweight handle to an execution context that acts as a sender factory",
+              "A synchronization primitive analogous to `std::mutex`",
+              "A special receiver type for scheduling tasks"
+            ],
+            "answerIndex": 1,
+            "explanation": "A scheduler is a **handle** (descriptor) to an execution context, not the thread itself. Its main role is to act as a factory: `schedule(sch)` returns a sender that, when started, transfers execution to the appropriate context. A scheduler is an ordinary value that can be stored and passed around."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `transfer(s, sch)` do mid-pipeline?",
+            "options": [
+              "Starts `s` on a new thread and waits for completion",
+              "After `s` completes via `set_value`, transfers the continuation to `sch`'s context",
+              "Creates a copy of sender `s` for execution on `sch`",
+              "Cancels `s` and restarts the operation on `sch`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`transfer(s, sch)` is a context-switch in the middle of a pipeline. When `s` completes via `set_value`, execution is **transferred** to `sch`'s context, after which the `set_value` signal with the same data continues down the chain. Everything after `transfer` runs in the new context."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l4",
+      "title": "when_all, thread pool and split",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "The previous lessons showed how to build **linear** pipelines: one step, one result. But real programs frequently need to **launch several independent computations in parallel** and wait for all of them at once. With raw `std::thread` that means writing join loops by hand — and that is before you deal with errors or cancellation. If one thread throws, the others keep running indefinitely.\n\n`std::execution` solves this with a single primitive — **`when_all`**: it starts N senders simultaneously, collects their results into a tuple, and — critically — when any one of them errors or cancels, it correctly **stops the rest**. No orphaned background work.\n\nTwo more tools round out the picture: **`std::execution::thread_pool`** — a standard N-worker thread pool — and **`split`** — an adaptor that lets a single data source fan out to multiple independent consumers. Together these three primitives cover the vast majority of parallelism needs without a single mutex.",
+      "theory": "## `std::execution::when_all` — running N senders in parallel\n\n```cpp\nauto combined = std::execution::when_all(s1, s2, s3);\n```\n\n`when_all` takes any number of senders and returns a **single** new sender. On start:\n\n1. All supplied senders start **simultaneously**.\n2. `when_all` waits for **every** one of them to complete.\n3. When all complete via `set_value`, it delivers a tuple of all values:\n\n```\nwhen_all(s1 → A, s2 → B, s3 → C)  →→→  set_value(A, B, C)\n```\n\n**Element order in the tuple matches argument order** — not completion order. Even if `s3` finishes first, its value is third.\n\n---\n\n## Error handling and cancellation in `when_all`\n\nWhat happens if any sender completes via `set_error` or `set_stopped`?\n\n- `when_all` immediately delivers a **stop request** to all still-active senders.\n- It then waits until **all** of them have completed (through any channel).\n- Only then does it forward the original error/stopped signal to the consumer.\n\nThe key property: when `when_all` completes, **none of the child operations are running**. This is **structured concurrency**.\n\n### ASCII diagram: error in one sender\n\n```\n              ┌─── s1 ──────────────────────► set_value(A)\nwhen_all ─────┤─── s2 ──► set_error(E)       (stop-request → s1, s3)\n              └─── s3 ──────────────────────► set_stopped()\n                                        ↓\n                              when_all ──► set_error(E)\n```\n\n`s2` errored. `s1` had already completed on its own; `s3` received a stop request and cancelled. Only after both have settled does `when_all` forward `set_error(E)`. Nothing continues running in the background.\n\n---\n\n## `std::execution::thread_pool` — standard thread pool\n\n```cpp\nstd::execution::thread_pool pool{4};  // 4 worker threads\nauto sch = pool.get_scheduler();      // scheduler handle\n```\n\n`thread_pool` is an object that owns N threads. It fulfills the `std::execution::scheduler` concept via `get_scheduler()`: the returned `sch` is a lightweight copyable value.\n\n```cpp\nstd::execution::schedule(sch)     // → sender that dispatches work to the pool\n    | std::execution::then(fn)    // fn runs on one of the pool's threads\n```\n\nEach `schedule(sch)` enqueues a task; a worker thread picks it up when available.\n\n---\n\n## Practical pattern: parallel computation\n\n```cpp\nnamespace ex = std::execution;\n\nstd::execution::thread_pool pool{4};\nauto sch = pool.get_scheduler();\n\nauto [r1, r2] = *ex::sync_wait(\n    ex::when_all(\n        ex::schedule(sch) | ex::then([]{ return compute_a(); }),\n        ex::schedule(sch) | ex::then([]{ return compute_b(); })\n    )\n);\n// r1 = compute_a(), r2 = compute_b() — both ran in parallel\n```\n\n`sync_wait` returns `std::optional<std::tuple<A, B>>`. Structured bindings `auto [r1, r2]` unpack directly from `*result`.\n\n---\n\n## `std::execution::split(s)` — multi-consumer sender\n\nBy default a sender has **one consumer**: it can be connected (`connect`) only once, because starting the operation consumes its resources. Passing one sender to two consumers is a compile error or UB.\n\n`split` solves this:\n\n```cpp\nauto shared = ex::split(some_sender);\n\n// Both use the same underlying result:\nauto pipeline1 = shared | ex::then([](int v){ return v + 1; });\nauto pipeline2 = shared | ex::then([](int v){ return v * 2; });\n```\n\n- `split(s)` returns a **copyable** sender.\n- All copies share one underlying operation: `s` runs **exactly once**.\n- The first consumer to call `start` triggers the operation; the rest receive the result without a restart.\n- On error or cancellation every consumer receives the same signal.\n\n### Typical use case\n\n```\nsplit(expensive_query)\n  ├─► pipeline A (process result one way)\n  └─► pipeline B (process result another way)\n```\n\n`expensive_query` executes **once** — but the result is available to both.\n\n---\n\n## Comparison: `when_all` vs `std::async` + `future::get`\n\n| Property | `std::async` + `future` | `when_all` |\n|---|---|---|\n| Allocation | Heap allocation per task | None (stack-based) |\n| Cancel on error | No | Yes — stop-signal to the rest |\n| Structured concurrency | No | Yes — all children finished at completion |\n| Composable | No | Yes — is itself a sender |\n| Result type | Separate `future<T>` per task | One tuple |\n\nWith `std::async`, if one task throws, the others keep running — their `future` destructors block the thread, or you write the synchronization yourself. `when_all` handles this automatically.",
+      "examples": [
+        {
+          "title": "Basic when_all: two parallel computations on thread_pool",
+          "code": "#include <execution>\n#include <iostream>\n#include <chrono>\n#include <thread>\n\nint compute_a() {\n    // simulate work\n    std::this_thread::sleep_for(std::chrono::milliseconds{100});\n    return 6;\n}\n\nint compute_b() {\n    std::this_thread::sleep_for(std::chrono::milliseconds{80});\n    return 7;\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    std::execution::thread_pool pool{2};  // two worker threads\n    auto sch = pool.get_scheduler();\n\n    // Both computations start simultaneously:\n    // compute_a() and compute_b() run in parallel.\n    auto result = ex::sync_wait(\n        ex::when_all(\n            ex::schedule(sch) | ex::then([]{ return compute_a(); }),\n            ex::schedule(sch) | ex::then([]{ return compute_b(); })\n        )\n    );\n\n    // result = std::optional<std::tuple<int, int>>\n    // Order matches argument order to when_all,\n    // not the order in which they finished.\n    auto [r1, r2] = *result;\n    std::cout << r1 << \" * \" << r2 << \" = \" << r1 * r2 << '\\n';\n    // Expected output: 6 * 7 = 42\n}",
+          "expectedOutput": "",
+          "explanation": "`thread_pool{2}` creates a pool with two threads. Both `schedule(sch)` calls enqueue tasks; since there are two workers, `compute_a` and `compute_b` run in parallel rather than sequentially. Even though `compute_b` finishes first (80 ms vs 100 ms), `r1` holds the result of `compute_a` (the first argument to `when_all`) and `r2` holds `compute_b`'s result. The order is always deterministic."
+        },
+        {
+          "title": "Error propagation: one sender throws, the other receives a stop request",
+          "code": "#include <execution>\n#include <iostream>\n#include <stdexcept>\n\nint main() {\n    namespace ex = std::execution;\n\n    std::execution::thread_pool pool{2};\n    auto sch = pool.get_scheduler();\n\n    // First sender always errors.\n    // Second is a \"long\" computation that should receive\n    // stop_requested and complete via set_stopped.\n    auto result = ex::sync_wait(\n        ex::when_all(\n            ex::schedule(sch)\n                | ex::then([]() -> int {\n                    throw std::runtime_error{\"computation A failed\"};\n                    return 0;\n                }),\n            ex::schedule(sch)\n                | ex::then([]() -> int {\n                    // In real code, check stop_token here\n                    // and return early. For illustration we just return.\n                    return 99;\n                })\n        )\n    );\n\n    // when_all completed via set_error — result == std::nullopt\n    // and the exception is rethrown when sync_wait exits.\n    // The block below is never reached:\n    if (result) {\n        auto [r1, r2] = *result;\n        std::cout << r1 << ' ' << r2 << '\\n';\n    } else {\n        std::cout << \"result unavailable (cancelled)\\n\";\n    }\n}\n// To catch the error, wrap sync_wait in try/catch:\n// try { ex::sync_wait(...); }\n// catch (const std::runtime_error& e) { std::cerr << e.what(); }",
+          "expectedOutput": "",
+          "explanation": "When the first sender throws, `when_all` receives `set_error` and dispatches a **stop request** to the second sender. The second sender can inspect its `stop_token` and exit early via `set_stopped` — that is the production pattern. After all senders have settled (through any channel), `when_all` forwards the original error. `sync_wait` then either returns `std::nullopt` or rethrows the exception — no task lingers in the background."
+        },
+        {
+          "title": "split: one source, two consumers",
+          "code": "#include <execution>\n#include <iostream>\n\nint expensive_query() {\n    // Imagine: a network request, file parse, etc.\n    return 100;\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // A plain sender can be connected only once.\n    // split makes it copyable — both copies share\n    // the same underlying computation.\n    auto shared_source = ex::split(\n        ex::just(0) | ex::then([]([[maybe_unused]] int) {\n            return expensive_query();\n        })\n    );\n\n    // Build two independent continuations from one source:\n    auto pipeline_a = shared_source | ex::then([](int v) { return v + 1; });\n    auto pipeline_b = shared_source | ex::then([](int v) { return v * 2; });\n\n    // Run both in parallel via when_all:\n    auto result = ex::sync_wait(\n        ex::when_all(\n            std::move(pipeline_a),\n            std::move(pipeline_b)\n        )\n    );\n\n    // expensive_query() is called exactly once.\n    // The result (100) is available to both continuations.\n    auto [a, b] = *result;\n    std::cout << \"a = \" << a << '\\n';  // 101\n    std::cout << \"b = \" << b << '\\n';  // 200\n}",
+          "expectedOutput": "",
+          "explanation": "`split(s)` wraps the sender so its result is cached and shared among all subscribers. `expensive_query()` runs **exactly once** — not twice. Both continuations (`pipeline_a` and `pipeline_b`) receive the same value `100` and then transform it independently. Without `split`, handing one sender to two `then`-continuations would be incorrect — senders are not copyable by default."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l4-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Two senders in `when_all(s1, s2)` complete in this order: first `s2` returns `\"B\"`, then `s1` returns `\"A\"`. What is the result of `when_all`?",
+          "options": [
+            "tuple{\"B\", \"A\"} — in completion order",
+            "tuple{\"A\", \"B\"} — in argument order to when_all",
+            "The first value that arrived",
+            "Unspecified — order depends on the implementation"
+          ],
+          "answerIndex": 1,
+          "explanation": "`when_all` always assembles values **in argument order**, not completion order. If `s1` is the first argument and returns `\"A\"`, then `\"A\"` is the first tuple element regardless of when `s1` actually finished. This makes the result deterministic and predictable."
+        },
+        {
+          "id": "m6-l4-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "In `when_all(s1, s2, s3)`, sender `s2` completes via `set_error`. What happens to `s1` and `s3` if they are still running?",
+          "options": [
+            "They continue running to completion; the error from s2 is ignored",
+            "They are immediately destroyed without waiting for completion",
+            "They receive a stop request; when_all waits for them to finish, then forwards the error",
+            "when_all returns a partial result: values from s1 and s3 plus the error from s2"
+          ],
+          "answerIndex": 2,
+          "explanation": "This is **structured concurrency** in action. When one sender in `when_all` errors, `when_all`: 1) delivers a stop request to all remaining active senders; 2) **waits** for every one of them to complete (through any channel — `set_value`, `set_error`, or `set_stopped`); 3) only then forwards the original error. When the consumer receives the signal, no child operation is still running."
+        },
+        {
+          "id": "m6-l4-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "A developer wants to pass the same sender to two independent pipelines. Find the bug:\n\n```cpp\nnamespace ex = std::execution;\n\nauto source = ex::just(42);                                        // line 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // line 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // line 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);\n```",
+          "answerLine": 3,
+          "explanation": "A plain sender (`just(42)`) is **not** a copyable, multi-use object — it is designed to connect to exactly one receiver. Using `source` in two separate `| ex::then(...)` expressions is either a compile error (if the sender is not copyable) or undefined behaviour (the operation started twice). The fix: wrap `source` in `ex::split(source)` before lines 5–6. Then both copies share the same underlying operation and `42` is computed exactly once."
+        },
+        {
+          "id": "m6-l4-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "What guarantee does `when_all` provide about child operations at the moment it completes — regardless of whether the completion is a value, an error, or a cancellation?",
+          "options": [
+            "All child operations have completed via set_value",
+            "All child operations have either completed or been cancelled — none are running in the background",
+            "Minimum latency: as soon as the first operation finishes, the rest are destroyed immediately",
+            "No guarantee — child operations may continue after when_all completes"
+          ],
+          "answerIndex": 1,
+          "explanation": "This is the **structured concurrency** guarantee — the key distinction from raw thread management. At the moment `when_all` calls `set_value`, `set_error`, or `set_stopped` on its receiver, **all** child operations have already finished. Not \"soon,\" not \"probably\" — strictly guaranteed. With `std::async` + `std::future` no such guarantee exists: `future` destructors can block, and on error other tasks keep running."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "prompt": "Three senders are passed to `when_all(s1, s2, s3)`. `s2` completes first, then `s3`, then `s1`. In what order do the elements appear in the result tuple?",
+            "options": [
+              "In completion order: value of s2, then s3, then s1",
+              "In argument order: value of s1, then s2, then s3",
+              "Unspecified — depends on the scheduler",
+              "when_all returns only the first completed value"
+            ],
+            "answerIndex": 1,
+            "explanation": "`when_all` assembles results strictly **in argument order**, not completion order. The first tuple element always corresponds to the first argument (`s1`), the second to `s2`, the third to `s3`. This makes the code predictable: `auto [r1, r2, r3]` always maps to `when_all(s1, s2, s3)`."
+          },
+          {
+            "prompt": "What does \"structured concurrency\" mean in the context of `when_all`?",
+            "options": [
+              "Tasks run strictly one at a time — no real parallelism",
+              "When when_all completes, all child operations are guaranteed to be finished — no orphaned background tasks",
+              "when_all automatically distributes tasks across CPU cores optimally",
+              "Each task runs inside its own structured try/catch block"
+            ],
+            "answerIndex": 1,
+            "explanation": "Structured concurrency is a **lifetime guarantee**: child operations do not outlive their parent. When `when_all` completes — for any reason — every operation it started has already finished. This eliminates a whole class of bugs: thread leaks, races during object destruction, unhandled errors in the background."
+          },
+          {
+            "prompt": "Why is `std::execution::split(s)` needed when a sender already exists?",
+            "options": [
+              "To speed up the sender by caching intermediate values",
+              "To make the sender copyable so multiple consumers can share one result without recomputing it",
+              "To split one sender into multiple independent parallel computations",
+              "To transfer the sender's execution to a different scheduler"
+            ],
+            "answerIndex": 1,
+            "explanation": "A plain sender is designed for **one** consumer. `split` converts it into a **multi-consumer** sender: the returned value is copyable, and all copies share the same underlying operation. The original computation runs **exactly once**, and the result is available to every subscriber. Without `split`, connecting one sender to two `then`-continuations is incorrect."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l5",
+      "title": "Error handling and cancellation: typed error channel, let_error, stop tokens",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3",
+        "m6-l4"
+      ],
+      "background": {
+        "title": "C++20: stop tokens",
+        "content": "C++20 introduced a **cooperative cancellation** mechanism with three parts:\n\n- `std::stop_source` — owns the stop state; only it can **request** a stop (`request_stop()`).\n- `std::stop_token` — a lightweight non-owning view; `stop_token.stop_requested()` returns `true` once `stop_source::request_stop()` has been called.\n- `std::stop_callback` — registers a function that is called **immediately** when a stop is requested.\n\nThe mechanism is cooperative: nobody interrupts a thread by force. The holder of a `stop_token` is responsible for periodically checking `stop_requested()` and finishing cleanly. These are the very objects `std::execution` uses to cancel pipelines."
+      },
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "After lessons 1–4 you can build pipelines, launch parallel tasks, and schedule work on threads. But real programs encounter errors, and the way errors are delivered matters just as much as how results are delivered.\n\nWith `std::future` there was no choice: an error was always `std::exception_ptr`, and to find out what went wrong you had to catch the exception and cast manually. With `std::execution` the picture is different:\n\n- **The error channel is typed**: a sender can carry `std::error_code`, `int`, `std::exception_ptr`, or any other type — and that is part of its type. The handler receives the correct type directly, without `dynamic_cast`.\n- **`let_error`** lets you return a *new sender* on the error path — meaning you can fully recover or switch to a fallback plan right inside the chain.\n- **Cancellation is a separate channel**, not an error-disguised-as-exception. Stop tokens let the parent pipeline send a \"please stop\" signal to child pipelines and wait for them to finish cleanly.\n\nUnderstanding the three channels (`set_value` / `set_error` / `set_stopped`) and the tools that work with them is the key to writing reliable asynchronous code with `std::execution`.",
+      "theory": "## The error channel is part of the sender's type\n\nEvery sender in `std::execution` declares three things:\n- which **value types** it can deliver via `set_value`,\n- which **error types** it can deliver via `set_error`,\n- whether it can complete via `set_stopped` (cancellation).\n\nThis means a sender that carries `std::error_code` as its error type is a different type from one that carries `std::exception_ptr`. The type system checks consistency at compile time:\n\n```cpp\n// A sender that either returns int or signals std::error_code as an error:\nauto s = std::execution::just_error(std::make_error_code(std::errc::timed_out));\n// Error type here is std::error_code, NOT exception_ptr.\n```\n\nThe handler in `upon_error` (or `let_error`) must accept **exactly this type** — passing a lambda with the wrong signature is a compile error.\n\n---\n\n## `upon_error` — converting an error into a value\n\n`upon_error` was introduced in lesson 3. Briefly:\n\n```cpp\nupon_error(sender, fn)  // fn(ErrorType) -> Value\n```\n\n`fn` receives the **specific error type** of the sender and returns a **value** — the pipeline then continues on the `set_value` path. The key constraint: `fn` returns a **value**, not a sender.\n\n```cpp\nauto pipeline =\n    risky_sender\n    | std::execution::upon_error([](std::error_code ec) {\n        // ec is already the right type — no dynamic_cast needed\n        return ec == std::errc::timed_out ? 0 : -1;\n    });\n```\n\n---\n\n## `let_error` — the error opens a new pipeline\n\n`let_error` is the powerful sibling of `upon_error`: instead of a value, the function returns a **new sender**.\n\n```cpp\nlet_error(sender, fn)  // fn(ErrorType) -> Sender\n```\n\nThis lets you launch a full operation on the error path — for example, contact a backup data source, retry, or write diagnostics:\n\n```cpp\nauto pipeline =\n    primary_source()\n    | std::execution::let_error([](std::error_code ec) {\n        // Return a new sender, not a value:\n        return fallback_source();\n    });\n```\n\nThe analogy with the value path: `then` returns a value, `let_value` returns a new sender. Likewise, `upon_error` returns a value, `let_error` returns a new sender.\n\n| Adaptor | Path | fn returns |\n|---|---|---|\n| `then` | value | value |\n| `let_value` | value | new sender |\n| `upon_error` | error | value |\n| `let_error` | error | new sender |\n\n---\n\n## Stop tokens in `std::execution`\n\nEvery **receiver** connected to a sender has a `get_stop_token()` method. The sender can query it and check whether cancellation has been requested:\n\n```cpp\n// Inside a custom sender implementation:\nauto token = std::execution::get_stop_token(receiver);\nif (token.stop_requested()) {\n    // Finish cleanly via the stopped channel:\n    std::execution::set_stopped(std::move(receiver));\n    return;\n}\n```\n\nCancellation propagates **top-down**: when a parent requests a stop, the `stop_token` of the child receiver starts returning `true`. This is exactly how `when_all` cancels remaining senders when one of them errors (see lesson 4).\n\n---\n\n## `stop_when(s, stop_token)` — linking external cancellation to a pipeline\n\n```cpp\nauto cancelable = std::execution::stop_when(my_pipeline, external_token);\n```\n\n`stop_when` wraps sender `s` so that if `external_token` fires, `s` also receives `stop_requested`. Use this when you need to tie a pipeline to an external cancellation source — a Cancel button or a timeout:\n\n```cpp\nstd::stop_source user_cancel;\n\n// Trigger cancellation from another thread:\n// user_cancel.request_stop();\n\nauto pipeline = std::execution::stop_when(\n    long_operation(),\n    user_cancel.get_token()\n);\n```\n\n---\n\n## Why three channels beat exception-only\n\n| Property | `std::future` | `std::execution` senders |\n|---|---|---|\n| Error type | Always `exception_ptr` | Any type — part of the sender's type |\n| Cancellation | No (or exception-as-workaround) | Separate `set_stopped` channel |\n| Zero overhead when unused | No | Yes — unused channels compile away |\n| Typed error handling | No — `dynamic_cast` inside `catch` | Yes — lambda with the right type |\n\n---\n\n## Pattern: converting error representations\n\nSometimes the lower layer returns `std::error_code` but the upper layer expects `std::exception_ptr`. The conversion is straightforward:\n\n```cpp\nauto pipeline =\n    io_operation()\n    | std::execution::upon_error([](std::error_code ec) -> int {\n        throw std::system_error{ec};  // convert error_code to an exception\n        return 0;  // never reached, but needed for the return type\n    });\n```\n\nOr via `let_error`:\n\n```cpp\nauto pipeline =\n    io_operation()\n    | std::execution::let_error([](std::error_code ec) {\n        return std::execution::just_error(\n            std::make_exception_ptr(std::system_error{ec})\n        );\n    });\n```",
+      "examples": [
+        {
+          "title": "Typed error channel: std::error_code → default value",
+          "code": "#include <execution>\n#include <system_error>\n#include <iostream>\n\n// Simulate an operation that may return std::error_code.\n// just_error creates a sender that completes via set_error.\nauto fetch_data(bool fail) {\n    namespace ex = std::execution;\n    if (fail) {\n        // Error type is std::error_code, NOT exception_ptr.\n        return ex::just_error(\n            std::make_error_code(std::errc::connection_refused)\n        );\n    }\n    return ex::just(std::make_error_code({}))  // \"no error\", for type symmetry\n        | ex::then([](std::error_code) { return 42; });\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // upon_error: fn takes std::error_code, returns an int value.\n    // The lambda MUST accept std::error_code — any other signature is a compile error.\n    auto pipeline =\n        fetch_data(/*fail=*/true)\n        | ex::upon_error([](std::error_code ec) -> int {\n            std::cerr << \"Error: \" << ec.message() << '\\n';\n            return -1;  // default value in place of the error\n        });\n\n    auto result = ex::sync_wait(std::move(pipeline));\n    // The set_error channel was converted to set_value(-1),\n    // so result holds std::optional<std::tuple<int>>.\n    if (result) {\n        std::cout << \"Result: \" << std::get<0>(*result) << '\\n';\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`just_error(ec)` creates a sender whose error type is `std::error_code` — this is visible in the sender's type, not just at runtime. `upon_error` takes a lambda with signature `(std::error_code) -> int`: the compiler checks that the types match. The error is converted to the value `-1`, and the pipeline continues on the normal path. `sync_wait` returns `optional<tuple<int>>` containing `-1`."
+        },
+        {
+          "title": "let_error: the error opens a fallback pipeline",
+          "code": "#include <execution>\n#include <system_error>\n#include <iostream>\n#include <string>\n\n// Simulate two sources: the primary always fails.\nauto primary_source() {\n    namespace ex = std::execution;\n    return ex::just_error(\n        std::make_error_code(std::errc::no_such_file_or_directory)\n    );\n}\n\nauto fallback_source() {\n    namespace ex = std::execution;\n    // The fallback returns a string result.\n    return ex::just(std::string{\"data from cache\"});\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // let_error: fn returns a NEW SENDER, not a value.\n    // This is the key difference from upon_error.\n    auto pipeline =\n        primary_source()\n        | ex::let_error([](std::error_code ec) {\n            if (ec == std::errc::no_such_file_or_directory) {\n                std::cerr << \"Primary source unavailable, using cache\\n\";\n                return fallback_source();  // <-- return a new sender\n            }\n            // For any other error — propagate it.\n            return ex::just_error(ec);\n        });\n\n    auto result = ex::sync_wait(std::move(pipeline));\n    if (result) {\n        std::cout << \"Got: \" << std::get<0>(*result) << '\\n';\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`let_error` mirrors `let_value`: the lambda receives the error and returns a **new sender** — `fallback_source()`. That new sender starts immediately as the continuation. If we had used `upon_error`, the lambda could only return a ready string value, not a whole new pipeline. `let_error` enables a full \"plan B\": connect to another server, read a different file, or launch any async operation."
+        },
+        {
+          "title": "stop_when: external cancellation via stop_source",
+          "code": "#include <execution>\n#include <stop_token>  // std::stop_source, std::stop_token (C++20)\n#include <iostream>\n#include <thread>\n#include <chrono>\n\n// A long-running \"operation\" that could check a stop_token.\n// In real code this would be a custom sender with a built-in stop check.\nauto long_operation() {\n    namespace ex = std::execution;\n    // For this example we just return a value via just.\n    // A real custom sender would call get_stop_token(receiver) internally.\n    return ex::just(std::string{\"result of long operation\"});\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    std::stop_source cancel_source;  // external cancellation source\n\n    // stop_when ties the pipeline to an external stop_token.\n    // If cancel_source.request_stop() is called, the pipeline\n    // receives stop_requested and finishes via set_stopped.\n    auto cancelable_pipeline = ex::stop_when(\n        long_operation(),\n        cancel_source.get_token()\n    );\n\n    // In a real scenario, cancellation might come from a UI button:\n    // std::thread([&]{\n    //     std::this_thread::sleep_for(std::chrono::milliseconds{50});\n    //     cancel_source.request_stop();\n    // }).detach();\n\n    // Here we do NOT cancel — the pipeline should complete normally.\n    auto result = ex::sync_wait(std::move(cancelable_pipeline));\n\n    if (result) {\n        std::cout << \"Completed: \" << std::get<0>(*result) << '\\n';\n    } else {\n        // If cancel_source.request_stop() had been called,\n        // sync_wait would return std::nullopt (set_stopped channel).\n        std::cout << \"Operation was cancelled\\n\";\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`stop_when(s, token)` does not launch the pipeline immediately: it wraps it so that when `token` fires (i.e., someone calls `request_stop()` on the associated `stop_source`), the inner receiver of `s` receives a stop signal. `sync_wait` returns `std::nullopt` when the pipeline completes via `set_stopped`. This pattern lets you connect *any* pipeline to *any* external cancellation source without changing the pipeline's own code."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l5-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Sender `s` has error type `std::error_code`. You write:\n```cpp\ns | std::execution::upon_error(fn)\n```\nWhat signature must `fn` have?",
+          "options": [
+            "fn takes std::error_code and returns a value or void",
+            "fn takes std::exception_ptr — upon_error always receives exception_ptr",
+            "fn takes int — the error code is always converted to int",
+            "fn takes std::any — the error type is erased before delivery"
+          ],
+          "answerIndex": 0,
+          "explanation": "In `std::execution` the error type is part of the sender's type. `upon_error` passes to `fn` exactly the type the sender declared — in this case `std::error_code`. Passing a lambda with a different signature (e.g., taking `std::exception_ptr`) is a compile error. This is a fundamental difference from `std::future`, where errors are always wrapped in `exception_ptr`."
+        },
+        {
+          "id": "m6-l5-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What is the key difference between `upon_error(s, fn)` and `let_error(s, fn)` in `std::execution`?",
+          "options": [
+            "There is no difference — they are synonyms",
+            "In `upon_error` function `fn` returns a value; in `let_error` function `fn` returns a new sender",
+            "In `let_error` function `fn` returns a value; in `upon_error` function `fn` returns a new sender",
+            "`upon_error` only works with std::exception_ptr, while `let_error` accepts any error type"
+          ],
+          "answerIndex": 1,
+          "explanation": "`upon_error(s, fn)`: `fn` takes the error and returns a **value** — the error is \"replaced\" by a value and the pipeline continues on the normal path. `let_error(s, fn)`: `fn` takes the error and returns a **new sender** — this lets you launch a full asynchronous operation on the error path (a fallback source, a retry, etc.). The analogy: `then` vs `let_value` on the value path."
+        },
+        {
+          "id": "m6-l5-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "namespace ex = std::execution;\n\nauto primary() {\n    return ex::just_error(std::make_error_code(std::errc::timed_out));\n}\n\nauto backup() {\n    return ex::just(std::string{\"fallback\"});\n}\n\nauto pipeline =\n    primary()\n    | ex::upon_error([](std::error_code) {\n          return backup();  // <-- bug here\n      });",
+          "answerLine": 12,
+          "explanation": "On line 12 (`return backup();`) `upon_error` expects `fn` to return a **value**, but `backup()` returns a **sender**. The compiler will either reject this (if the types are incompatible) or treat the sender object as the value — meaning the string `\"fallback\"` will never be produced; instead the pipeline will carry a sender object as its value. The correct adaptor for \"error → new sender\" is `let_error`, not `upon_error`:\n```cpp\n| ex::let_error([](std::error_code) {\n      return backup();\n  })\n```"
+        },
+        {
+          "id": "m6-l5-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "In `when_all(s1, s2, s3)` sender `s2` completes via `set_error`. How does `when_all` tell `s1` and `s3` to stop?",
+          "options": [
+            "It immediately destroys the operation objects for s1 and s3 via their destructors",
+            "It sends a signal by throwing an exception into the threads where s1/s3 are running",
+            "It sends a stop signal via the stop_token of the receivers for s1 and s3, then waits for them to complete",
+            "It does nothing — s1 and s3 notice the error themselves on their next check"
+          ],
+          "answerIndex": 2,
+          "explanation": "`when_all` passes each child receiver a stop_token linked to an internal `stop_source`. When one sender completes via `set_error`, `when_all` calls `request_stop()` on that source — and the stop_tokens of `s1` and `s3` start returning `stop_requested() == true`. `when_all` then **waits** for both to finish (via any channel) before forwarding the error to the consumer. This guarantees structured concurrency: no child operation continues running after `when_all` returns."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "A sender declares error type `int`. What happens if you write `upon_error(s, [](std::exception_ptr) { return 0; })`?",
+            "options": [
+              "The code compiles: upon_error automatically converts int to exception_ptr",
+              "Compile error: the lambda accepts the wrong error type",
+              "The code compiles, but throws std::bad_cast at runtime",
+              "Compile error only if int is not implicitly convertible to exception_ptr"
+            ],
+            "answerIndex": 1,
+            "explanation": "The error type is part of the sender's type. `upon_error` matches the sender's error type against the lambda's parameter type at compile time. If the sender carries `int` but the lambda takes `std::exception_ptr`, that is a type mismatch and the compiler reports an error. There is no automatic conversion — this is one of the key properties of the typed error channel."
+          },
+          {
+            "type": "choice",
+            "prompt": "When should you use `let_error` instead of `upon_error`?",
+            "options": [
+              "When the error type is std::error_code rather than std::exception_ptr",
+              "When the error handler needs to launch a new asynchronous operation (return a new sender)",
+              "When you want to ignore the error and continue with an empty value",
+              "When the pipeline contains more than one sender"
+            ],
+            "answerIndex": 1,
+            "explanation": "`upon_error` is appropriate when the error handler can return a ready value synchronously. `let_error` is needed when recovering from the error is itself an asynchronous operation: contacting a backup server, retrying after a delay, writing a log via I/O. In those cases the lambda returns a new sender, which starts in place of the failed one."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `stop_when(pipeline, token)` do in `std::execution`?",
+            "options": [
+              "Immediately stops the pipeline if token.stop_requested() is already true when called",
+              "Wraps the pipeline so that when token fires, the pipeline receives a stop signal",
+              "Converts a set_stopped completion into set_error with a cancellation error code",
+              "Lets the pipeline itself request a stop on the external stop_source"
+            ],
+            "answerIndex": 1,
+            "explanation": "`stop_when(s, token)` creates a wrapper that subscribes to `token` via `std::stop_callback`. When a stop is requested on `token` (i.e., `request_stop()` is called on the associated `stop_source`), the wrapper forwards that stop signal to the inner receiver of `s`. This lets any external cancellation source (UI, timeout, another pipeline) be linked to any pipeline without touching the pipeline's own code."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l6",
+      "title": "let_value / let_error / let_stopped and the zero-allocation deep dive",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3",
+        "m6-l4",
+        "m6-l5"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "By now you can build linear and parallel sender pipelines — but all of them share one limitation: **the next operation is fixed at the moment you write the code**. With `then`, the function returns a plain value; it cannot say \"and now go off and do _this_ async thing, which depends on what I just computed.\" That would require returning a sender from inside `then` — which `then` does not support.\n\nThe `let_*` family breaks this wall. `let_value(s, fn)` is identical to `then` in every way **except** that `fn` returns a new sender, not a value. That sender becomes the next live step in the pipeline. This makes conditional async branching, dynamic retry loops, and async fallback on error all expressible as a single composed sender — no callbacks, no shared state, no manual lifetime.\n\nThe second topic in this lesson is a deeper look at the **zero-allocation guarantee** — why it holds, why `std::async` cannot offer it, and what this means in practice. As the closing lesson of Module 6, this also includes a design-level comparison: senders vs. futures, raw threads, and C++20 coroutines — so you finish the module knowing not just _how_ to use senders but _when_ to reach for them.",
+      "theory": "## `std::execution::let_value(s, fn)` — dependent sender chaining\n\n`then(s, fn)` requires `fn` to return a plain value. The pipeline continues with that value. This covers most synchronous transformations, but it is not enough when the next step is itself asynchronous or conditional on the current result.\n\n`let_value` is the solution:\n\n```cpp\nstd::execution::let_value(s, fn)\n```\n\n- When `s` completes via `set_value(v...)`, `let_value` calls `fn(v...)`.\n- `fn` must return a **new sender** — not a plain value.\n- That sender becomes the live continuation: `let_value` starts it and waits for it to complete.\n- The final result of `let_value(s, fn)` is whatever the inner sender delivers.\n\n### `then` vs `let_value` side by side\n\n```\nthen(s, fn)      — fn returns T       → pipeline continues with T\nlet_value(s, fn) — fn returns Sender  → pipeline continues with what Sender delivers\n```\n\nIn both cases the `set_error` and `set_stopped` channels pass through untouched — `fn` is only called on `set_value`.\n\n### When to choose `let_value` over `then`\n\nChoose `let_value` when:\n\n- `fn` needs to decide **which sender** to run next, not just transform a value;\n- the next step is another async operation (e.g. a network request, a scheduler hop);\n- you need to branch: one branch is `just(ok_result)`, another is `just_error(...)` or a retry sender.\n\nChoose `then` when:\n\n- the transformation is synchronous;\n- `fn` returns a plain value (or `void`);\n- no conditional sender selection is needed.\n\n---\n\n## `let_error(s, fn)` — async error recovery\n\n`let_error` is to `upon_error` what `let_value` is to `then`: instead of `fn` returning a recovery value, it returns a **new sender**.\n\n```\nset_error(e)    → fn(e) must return a Sender → pipeline continues with what Sender delivers\nset_value(v...) → passed through unchanged\nset_stopped()   → passed through unchanged\n```\n\nTypical use case: the primary operation failed; `fn` receives the error and returns a sender that queries a fallback service. The fallback result becomes the pipeline's output — no intermediate blocking, no callbacks.\n\n```cpp\nex::let_error(primary_sender, [](std::exception_ptr) {\n    return fallback_sender;  // fn returns a sender, not a value\n})\n```\n\n---\n\n## `let_stopped(s, fn)` — async cancellation fallback\n\n`let_stopped` mirrors `upon_stopped`, but again `fn` returns a sender:\n\n```\nset_stopped()   → fn() must return a Sender  (fn takes no arguments)\nset_value(v...) → passed through unchanged\nset_error(e)    → passed through unchanged\n```\n\n`fn` takes **no arguments** — cancellation carries no data. The returned sender can do anything: substitute a cached value, re-attempt with a different scheduler, or complete immediately with a default.\n\n---\n\n## The `let_*` / `upon_*` / `then` family — complete map\n\n| Channel | `fn` returns a value | `fn` returns a sender |\n|---|---|---|\n| `set_value` | `then(fn)` | `let_value(fn)` |\n| `set_error` | `upon_error(fn)` | `let_error(fn)` |\n| `set_stopped` | `upon_stopped(fn)` | `let_stopped(fn)` |\n\nThe naming rule is consistent: `upon_*` / `then` → plain value. `let_*` → new sender (the name hints at _letting_ control flow into a new async subgraph).\n\n---\n\n## The zero-allocation guarantee — deep dive\n\nLessons 1 and 2 mentioned that senders allocate no heap memory. This section explains precisely why, and why `std::async` cannot offer the same guarantee.\n\n### Why senders need no heap\n\nWhen you write:\n\n```cpp\nauto op = std::execution::connect(sender, receiver);\n```\n\nthe return type of `connect` is a **concrete, statically-known type** — something like\n\n```\noperation_state<ThenSender<JustSender<int>, Lambda1>, MyReceiver>\n```\n\nThe compiler knows this type at compile time. It knows its size. It knows its alignment. It can place it anywhere: on the stack, inside a struct, in a `std::optional`, inside another operation state.\n\nFor a pipeline of N steps, the operation state holds N sub-states **inline**. No dynamic allocation at any link:\n\n```\nconnect(\n    just(42) | then(f1) | then(f2) | let_value(f3),\n    my_receiver\n)\n// → one object on the stack containing all four states packed inline\n```\n\n### Why `std::async` cannot avoid the heap\n\n`std::async` returns a `std::future<T>`. The `future` and the internal promise that the background thread writes to are **two objects that share ownership of a single result**. Shared ownership requires a reference count. A reference count requires a stable address. A stable address cannot live on either the caller's stack or the thread's stack — because both stacks come and go independently. The only option is **heap allocation** with a `shared_ptr`-based control block.\n\nThis is not an implementation detail that a smarter compiler could optimize away. It is a consequence of the ownership model: shared ownership → pointer stability → heap.\n\nSenders use **single ownership**: the `operation_state` owns everything. There is no sharing. Nothing needs a stable address across stack frames. The stack (or any inline storage) works fine.\n\n### Practical consequence\n\nA pipeline with 10 `then` / `let_value` steps allocates exactly **zero bytes** on the heap. A chain of 10 `std::async` calls allocates a control block for every step. On a hot path (high-frequency events, embedded systems, real-time loops) the difference is decisive.\n\n---\n\n## Design comparison: senders vs. alternatives\n\n| | `std::async` / `future` | Raw `std::thread` | C++20 coroutines | Senders (`std::execution`) |\n|---|---|---|---|---|\n| Heap allocation | Per task (unavoidable) | Manual | Often (coroutine frame) | Never |\n| Cancellation | None | Manual | Via `stop_token` | Structured (`set_stopped`) |\n| Error handling | `exception_ptr` only | Manual | `exception` / `expected` | Typed channels (any type) |\n| Composition | Difficult | Manual | Natural (`co_await`) | First-class (`|`) |\n| Structured lifetimes | No | No | Yes | Yes |\n| Learning curve | Low | Low | Medium | High |\n\n### When to choose senders\n\n- **Zero allocation is required** — embedded, real-time, high-frequency.\n- **Typed error channels matter** — you want `std::error_code` or a custom type, not an exception.\n- **Complex composition** — fan-out (`when_all`), fan-in (`split`), scheduler hops (`transfer`).\n- **Cancellation** must be structured: when a parent scope exits, child work stops.\n\n### When to choose coroutines\n\n- **Sequential async code** that reads like synchronous code — `co_await` is simply more readable.\n- **Simple error handling** — one exception type is fine.\n- **Readable suspension points** matter to the team.\n\nThe two approaches are **complementary**. C++26 includes both. A coroutine can `co_await` a sender; a `let_value` fn can return a sender that wraps a coroutine. Real systems will mix them: coroutines for readable logic, senders for the scheduling and resource backbone.\n\n---\n\n## Key rules to carry forward\n\n- Use `let_value` when `fn` must return a sender (not a value).\n- Use `let_error` / `let_stopped` for async recovery on the error / cancellation channel.\n- The entire `let_*` family passes the other two channels through unchanged.\n- Senders never heap-allocate: `connect` produces a statically-typed object; all states are inline.\n- `std::async` always heap-allocates because shared ownership requires pointer stability.",
+      "examples": [
+        {
+          "title": "let_value: conditional async branching",
+          "code": "// Requires C++26 std::execution (P2300).\n// Shown as a spec-based example — not compiled.\n#include <execution>\n#include <print>\n#include <stdexcept>\n\n// Imagine these are real async operations:\nauto positive_path(int x) {\n    // Returns a sender that produces x * 2\n    return std::execution::just(x * 2);\n}\n\nauto negative_path() {\n    // Returns a sender that signals an error\n    return std::execution::just_error(\n        std::make_exception_ptr(\n            std::runtime_error{\"negative input not allowed\"}\n        )\n    );\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // let_value: fn returns a NEW SENDER, not a plain int.\n    // Which sender depends on the value — that is the point.\n    auto pipeline =\n        ex::just(42)\n        | ex::let_value([](int x) {\n            // fn must return a sender:\n            if (x > 0)\n                return positive_path(x);   // → just(84)\n            else\n                return negative_path();    // → just_error(...)\n        });\n\n    // With just(42), the positive branch runs → 84.\n    auto result = ex::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // 84\n\n    // If we started with just(-1), negative_path() would fire\n    // and sync_wait would rethrow the runtime_error.\n}",
+          "expectedOutput": "",
+          "explanation": "`let_value`'s lambda returns a **sender** — `positive_path(x)` or `negative_path()`. `then` cannot do this: its lambda must return a plain `int`. When the value is `42`, `positive_path(42)` returns `just(84)`, which becomes the live continuation. When the value is negative, `negative_path()` returns `just_error(...)`, turning the pipeline into an error. The decision about _which async path to take_ is made at runtime, inside the lambda, based on the delivered value."
+        },
+        {
+          "title": "let_error: async fallback on failure",
+          "code": "// Demonstrates let_error: fn receives the error and returns a sender.\n// Unlike upon_error (fn returns a plain value),\n// let_error's fn can launch a full async operation.\n#include <execution>\n#include <print>\n#include <stdexcept>\n\n// Simulates an async fallback query (returns a sender):\nauto query_fallback_service() {\n    return std::execution::just(-1); // fallback value\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // Primary sender: immediately signals an error.\n    auto primary = ex::just_error(\n        std::make_exception_ptr(std::runtime_error{\"primary failed\"})\n    );\n\n    auto pipeline =\n        std::move(primary)\n        | ex::let_error([](std::exception_ptr) {\n            // fn receives the error, returns a new sender.\n            // Here we launch an async fallback.\n            // (In production this could be a network request sender.)\n            return query_fallback_service();\n        });\n\n    // The error is intercepted; the fallback sender runs in its place.\n    auto result = ex::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // -1\n\n    // Contrast: upon_error would require the fn to return -1 directly.\n    // let_error allows the fn to return query_fallback_service()\n    // — an async operation, not a plain value.\n}",
+          "expectedOutput": "",
+          "explanation": "`let_error`'s lambda takes the `std::exception_ptr` error and returns `query_fallback_service()` — a sender. `let_error` then starts that sender and waits for its completion. The pipeline's output becomes the fallback result (`-1`), as if the error never happened. This is async error recovery: the recovery path is itself an async operation, not a synchronous value. `upon_error` could not do this — it requires a plain return value."
+        },
+        {
+          "title": "Pipeline structure and the zero-allocation model",
+          "code": "// Conceptual illustration of the zero-allocation guarantee.\n// All operation states are inline — no heap allocation.\n#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n\n    // Each | step wraps the previous sender in a new type.\n    // The compiler knows the complete type at compile time.\n    auto pipeline =\n        ex::just(1)                             // JustSender<int>\n        | ex::then([](int x){ return x + 1; }) // ThenSender<JustSender<int>, L1>\n        | ex::then([](int x){ return x * 3; }) // ThenSender<ThenSender<...>, L2>\n        | ex::let_value([](int x) {             // LetValueSender<..., L3>\n            return ex::just(x - 1);\n          });\n\n    // connect() returns an object whose type encodes ALL four states.\n    // Its size is known at compile time. It lives on the stack below:\n    auto op = ex::connect(std::move(pipeline), /* some receiver */ 0);\n    // sizeof(op) is known at compile time — no new, no shared_ptr.\n    // All four sub-states are packed inline inside op.\n\n    // In practice, sync_wait does connect + start for us:\n    auto result = ex::sync_wait(\n        ex::just(1)\n        | ex::then([](int x){ return x + 1; })  // 2\n        | ex::then([](int x){ return x * 3; })  // 6\n        | ex::let_value([](int x) {\n            return ex::just(x - 1);              // 5\n          })\n    );\n    std::println(\"{}\", std::get<0>(*result)); // 5\n\n    // For comparison: each std::async call allocates\n    // a shared_ptr control block on the heap.\n    // A chain of 4 async calls = 4 heap allocations.\n    // This pipeline = 0 heap allocations.\n}",
+          "expectedOutput": "",
+          "explanation": "The type of `pipeline` is a nested template: `LetValueSender<ThenSender<ThenSender<JustSender<int>, L1>, L2>, L3>`. The compiler knows its size at compile time. `connect` returns an `operation_state` of another statically-known type that contains **all four sub-states inline**. There is no `new`, no `shared_ptr`, no type erasure. The entire chain — four senders deep — lives on the stack as a single object. `std::async` cannot replicate this: its `future`/`promise` pair requires a heap control block for shared ownership."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l6-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "You are writing a pipeline where the next step is a different async operation depending on the value from the previous step. Which adaptor should you use?\n\n```cpp\nauto pipeline =\n    ex::just(x)\n    | ex::???([]( int v) {\n        if (v > 0) return async_positive(v); // returns a sender\n        else       return async_negative();  // returns a sender\n    });\n```",
+          "options": [
+            "`then` — because it transforms values",
+            "`let_value` — because fn returns a sender, not a plain value",
+            "`upon_error` — because we are switching paths based on the value",
+            "`split` — to share the value across both branches"
+          ],
+          "answerIndex": 1,
+          "explanation": "`then`'s lambda must return a **plain value**; passing a sender to it would make the sender itself the pipeline's output value, not run it as the next step. `let_value` is specifically designed for this: its lambda returns a new sender, and `let_value` starts that sender as the live continuation. Whenever you need to branch on an async subgraph — rather than a plain value — reach for `let_value`."
+        },
+        {
+          "id": "m6-l6-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What must `fn` return in `std::execution::let_error(s, fn)`?",
+          "options": [
+            "A plain value to substitute for the error",
+            "A new sender whose completion becomes the pipeline's output",
+            "`void` — let_error only discards the error",
+            "A `std::error_code` wrapping the original error"
+          ],
+          "answerIndex": 1,
+          "explanation": "`let_error` belongs to the `let_*` family, where the lambda always returns a **new sender**. That sender is started and its completion — value, error, or stopped — flows to the downstream receiver. Compare with `upon_error`, where the lambda returns a plain value (synchronous recovery). Use `let_error` when the recovery path is itself async."
+        },
+        {
+          "id": "m6-l6-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <execution>\n\nauto async_lookup(int key) {\n    return std::execution::just(key * 10); // returns a sender\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(5)\n        | ex::then([](int key) {\n            return async_lookup(key); // BUG: returns a sender, not int\n        })\n    );\n\n    // result is std::optional<std::tuple<Sender>> ?\n    // Not what we wanted.\n}",
+          "answerLine": 12,
+          "explanation": "Line 12: the lambda inside `then` returns a **sender** (`async_lookup(key)` returns `just(50)`), not an `int`. `then` treats its lambda's return value as the next value in the pipeline — so the pipeline now carries a **sender object as a value**, rather than running that sender as the next step. The fix is to replace `then` with `let_value`: `let_value` expects its lambda to return a sender and starts it as the live continuation, so the pipeline ultimately carries `50` (the value inside `just(50)`)."
+        },
+        {
+          "id": "m6-l6-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why is `std::async` unable to offer a zero-allocation guarantee — even with a perfect implementation?",
+          "options": [
+            "Because `std::async` always spawns a new thread, and threads require heap memory",
+            "Because `std::future` uses shared ownership between the caller and the background computation, which requires a stable heap-allocated control block",
+            "Because the C++ standard does not allow `std::async` to use stack memory",
+            "Because `std::async` stores the result as `std::any`, which always heap-allocates"
+          ],
+          "answerIndex": 1,
+          "explanation": "The root cause is **shared ownership**. A `std::future<T>` and the internal promise/shared-state that the background task writes to are two separate entities sharing one piece of data. Shared ownership requires a reference count. A reference count needs a stable address — it cannot live on the caller's stack (which may return before the background task finishes) or the thread's stack. The only viable location is a **heap-allocated control block** managed by `shared_ptr`. This is not a quality-of-implementation detail; it is a structural consequence of the shared-ownership model. Senders avoid this entirely: the `operation_state` has **single ownership**, and its type and size are known at compile time."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does `set_stopped()` signal to a receiver? (from l1)",
+            "options": [
+              "An error occurred and the error object is being suppressed",
+              "The task was cancelled — this is a standalone outcome, not an error",
+              "The sender produced no values but completed successfully",
+              "Execution was transferred to a different scheduler"
+            ],
+            "answerIndex": 1,
+            "explanation": "`set_stopped()` is the third completion channel, distinct from both `set_value` and `set_error`. A cancelled task is not broken — it was legitimately stopped. `std::execution` treats cancellation as a first-class outcome with its own channel, rather than encoding it as an exception (as `std::future` does with `std::future_error`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::execution::sync_wait` return when the sender completes via `set_stopped()`? (from l2)",
+            "options": [
+              "Throws `std::execution::cancelled`",
+              "Returns `std::nullopt`",
+              "Returns an empty `std::tuple<>`",
+              "Blocks indefinitely until a value is produced"
+            ],
+            "answerIndex": 1,
+            "explanation": "`sync_wait` maps the three channels to three outcomes: `set_value(v...)` → `optional<tuple<v...>>{value}`, `set_stopped()` → `std::nullopt`, `set_error(e)` → rethrow `e`. Returning `nullopt` is an unambiguous, non-exception signal that the operation was cancelled."
+          },
+          {
+            "type": "choice",
+            "prompt": "A sender completes via `set_error(e)`. What does `then(s, fn)` do with this signal? (from l3)",
+            "options": [
+              "Calls `fn(e)` to transform the error",
+              "Passes `set_error(e)` through unchanged — fn is not called",
+              "Converts the error to `set_stopped()`",
+              "Discards the error and calls `fn()` with no arguments"
+            ],
+            "answerIndex": 1,
+            "explanation": "`then` handles **only `set_value`**. `set_error` and `set_stopped` pass through it transparently — the lambda is never invoked. To intercept `set_error`, use `upon_error` (for a plain-value recovery) or `let_error` (for an async recovery sender)."
+          },
+          {
+            "type": "choice",
+            "prompt": "What guarantee does `when_all` provide about its child operations at the moment it calls `set_value`, `set_error`, or `set_stopped` on its receiver? (from l4)",
+            "options": [
+              "All child operations have completed via `set_value`",
+              "All child operations have finished — through any channel — and none are running in the background",
+              "The first child to complete determines the result; the rest are detached",
+              "No guarantee is made about the state of other child operations"
+            ],
+            "answerIndex": 1,
+            "explanation": "This is the **structured concurrency** guarantee. When `when_all` signals its consumer — for any reason (value, error, or stopped) — every child operation it started has already completed. No orphaned background work, no races during destruction. This is what distinguishes `when_all` from `std::async`: with `std::future`, an error in one task does not stop the others."
+          },
+          {
+            "type": "choice",
+            "prompt": "Which adaptor's lambda returns a sender rather than a plain value?",
+            "options": [
+              "`then` — fn returns the next value",
+              "`upon_error` — fn returns a recovery value",
+              "`let_value` — fn returns a new sender that becomes the live continuation",
+              "`upon_stopped` — fn returns a fallback value"
+            ],
+            "answerIndex": 2,
+            "explanation": "`let_value`'s lambda must return a **sender**. `let_value` then starts that sender and waits for it to complete — the inner sender's output becomes the pipeline's output. `then`, `upon_error`, and `upon_stopped` all require their lambdas to return plain values. The `let_*` / `upon_*` naming rule: `let_*` → sender, `upon_*` / `then` → value."
+          }
+        ]
+      }
     }
   ]
 }

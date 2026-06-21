@@ -4,5 +4,7 @@
   "title": "Новые контейнеры и типы",
   "significance": "важный",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m7-l1", "title": "std::inplace_vector", "stub": true }
+  ]
 }

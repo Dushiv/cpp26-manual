@@ -7,8 +7,809 @@
   "lessons": [
     {
       "id": "m6-l1",
-      "title": "Модель Senders/Receivers: основы",
-      "stub": true
+      "title": "Концепции: sender, receiver, operation_state",
+      "prerequisites": [],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet available on Compiler Explorer"
+      },
+      "motivation": "Параллелизм на C++ долгое время строился на двух инструментах: `std::thread` + примитивы синхронизации или `std::async` / `std::future`. Оба подхода технически работают, но плохо масштабируются.\n\n**Проблемы `std::async` / `std::future`:**\n\n- **Вынужденное выделение кучи.** Каждый `std::async` создаёт `shared_ptr`-based shared state: накладные расходы на атомарные счётчики, динамическое выделение памяти — без вариантов, даже для тривиальной задачи.\n- **Единственный канал ошибок — исключения.** Если хочется вернуть `std::error_code` без бросания исключений, придётся оборачивать всё руками. `future::get()` бросает или возвращает значение — третьего не дано.\n- **Нет отмены.** Запущенная задача работает до конца. Остановить её нельзя — только ждать или игнорировать результат.\n- **Композиция требует блокировки.** Чтобы передать результат одного future во второй, нужен `.get()` — вызов блокирует поток. Цепочка из трёх future блокирует трижды.\n\n**Проблемы сырых потоков:**\n\n- Ручная синхронизация через мьютексы и условные переменные — легко ошибиться.\n- Исключения из потока не прокидываются автоматически.\n- Время жизни потока нужно явно контролировать (`join` / `detach`).\n- Никаких структурированных гарантий: сложно доказать, что все пути завершились.\n\n**`std::execution` (P2300) переосмысливает модель.** Вместо того чтобы запускать работу прямо сейчас, вы *описываете* её в виде графа операций — **sender**. Описание ленивое: само по себе оно ничего не делает. Когда граф готов, вы **подключаете** к нему обработчик результатов — **receiver** — и только тогда запускаете выполнение. Всё хранение умещается внутри **operation state** без единого обращения к куче.",
+      "theory": "## Три ключевых абстракции\n\n### Sender — описание работы\n\n**Sender** — это описание работы, которую нужно выполнить. Не сама работа — описание. Аналогия: sender похож на функцию, которую вы ещё не вызвали. Создание sender-а ничего не запускает.\n\n```cpp\nauto s = std::execution::just(42);\n// s — это sender. Он описывает: «при запуске немедленно выдать значение 42».\n// Никаких потоков, никаких выделений — просто объект-описание.\n```\n\nSender — тип-значение: его можно копировать, перемещать, передавать в функции. Он неизменен сам по себе — не запускается, пока вы не скажете явно.\n\n### Receiver — обработчик всех трёх исходов\n\n**Receiver** — это объект, который знает, что делать с результатом. У receiver-а ровно три канала завершения:\n\n- `set_value(values...)` — успех, работа завершилась и вернула значения\n- `set_error(err)` — ошибка; тип ошибки произвольный: `int`, `std::error_code`, `std::exception_ptr`, ваш собственный тип\n- `set_stopped()` — отмена; задача была остановлена до завершения\n\nПочему именно три канала? Потому что это три принципиально разных события:\n\n- Успех и ошибка — два полюса нормальной работы.\n- **Отмена — не ошибка.** Отменённая задача не сломана. Смешивать её с ошибкой (как это делает `std::future`, бросая `future_error`) — семантическая ложь. Тип обработчика должен это различать.\n\n```\nSender завершается ровно одним из путей:\n  ──► set_value(v)    → путь успеха\n  ──► set_error(e)    → путь ошибки  (e: int, error_code, exception_ptr, ...)\n  ──► set_stopped()   → путь отмены\n```\n\n### Operation state — живой исполняемый объект\n\n**Operation state** создаётся функцией `connect(sender, receiver)`. Это уже не описание — это конкретная, готовая-к-запуску единица работы. Чтобы запустить её, вызывается `start(op)`.\n\n## Жизненный цикл операции\n\n```cpp\n// 1. Описываем работу — ничего не происходит\nauto sender = std::execution::just(42);\n\n// 2. Соединяем с обработчиком — аллокации нет\nauto op = std::execution::connect(sender, my_receiver{});\n\n// 3. Теперь работа начинается\nstd::execution::start(op);\n\n// Когда-то позже: вызывается одно из:\n//   my_receiver::set_value(42)\n//   my_receiver::set_error(...)\n//   my_receiver::set_stopped()\n```\n\n**Критически важно:** `op` должен оставаться живым до момента, когда sender завершится. Уничтожить `op` раньше — undefined behavior. Ответственность за время жизни лежит на вызывающем коде.\n\n**Второй запрет:** `start()` нельзя вызвать дважды на одном `op`. Повторный `start()` — UB. Operation state — одноразовый объект.\n\n## Гарантия нулевой аллокации\n\nТип operation state статически известен на этапе компиляции: `connect(S, R)` возвращает конкретный тип `operation_state<S, R>`, кодированный в параметрах шаблона. Компилятор знает его размер заранее. Всё хранение умещается внутри этого объекта.\n\nНикакого `new`. Никакого `shared_ptr`. Никакого type erasure через виртуальные таблицы. Это то, что позволяет строить длинные цепочки sender-ов без накладных расходов на каждое звено.\n\nСравните с `std::future`: там shared state живёт в куче по определению — иначе невозможно разделить его между вызывающим и потоком. В `std::execution` такой проблемы нет, потому что lifetime явно определён: op владеет всем и живёт ровно столько, сколько нужно.\n\n## Архитектурная схема\n\n```\n┌──────────┐   connect()   ┌─────────────┐\n│  Sender  │ ────────────► │ Op State    │ ──start()──► [работа идёт]\n└──────────┘               └─────────────┘                    │\n  (рецепт)                 (без аллокации)              один из:\n                                                    ┌───────────────────┐\n                                                    │ set_value(v)      │\n                                                    │ set_error(e)      │◄── ┌──────────┐\n                                                    │ set_stopped()     │    │ Receiver │\n                                                    └───────────────────┘    └──────────┘\n```\n\n## Сравнение подходов\n\n| | `std::future`/`async` | Сырые потоки | Senders |\n|---|---|---|---|\n| Ленивый? | Нет (eager) | Нет | Да |\n| Аллокация кучи? | Всегда | Вручную | Никогда |\n| Канал ошибок | Только исключения | Вручную | Любой тип |\n| Отмена | Нет | Вручную | Да (`set_stopped`) |\n| Композиция | Сложная | Вручную | Первоклассная |\n\n## Синтаксический сахар на практике (превью l2)\n\nНа практике вы почти никогда не пишете `connect()` и `start()` вручную. Вместо этого используются высокоуровневые адаптеры, которые строят цепочку sender-ов через `operator|` и запускают всё одним вызовом:\n\n```cpp\n// Всё это — цепочка sender-ов.\n// sync_wait() вызывает connect + start внутри себя.\nauto result = std::execution::sync_wait(\n    std::execution::just(42)\n    | std::execution::then([](int x){ return x * 2; })\n);\n// result == std::optional<std::tuple<int>>{84}\n```\n\nВ l2 вы будете писать именно такой код. Здесь мы разобрали, *почему* он работает.\n\n## Нюансы\n\n- **Sender — тип-значение.** Его можно копировать и перемещать. Создание sender-а никогда не имеет побочных эффектов.\n- **Только runtime.** Senders — вычисления времени выполнения, не `constexpr`.\n- **Двойной start — UB.** Вызвать `start(op)` дважды на одном op запрещено стандартом.\n- **Время жизни — ответственность вызывающего.** Op state должен жить до завершения работы.",
+      "examples": [
+        {
+          "title": "Концептуальный: just + sync_wait",
+          "code": "// Примечание: требует C++26 std::execution (P2300).\n// Показан как спецификационный пример — без компиляции.\n#include <execution>\n#include <print>\n\nint main() {\n    // just(42) — sender, который немедленно завершается со значением 42.\n    // sync_wait блокирует текущий поток до завершения sender-а,\n    // возвращает optional<tuple<int>>.\n    auto result = std::execution::sync_wait(\n        std::execution::just(42)\n    );\n\n    // *result — это tuple<int>{42}\n    std::println(\"{}\", std::get<0>(*result)); // выведет: 42\n}",
+          "expectedOutput": "",
+          "explanation": "`just(42)` создаёт sender — описание «выдать значение 42». Само по себе это ничего не запускает. `sync_wait` вызывает `connect` + `start` внутри себя и блокируется до завершения. Результат приходит через `set_value(42)` в receiver, который `sync_wait` создал сам. Тип результата — `optional<tuple<int>>`: `optional` нужен для случая отмены (тогда вернётся `nullopt`)."
+        },
+        {
+          "title": "Концептуальный: три канала завершения",
+          "code": "// Три типа sender-ов — три канала завершения.\n// Показан как спецификационный пример.\n#include <execution>\n#include <print>\n\nint main() {\n    // Канал 1: set_value(42)\n    auto val_sender = std::execution::just(42);\n    auto r1 = std::execution::sync_wait(val_sender);\n    // r1 == optional<tuple<int>>{42}\n\n    // Канал 2: set_error(exception_ptr)\n    auto err_sender = std::execution::just_error(\n        std::make_exception_ptr(std::runtime_error{\"fail\"}));\n    // sync_wait пробросит исключение из exception_ptr\n\n    // Канал 3: set_stopped()\n    auto stop_sender = std::execution::just_stopped();\n    auto r3 = std::execution::sync_wait(stop_sender);\n    // r3 == std::nullopt  (отмена — не ошибка, просто нет результата)\n\n    std::println(\"value: {}\",  std::get<0>(*r1)); // 42\n    std::println(\"stopped: {}\", !r3.has_value());  // true\n}",
+          "expectedOutput": "",
+          "explanation": "`just` завершается через `set_value`, `just_error` — через `set_error`, `just_stopped` — через `set_stopped`. Обратите внимание: `sync_wait` на `just_stopped()` возвращает `nullopt`, а не бросает исключение. Отмена — самостоятельный исход, не ошибка. Это принципиальное отличие от `std::future`, где отмена выражается через исключение `std::future_error`."
+        },
+        {
+          "title": "Концептуальный: then — цепочка sender-ов",
+          "code": "// then() принимает sender и функцию, возвращает новый sender.\n// Цепочка строится лениво — пока не вызван sync_wait.\n#include <execution>\n#include <print>\n\nint main() {\n    // Каждый | строит новый sender, ничего не запуская.\n    auto pipeline =\n        std::execution::just(10)\n        | std::execution::then([](int x) { return x * 3; })\n        | std::execution::then([](int x) { return x + 2; });\n\n    // sync_wait запускает весь граф за один раз.\n    auto result = std::execution::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // (10 * 3) + 2 == 32\n}",
+          "expectedOutput": "",
+          "explanation": "Каждый `then` оборачивает предыдущий sender в новый. Тип `pipeline` кодирует весь граф статически: `then_sender<then_sender<just_sender<int>, lambda1>, lambda2>`. Никаких виртуальных вызовов, никаких промежуточных аллокаций. `sync_wait` запускает граф одним вызовом `connect` + `start`. Именно из-за такой ленивости адаптеры могут свободно переносить work на другой поток, пулить ресурсы и планировать выполнение — тема l2 и l3."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что происходит в момент создания sender-а?\n\n```cpp\nauto s = std::execution::just(42);\n```",
+          "options": [
+            "Запускается фоновый поток для выполнения работы",
+            "Ничего: sender — это ленивое описание работы, которая ещё не начата",
+            "Выделяется shared state в куче (как у std::future)",
+            "Генерируется исключение, если 42 некорректен"
+          ],
+          "answerIndex": 1,
+          "explanation": "Sender — это описание работы (рецепт), не сама работа. Создание sender-а не имеет побочных эффектов: ни потоков, ни аллокаций, ни вычислений. Работа начинается только после `connect()` + `start()`."
+        },
+        {
+          "id": "m6-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Какая функция фактически запускает выполнение работы в модели `std::execution`?",
+          "options": [
+            "`connect(sender, receiver)` — соединяет sender и receiver",
+            "`start(op)` — запускает operation state",
+            "`just(value)` — создаёт sender со значением",
+            "`set_value(v)` — вызывается receiver-ом при успехе"
+          ],
+          "answerIndex": 1,
+          "explanation": "`connect()` создаёт operation state, но не запускает работу. `start(op)` — это точка, с которой начинается фактическое выполнение. Аналог `.get()` у future, но без блокировки и без аллокаций: start просто сигнализирует op-state начать работу."
+        },
+        {
+          "id": "m6-l1-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Receiver получил вызов `set_stopped()`. Что это означает?",
+          "options": [
+            "Произошла ошибка, аналогичная исключению",
+            "Sender завершился с исключением типа `std::stop_requested`",
+            "Задача была отменена — это не ошибка, а самостоятельный исход",
+            "Работа завершилась успешно, но результат не нужен"
+          ],
+          "answerIndex": 2,
+          "explanation": "`set_stopped()` — третий канал завершения, отдельный от успеха и ошибки. Отменённая задача не сломана: она была правомерно остановлена. `std::execution::sync_wait` возвращает `std::nullopt` при отмене — не бросает исключение. Это принципиальное отличие от `std::future`, где отмена выражается через `std::future_error`."
+        },
+        {
+          "id": "m6-l1-e4",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "// Концептуальный пример (не компилируется без P2300)\n#include <execution>\n\nstruct print_receiver {\n    void set_value(int v) const { /* печатаем v */ }\n    void set_error(auto) const noexcept {}\n    void set_stopped() const noexcept {}\n};\n\nint main() {\n    auto s  = std::execution::just(42);\n    auto op = std::execution::connect(s, print_receiver{});\n    std::execution::start(op);   // первый запуск\n    std::execution::start(op);   // второй запуск того же op\n}",
+          "answerLine": 14,
+          "explanation": "Строка 14: `start(op)` вызывается второй раз на том же operation state. По стандарту C++26, operation state — одноразовый объект: повторный `start()` является undefined behavior. Operation state должен быть запущен ровно один раз, и уничтожен только после того, как sender завершил работу (вызвал одно из `set_value`/`set_error`/`set_stopped`)."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Чем sender отличается от `std::async`?",
+            "options": [
+              "Sender запускает работу в отдельном потоке немедленно при создании",
+              "Sender — ленивое описание работы: создание не запускает выполнение, нет аллокации кучи",
+              "Sender всегда однопоточный и не поддерживает параллелизм",
+              "Sender заменяет sender только при наличии `co_await` в функции"
+            ],
+            "answerIndex": 1,
+            "explanation": "Ключевые отличия: laziness (работа не начинается при создании) и отсутствие обязательной аллокации кучи. `std::async` создаёт shared state в куче немедленно и может запустить поток сразу. Sender — просто объект-описание, без побочных эффектов."
+          },
+          {
+            "type": "choice",
+            "prompt": "Receiver `R` получает вызов `set_error(42)`, где `42` имеет тип `int`. Это корректно для `std::execution`?",
+            "options": [
+              "Нет: ошибки в std::execution должны быть типа std::exception_ptr",
+              "Нет: set_error принимает только строки (const char*)",
+              "Да: канал set_error принимает ошибку любого типа",
+              "Нет: ошибки кодируются через set_stopped, а не set_error"
+            ],
+            "answerIndex": 2,
+            "explanation": "В `std::execution` канал `set_error` принимает ошибку произвольного типа: `int`, `std::error_code`, `std::exception_ptr`, пользовательский тип — что угодно. Это одно из ключевых преимуществ над `std::future`, где ошибки передаются исключительно через исключения."
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему operation state не требует выделения памяти в куче?",
+            "options": [
+              "Потому что std::execution использует глобальный пул памяти",
+              "Потому что тип operation state статически известен из типов sender и receiver, и весь размер вычислен компилятором",
+              "Потому что operation state всегда размещается на стеке вызывающей функции принудительно",
+              "Потому что C++26 запрещает выделение кучи в параллельном коде"
+            ],
+            "answerIndex": 1,
+            "explanation": "`connect(S, R)` возвращает конкретный тип `operation_state<S, R>`, известный на этапе компиляции. Компилятор знает размер этого объекта заранее и может разместить его где угодно — на стеке, внутри другого объекта, в статической памяти. Никакого type erasure, никакого `new`, никакого `shared_ptr`. Именно это делает цепочки sender-ов дешёвыми."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l2",
+      "title": "just, sync_wait и первые конвейеры",
+      "prerequisites": [
+        "m6-l1"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet available on Compiler Explorer"
+      },
+      "motivation": "`std::execution` вводит новый способ описывать асинхронную работу — через **сендеры**. Но сендер сам по себе ничего не делает: он лишь описывает, что должно произойти. Чтобы получить результат в обычном синхронном коде, нужен мост между миром сендеров и привычным миром значений и исключений.\n\nЭтот урок вводит три ключевых строительных блока:\n- `just(v...)` — простейший сендер, сразу несущий готовые значения,\n- `sync_wait(s)` — мост обратно к обычному C++: блокирует поток до завершения сендера и возвращает результат,\n- оператор `|` — синтаксический сахар для составления конвейеров из сендеров.\n\nВместе они позволяют писать первые осмысленные pipeline-выражения и понять, что именно и когда выполняется в мире `std::execution`.",
+      "theory": "## `std::execution::just(v...)` — простейший сендер\n\n`just` создаёт сендер, который немедленно завершается с переданными значениями через `set_value`. «Немедленно» — не значит «прямо сейчас при вызове»: `just` **ленив**, как и все сендеры в `std::execution`. Реальная передача значения происходит только тогда, когда сендер подключён к получателю и запущен.\n\n```cpp\nauto s = std::execution::just(42);   // ничего не происходит\n// ... можно сохранить, передать, скопировать ...\n// значение 42 будет доставлено только при запуске\n```\n\n`just` может нести **несколько значений**:\n\n```cpp\nauto s = std::execution::just(1, 2.0, 'x');   // три значения разных типов\n```\n\nТипы значений кодируются прямо в типе сендера — то есть система типов гарантирует на этапе компиляции, что получатель умеет принять именно `int`, `double` и `char`.\n\n---\n\n## `std::execution::sync_wait(s)` — мост к обычному C++\n\n`sync_wait` блокирует текущий поток до тех пор, пока сендер `s` не завершится — через любой из трёх каналов.\n\n**Возвращаемый тип:** `std::optional<std::tuple<values...>>`\n\n| Как завершился сендер | Что возвращает `sync_wait` |\n|---|---|\n| `set_value(v...)` | `optional<tuple<...>>` с кортежем из значений |\n| `set_stopped()` (отмена) | `std::nullopt` |\n| `set_error(exception_ptr)` | пробрасывает исключение (rethrow) |\n\nВнутри `sync_wait` выполняет ровно то, что описывалось в m6-l1: `connect(s, receiver)` создаёт объект-операцию, `start(op)` запускает его. `sync_wait` выступает собственным получателем и знает, как заблокировать текущий поток и вернуть результат после завершения. Никакой магии — только механизм connect/start из предыдущего урока.\n\n```cpp\nauto result = std::execution::sync_wait(std::execution::just(42));\n// result : std::optional<std::tuple<int>>\n// *result = std::tuple<int>{42}\nstd::get<0>(*result);  // 42\n```\n\n**Важно:** `sync_wait` использует **текущий поток** как исполняющий контекст — он не создаёт нового потока. Для реального многопоточного выполнения нужен планировщик (scheduler), тема m6-l4.\n\n---\n\n## Оператор `|` — синтаксический сахар для конвейеров\n\nОператор `|` — это буквально сокращение вызова функции:\n\n```cpp\nsender | adaptor   ≡   adaptor(sender)\n```\n\nОн не делает ничего нового: просто позволяет читать цепочку преобразований слева направо вместо вложенных вызовов.\n\n```cpp\nnamespace ex = std::execution;\n\n// Функциональная форма (вложенные вызовы):\nauto s1 = ex::then(ex::just(1), [](int x){ return x * 2; });\n\n// Конвейерная форма (то же самое):\nauto s2 = ex::just(1) | ex::then([](int x){ return x * 2; });\n```\n\nОба выражения создают **один и тот же сендер**. Конвейер остаётся ленивым: `fn` не вызывается ни на `|`, ни до `sync_wait`.\n\n---\n\n## `std::execution::then(s, fn)` — трансформация значений (обзор)\n\n`then` оборачивает сендер `s`: когда `s` завершается через `set_value(v...)`, `then` вызывает `fn(v...)` и передаёт результат дальше через `set_value`. Ошибки и отмена проходят через `then` **без изменений** — `then` не трогает каналы `set_error` и `set_stopped`.\n\nПолное покрытие `then` — в m6-l3. Здесь он нужен только для демонстрации конвейеров.\n\n---\n\n## `just_error` и `just_stopped`\n\n```cpp\nstd::execution::just_error(e)   // немедленно вызывает set_error(e)\nstd::execution::just_stopped()  // немедленно вызывает set_stopped()\n```\n\n- `just_error(std::make_exception_ptr(std::runtime_error{\"oops\"}))` → `sync_wait` пробросит исключение.\n- `just_stopped()` → `sync_wait` вернёт `std::nullopt`.\n\nПрименения: тестирование обработки ошибок, условные конвейеры, паттерны «ранний выход».\n\n---\n\n## Многозначные сендеры\n\n`just(1, 2, 3)` несёт три значения. Извлечь их можно структурированным связыванием:\n\n```cpp\nauto result = std::execution::sync_wait(std::execution::just(1, 2, 3));\nauto& [a, b, c] = *result;   // result : optional<tuple<int,int,int>>\n```\n\nПри передаче в `then` функция получает все значения как отдельные аргументы:\n\n```cpp\nex::just(3, 4) | ex::then([](int a, int b){ return a + b; })\n// → несёт одно значение int (7)\n```\n\n---\n\n## Диаграмма\n\n```\njust(42) ──| then([](int x){ return x*2; }) |──► sync_wait\n   │                       │                          │\nproduces 42          transforms to 84        returns optional<tuple<int>>\n                                                     {84}\n\njust_stopped() ──────────────────────────────► sync_wait\n                                                returns nullopt\n```\n\n---\n\n## Почему не просто лямбда?\n\nЛямбда — это значение; она выполняется немедленно при вызове и ничего не знает об ошибках или отмене. Сендер — это **описание работы**, которое:\n- можно создать сейчас и запустить потом,\n- передать, сохранить, вернуть из функции,\n- скомпоновать с другими сендерами через `|`,\n- автоматически несёт три канала: значение, ошибку, отмену.\n\nЛямбда не компонируется с обработкой ошибок автоматически; сендер — да.",
+      "examples": [
+        {
+          "title": "just + sync_wait: простейший случай",
+          "code": "#include <execution>\n#include <print>\n#include <tuple>\n\nint main() {\n    auto result = std::execution::sync_wait(\n        std::execution::just(42)\n    );\n    // result : std::optional<std::tuple<int>>\n    std::println(\"{}\", std::get<0>(*result)); // 42\n}",
+          "expectedOutput": "",
+          "explanation": "`just(42)` создаёт сендер, несущий `int`. `sync_wait` подключает к нему внутренний получатель, запускает операцию и блокирует поток. Сендер немедленно вызывает `set_value(42)`, получатель раскрывает значение в `optional<tuple<int>>`, и `sync_wait` возвращает его. Разыменование `*result` безопасно — `just` не может вернуть `nullopt`."
+        },
+        {
+          "title": "Конвейер с несколькими then",
+          "code": "#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(10)\n        | ex::then([](int x){ return x * x; })   // 10*10 = 100\n        | ex::then([](int x){ return x + 1; })   // 100+1 = 101\n    );\n\n    std::println(\"{}\", std::get<0>(*result)); // 101\n}",
+          "expectedOutput": "",
+          "explanation": "Оператор `|` строит новый сендер на каждом шаге — никакая лямбда не вызывается до `sync_wait`. При запуске значение `10` проходит по конвейеру справа налево: `just(10)` доставляет `10`, первый `then` трансформирует его в `100`, второй — в `101`. `sync_wait` возвращает `optional<tuple<int>>{101}`."
+        },
+        {
+          "title": "just_stopped и just_error",
+          "code": "#include <execution>\n#include <print>\n#include <stdexcept>\n\nint main() {\n    namespace ex = std::execution;\n\n    // Отмена: sync_wait возвращает nullopt\n    auto r1 = ex::sync_wait(ex::just_stopped());\n    if (!r1) {\n        std::println(\"cancelled\");  // выводится\n    }\n\n    // Ошибка: sync_wait пробрасывает исключение\n    try {\n        ex::sync_wait(\n            ex::just_error(\n                std::make_exception_ptr(std::runtime_error{\"oops\"})\n            )\n        );\n    } catch (const std::runtime_error& e) {\n        std::println(\"error: {}\", e.what());  // error: oops\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`just_stopped()` немедленно вызывает `set_stopped()` на получателе. `sync_wait` перехватывает это и возвращает `std::nullopt` — явный сигнал отмены. `just_error(ptr)` вызывает `set_error(ptr)`, а `sync_wait` при получении `exception_ptr` делает `std::rethrow_exception` — обычный C++-блок `try/catch` ловит его как обычное исключение."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что возвращает `std::execution::sync_wait(std::execution::just_stopped())`?",
+          "options": [
+            "std::nullopt",
+            "std::optional<std::tuple<>>{} (пустой кортеж)",
+            "Бросает исключение std::execution::cancelled",
+            "0"
+          ],
+          "answerIndex": 0,
+          "explanation": "`just_stopped()` вызывает `set_stopped()` на получателе. `sync_wait` трактует канал остановки как отмену и возвращает `std::nullopt` — не исключение и не пустой optional-с-значением."
+        },
+        {
+          "id": "m6-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Рассмотрим код:\n```cpp\nauto s = std::execution::just(1)\n         | std::execution::then([](int x){ return x * 2; });\n```\nКогда вызывается лямбда `[](int x){ return x * 2; }`?",
+          "options": [
+            "Когда вычисляется выражение `just(1)`",
+            "Когда вычисляется оператор `|`",
+            "Когда `s` передаётся в `sync_wait` (или другой потребитель)",
+            "Никогда — `|` только хранит лямбду, но не вызывает"
+          ],
+          "answerIndex": 2,
+          "explanation": "Все сендеры ленивы. Оператор `|` — это просто `then(just(1), fn)`: он строит новый объект-сендер и сохраняет лямбду внутри него. Лямбда вызывается только при запуске операции, то есть когда сендер подключают к получателю и стартуют через `sync_wait` или другой потребитель."
+        },
+        {
+          "id": "m6-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n    auto result = ex::sync_wait(ex::just_stopped());\n    std::println(\"{}\", std::get<0>(*result));\n}",
+          "answerLine": 7,
+          "explanation": "После `just_stopped()` сендер завершается через `set_stopped()`, и `sync_wait` возвращает `std::nullopt`. Строка 7 разыменовывает `*result` без проверки `result.has_value()` — это неопределённое поведение. Правильный подход: сначала проверить `if (!result) { /* отмена */ }`, и только после этого обращаться к `*result`."
+        },
+        {
+          "id": "m6-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Каков тип значения, возвращаемого `sync_wait` в следующем коде?\n```cpp\nnamespace ex = std::execution;\nauto r = ex::sync_wait(\n    ex::just(1, 2)\n    | ex::then([](int a, int b){ return a + b; })\n);\n```",
+          "options": [
+            "std::optional<std::tuple<int, int>>",
+            "std::optional<std::tuple<int>>",
+            "int",
+            "std::optional<int>"
+          ],
+          "answerIndex": 1,
+          "explanation": "`just(1, 2)` несёт два значения (`int`, `int`). `then([](int a, int b){ return a + b; })` принимает оба и возвращает одно значение `int` — сумму. Итоговый сендер несёт одно значение типа `int`, поэтому `sync_wait` возвращает `std::optional<std::tuple<int>>`."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что возвращает `sync_wait`, если сендер завершается через `set_error(exception_ptr)`?",
+            "options": [
+              "std::nullopt",
+              "std::optional<std::tuple<std::exception_ptr>>",
+              "Пробрасывает исключение (rethrows)",
+              "std::optional<std::tuple<>> с пустым кортежем"
+            ],
+            "answerIndex": 2,
+            "explanation": "Из трёх каналов завершения: `set_value` → `optional<tuple<...>>`, `set_stopped` → `nullopt`, `set_error(exception_ptr)` → `sync_wait` вызывает `std::rethrow_exception` и пробрасывает исключение в вызывающий код."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что делает оператор `|` в выражении `sender | adaptor`?",
+            "options": [
+              "Немедленно выполняет `adaptor` со значением из `sender`",
+              "Это в точности эквивалентно `adaptor(sender)` — синтаксический сахар",
+              "Создаёт новый поток для выполнения `adaptor`",
+              "Объединяет каналы двух сендеров в один"
+            ],
+            "answerIndex": 1,
+            "explanation": "Оператор `|` для сендеров — чисто синтаксический сахар: `s | f` означает ровно `f(s)`. Это не выполнение, не параллелизм, не слияние — просто удобная запись для построения конвейеров слева направо."
+          },
+          {
+            "type": "choice",
+            "prompt": "Каков тип значения, возвращаемого `sync_wait(just(1, 2, 3))`?",
+            "options": [
+              "std::optional<int>",
+              "std::tuple<int, int, int>",
+              "std::optional<std::tuple<int, int, int>>",
+              "int[3]"
+            ],
+            "answerIndex": 2,
+            "explanation": "`just(1, 2, 3)` несёт три значения типа `int`. `sync_wait` оборачивает всё в `optional<tuple<...>>`: при успешном завершении через `set_value(1, 2, 3)` возвращается `std::optional<std::tuple<int,int,int>>` со значениями `{1, 2, 3}`."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l3",
+      "title": "then, upon_error, upon_stopped и планировщики",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "Мы умеем создавать сендеры (`just`) и запускать их (`sync_wait`). Но цепочки полезны только тогда, когда мы можем **преобразовывать** результаты и **обрабатывать ошибки** на каждом шаге. Три адаптора — `then`, `upon_error`, `upon_stopped` — закрывают ровно эти потребности: каждый перехватывает один из трёх каналов (`set_value` / `set_error` / `set_stopped`) и пропускает два других без изменений. Планировщики (`scheduler`) добавляют к этому ещё одно измерение: **где** выполняется каждый шаг цепочки. Их связка с `schedule` и `transfer` позволяет перемещать работу между потоками одним вызовом — без колбэков, мьютексов и ручного управления временем жизни.",
+      "theory": "## Три канала завершения — напоминание\n\nКаждый сендер завершает операцию ровно одним из трёх способов:\n\n- **`set_value(v...)`** — успех, передаёт значение(я);\n- **`set_error(e)`** — ошибка, передаёт объект ошибки;\n- **`set_stopped()`** — отмена, данных нет.\n\nЛюбой адаптор-трансформер «сидит» между двумя сендерами. Его задача: среагировать на один канал и прозрачно переслать два остальных.\n\n---\n\n## `std::execution::then(s, fn)` — преобразование канала значения\n\n`then` принимает сендер `s` и функцию `fn`. Когда `s` завершается через `set_value`, `then` вызывает `fn` с переданными значениями и делает возвращаемое значение `fn` новым значением канала:\n\n```\nset_value(v...) → fn(v...) → set_value(fn(v...))\n```\n\nЕсли `fn` возвращает `void`, результирующий сендер завершается через `set_value()` без аргументов.\n\n**Ключевые свойства:**\n\n- `then` **ленив** — `fn` не вызывается до тех пор, пока не стартует вся операция (обычно при вызове `sync_wait` или аналогичного);\n- `then` **прозрачен** для `set_error` и `set_stopped` — они проходят через него без изменений;\n- Несколько значений: `just(1, 2) | then([](int a, int b){ return a + b; })` превращает два `int` в один.\n\n### Схема пропускания каналов для `then`\n\n```\n             ┌──── set_value ────► then(fn) ──► новый set_value\nSender ──────┤──── set_error ────────────────► set_error (без изменений)\n             └──── set_stopped ───────────────► set_stopped (без изменений)\n```\n\n---\n\n## `std::execution::upon_error(s, fn)` — обработка канала ошибки\n\n`upon_error` зеркально симметричен `then`, но срабатывает на `set_error`:\n\n```\nset_error(e) → fn(e) → set_value(fn(e))   // ошибка превращается в значение\nset_value(v...) → set_value(v...)          // значение проходит без изменений\nset_stopped()   → set_stopped()            // отмена проходит без изменений\n```\n\nТипичный сценарий — **восстановление после ошибки**: вместо того чтобы пробрасывать исключение дальше, `fn` возвращает резервное значение, и цепочка продолжается как обычно.\n\n### Схема для `upon_error`\n\n```\n             ┌──── set_value ────────────────► set_value (без изменений)\nSender ──────┤──── set_error ─────► upon_error(fn) ──► новый set_value\n             └──── set_stopped ───────────────► set_stopped (без изменений)\n```\n\n---\n\n## `std::execution::upon_stopped(s, fn)` — обработка канала отмены\n\n`upon_stopped` срабатывает на `set_stopped`. В отличие от `fn` в `then` и `upon_error`, эта функция **не принимает аргументов** (отмена не несёт данных):\n\n```\nset_stopped()   → fn() → set_value(fn())  // отмена превращается в значение\nset_value(v...) → set_value(v...)         // значение проходит без изменений\nset_error(e)    → set_error(e)            // ошибка проходит без изменений\n```\n\nПолезен для предоставления резервного результата при отмене операции.\n\n### Схема для `upon_stopped`\n\n```\n             ┌──── set_value ────────────────► set_value (без изменений)\nSender ──────┤──── set_error ────────────────► set_error (без изменений)\n             └──── set_stopped ─► upon_stopped(fn) ──► новый set_value\n```\n\n---\n\n## Правило трёх каналов — итог\n\n| Адаптор | Обрабатывает | Пропускает без изменений |\n|---|---|---|\n| `then(fn)` | `set_value` | `set_error`, `set_stopped` |\n| `upon_error(fn)` | `set_error` | `set_value`, `set_stopped` |\n| `upon_stopped(fn)` | `set_stopped` | `set_value`, `set_error` |\n\nБлагодаря этому правилу адапторы можно комбинировать в любом порядке, не беспокоясь о случайном проглатывании ошибок.\n\n---\n\n## Планировщики: что это такое\n\n**Планировщик (scheduler)** — лёгкий дескриптор контекста выполнения. Контекстом может быть:\n\n- пул потоков;\n- цикл ввода-вывода (I/O reactor);\n- «встроенный» исполнитель, запускающий задачи прямо на вызывающем потоке;\n- любая другая реализация.\n\nПланировщик — это **фабрика сендеров**: функция `schedule(sch)` возвращает сендер, при запуске которого выполнение переносится в соответствующий контекст. Сам планировщик — просто значение: его можно хранить, копировать, передавать как аргумент функции.\n\nКонцепт `std::execution::scheduler` определяет минимальный интерфейс, которому должен соответствовать любой планировщик.\n\n---\n\n## `std::execution::schedule(sch)` — сендер планировщика\n\n```cpp\nauto sender = std::execution::schedule(sch);\n```\n\nПри запуске этот сендер:\n1. передаёт управление в контекст `sch`;\n2. завершается через `set_value()` (без аргументов).\n\nВсе последующие `then`-адапторы в цепочке выполняются **уже в этом контексте**.\n\n---\n\n## `std::execution::transfer(s, sch)` — переключение контекста в середине цепочки\n\n```cpp\ntransfer(s, sch)\n```\n\n- Когда `s` завершается через `set_value`, выполнение переносится на контекст `sch`, после чего сигнал `set_value` с теми же аргументами передаётся дальше.\n- Всё, что стоит **до** `transfer`, работает в предыдущем контексте.\n- Всё, что стоит **после** `transfer`, работает в контексте `sch`.\n\nЭто эквивалентно ручной передаче задачи между потоками, но без единой строки явной синхронизации.\n\n---\n\n## Ментальная модель: источник → контекст → преобразования → потребитель\n\n```\nschedule(pool)                        // старт: уходим в пул потоков\n  | then([](){ return 42; })          // выполняется в пуле\n  | then([](int x){ return x * 2; }) // тоже в пуле\n  | sync_wait                         // блокирует вызывающий поток;\n                                      // результат — tuple{84}\n```\n\n`sync_wait` блокирует **вызывающий** поток до завершения операции и возвращает `std::optional<std::tuple<...>>` с результатом (или `nullopt` при отмене).\n\n---\n\n## Стандартные планировщики (кратко)\n\n- **`std::execution::run_loop::scheduler`** — однопоточный цикл; используется в тестах и примерах (как в уроке 2).\n- **`std::execution::thread_pool::scheduler`** — стандартный пул потоков (детально — в l4).\n\nОба — просто значения-дескрипторы, ничего специального.",
+      "examples": [
+        {
+          "title": "Цепочка then: преобразование типа на каждом шаге",
+          "code": "#include <execution>\n#include <string>\n#include <iostream>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(std::string{\"hello\"})\n        | ex::then([](std::string s) { return s + \" world\"; })\n        | ex::then([](std::string s) { return s.size(); })\n    );\n\n    // result — это std::optional<std::tuple<std::size_t>>\n    // *result == tuple{11ul}\n    auto [n] = *result;\n    std::cout << n << '\\n';  // 11\n}",
+          "expectedOutput": "",
+          "explanation": "Первый `then` получает `std::string` из `just` и возвращает новую строку. Второй `then` получает эту строку и возвращает её длину — `std::size_t`. Тип значения меняется на каждом шаге, и компилятор выводит его автоматически. Ни один из `then` не выполняется до вызова `sync_wait` — цепочка **ленива**."
+        },
+        {
+          "title": "upon_error: восстановление после ошибки",
+          "code": "#include <execution>\n#include <stdexcept>\n#include <iostream>\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just_error(\n            std::make_exception_ptr(std::runtime_error{\"oops\"})\n        )\n        | ex::upon_error([](std::exception_ptr) {\n            return -1;  // ошибка → резервное значение\n        })\n        | ex::then([](int v) { return v * 2; })\n    );\n\n    // upon_error перехватил set_error и вернул -1\n    // then(-1 * 2) = -2\n    // *result == tuple{-2}\n    auto [v] = *result;\n    std::cout << v << '\\n';  // -2\n}",
+          "expectedOutput": "",
+          "explanation": "`just_error` отправляет сигнал `set_error` с `std::exception_ptr`. `upon_error` перехватывает его, игнорирует конкретный тип исключения и возвращает `-1` — теперь в канале значения. Следующий `then` уже работает с `int` и не знает, что до него была ошибка. Это и есть **recovery-паттерн**: ошибка превращается в нормальный результат без `try/catch`."
+        },
+        {
+          "title": "schedule и run_loop: выполнение на конкретном контексте",
+          "code": "#include <execution>\n#include <iostream>\n#include <thread>\n\nint main() {\n    namespace ex = std::execution;\n\n    ex::run_loop loop;\n    auto sch = loop.get_scheduler();\n\n    // Запускаем цепочку асинхронно\n    // (в реальном коде loop.run() вызывается в отдельном потоке)\n    std::jthread worker([&loop]{ loop.run(); });\n\n    auto result = ex::sync_wait(\n        ex::schedule(sch)          // переходим в контекст loop\n        | ex::then([](){ return 42; })   // выполняется на loop\n        | ex::then([](int x){ return x * 2; }) // тоже на loop\n    );\n\n    loop.finish();\n\n    // *result == tuple{84}\n    auto [v] = *result;\n    std::cout << v << '\\n';  // 84\n}",
+          "expectedOutput": "",
+          "explanation": "`schedule(sch)` создаёт сендер, который при запуске переносит выполнение в контекст `run_loop`. Оба последующих `then` запускаются на том же контексте — ничего дополнительно настраивать не нужно. `sync_wait` блокирует вызывающий поток и ждёт результата. `transfer` позволил бы переключиться на другой контекст прямо внутри цепочки."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l3-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Когда вызывается функция `fn` в цепочке `just(42) | then(fn)`?",
+          "options": [
+            "Сразу при вычислении выражения `just(42) | then(fn)`",
+            "Когда результат цепочки передаётся в `sync_wait` и стартует операция",
+            "Когда выполняется `just(42)`",
+            "Когда объект-сендер, возвращённый `then`, уничтожается"
+          ],
+          "answerIndex": 1,
+          "explanation": "`then` — ленивый адаптор. Само выражение `just(42) | then(fn)` создаёт только граф сендеров без каких-либо вычислений. `fn` вызывается только после того, как операция **стартует** — то есть когда потребитель (например, `sync_wait`) связывает ресивер и вызывает `start` на `operation_state`."
+        },
+        {
+          "id": "m6-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Сендер завершается через `set_value(99)`. Что сделает `upon_error(s, fn)`, стоящий следующим в цепочке?",
+          "options": [
+            "Вызовет `fn(99)` и заменит значение результатом",
+            "Пробросит значение `99` дальше без вызова `fn`",
+            "Проглотит значение и ничего не передаст",
+            "Преобразует значение в ошибку"
+          ],
+          "answerIndex": 1,
+          "explanation": "`upon_error` обрабатывает **только канал `set_error`**. Если сендер завершается через `set_value`, `upon_error` пропускает значение дальше без изменений — `fn` не вызывается вообще. Это и есть правило прозрачности: каждый адаптор трогает ровно один канал."
+        },
+        {
+          "id": "m6-l3-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "namespace ex = std::execution;\n\nauto result = ex::sync_wait(\n    ex::just_error(\n        std::make_exception_ptr(std::runtime_error{\"fail\"})\n    )\n    | ex::then([](std::exception_ptr) {\n        return 0;\n    })\n);",
+          "answerLine": 7,
+          "explanation": "`then` реагирует исключительно на канал `set_value`. Если сендер завершился через `set_error`, `then` **прозрачно пропускает** ошибку дальше — лямбда внутри `then` не вызывается никогда. Чтобы перехватить ошибку, нужен `upon_error`: именно он срабатывает на `set_error` и позволяет вернуть восстановленное значение."
+        },
+        {
+          "id": "m6-l3-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "В каком контексте выполнится лямбда в следующей цепочке?\n\n```cpp\nex::sync_wait(\n    ex::schedule(pool_scheduler)\n    | ex::then([](){ return 42; })\n);\n```",
+          "options": [
+            "В потоке, вызвавшем `sync_wait`",
+            "В контексте выполнения `pool_scheduler`",
+            "В новом потоке, созданном специально для этой лямбды",
+            "Это неопределённое поведение — контекст зависит от реализации"
+          ],
+          "answerIndex": 1,
+          "explanation": "`schedule(pool_scheduler)` создаёт сендер, при запуске которого выполнение **переносится** в контекст `pool_scheduler`. Адапторы `then`, стоящие после него в цепочке, выполняются **в том же контексте** — лямбда работает на пуле потоков, а не на вызывающем потоке. Именно для этого и нужны планировщики."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что происходит с сигналом `set_error`, если он проходит через `then(s, fn)`?",
+            "options": [
+              "`fn` вызывается с объектом ошибки",
+              "Сигнал `set_error` передаётся дальше без изменений",
+              "Ошибка преобразуется в `set_stopped`",
+              "Генерируется исключение на стороне вызывающего кода"
+            ],
+            "answerIndex": 1,
+            "explanation": "`then` обрабатывает только `set_value`. Сигнал `set_error` проходит через него **прозрачно** — `fn` не вызывается, ошибка передаётся следующему ресиверу в цепочке без каких-либо изменений."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что такое планировщик (`scheduler`) в `std::execution`?",
+            "options": [
+              "Поток, в котором выполняются задачи",
+              "Лёгкий дескриптор контекста выполнения, являющийся фабрикой сендеров",
+              "Синхронный примитив, аналогичный `std::mutex`",
+              "Специальный тип ресивера для планирования задач"
+            ],
+            "answerIndex": 1,
+            "explanation": "Планировщик — это **дескриптор** (handle) контекста выполнения, а не сам поток. Его главная роль — быть фабрикой: `schedule(sch)` возвращает сендер, который при запуске переносит выполнение в нужный контекст. Планировщик — обычное значение, которое можно хранить и передавать."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что делает `transfer(s, sch)` в середине цепочки?",
+            "options": [
+              "Запускает `s` в новом потоке и ждёт его завершения",
+              "После завершения `s` с `set_value` переносит продолжение в контекст `sch`",
+              "Создаёт копию сендера `s` для выполнения на `sch`",
+              "Отменяет `s` и перезапускает операцию на `sch`"
+            ],
+            "answerIndex": 1,
+            "explanation": "`transfer(s, sch)` — это «переключатель контекста» в середине цепочки. Когда `s` завершается через `set_value`, выполнение **переносится** в контекст `sch`, после чего сигнал `set_value` с теми же данными идёт дальше по цепочке. Всё, что стоит после `transfer`, работает уже в новом контексте."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l4",
+      "title": "when_all, пул потоков и split",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "Предыдущие уроки показали, как строить **линейные** цепочки: один шаг — один результат. Но реальные программы часто нуждаются в **параллельном** запуске нескольких независимых вычислений и ожидании их все сразу. В мире `std::thread` это пишется вручную: `thread1.join(); thread2.join();` — и это ещё без обработки ошибок или отмены. Один из потоков может упасть, а второй будет работать вечно.\n\n`std::execution` решает задачу единым примитивом — **`when_all`**: запускает N сендеров одновременно, объединяет результаты в кортеж, и что критически важно — при ошибке или отмене **любого** из них корректно останавливает остальные. Никаких осиротевших фоновых задач.\n\nК этому добавляются **`std::execution::thread_pool`** — стандартный пул потоков из N воркеров — и **`split`** — адаптор, позволяющий «разветвить» один источник данных на несколько независимых потребителей. Три инструмента вместе закрывают большую часть задач параллелизма без единого мьютекса.",
+      "theory": "## `std::execution::when_all` — параллельный запуск N сендеров\n\n```cpp\nauto combined = std::execution::when_all(s1, s2, s3);\n```\n\n`when_all` принимает произвольное число сендеров и возвращает **один** новый сендер. При запуске:\n\n1. Все переданные сендеры стартуют **одновременно**.\n2. `when_all` ждёт завершения **каждого** из них.\n3. Когда все завершились через `set_value`, он передаёт кортеж всех значений:\n\n```\nwhen_all(s1 → A, s2 → B, s3 → C)  →→→  set_value(A, B, C)\n```\n\n**Порядок элементов в кортеже совпадает с порядком аргументов** — не с порядком завершения. Даже если `s3` завершился первым, его значение будет третьим.\n\n---\n\n## Обработка ошибок и отмена в `when_all`\n\nЧто происходит, если хотя бы один из сендеров завершается через `set_error` или `set_stopped`?\n\n- `when_all` немедленно отправляет **сигнал остановки** всем ещё активным сендерам (`stop_requested`).\n- Затем ждёт, пока **все** из них завершатся (через любой канал).\n- После этого пробрасывает исходную ошибку/отмену потребителю.\n\nКлючевое свойство: в момент завершения `when_all` **ни одна из дочерних операций не работает**. Это называется **структурным параллелизмом** (structured concurrency).\n\n### ASCII-диаграмма: ошибка в одном сендере\n\n```\n              ┌─── s1 ──────────────────────► set_value(A)\nwhen_all ─────┤─── s2 ──► set_error(E)       (стоп-сигнал → s1, s3)\n              └─── s3 ──────────────────────► set_stopped()\n                                        ↓\n                              when_all ──► set_error(E)\n```\n\n`s2` упал с ошибкой. `s1` успел завершиться самостоятельно, `s3` получил сигнал остановки и отменился. Только после того, как оба завершились, `when_all` передаёт `set_error(E)` дальше. Никто не продолжает работать в фоне.\n\n---\n\n## `std::execution::thread_pool` — стандартный пул потоков\n\n```cpp\nstd::execution::thread_pool pool{4};  // 4 воркера\nauto sch = pool.get_scheduler();      // дескриптор-планировщик\n```\n\n`thread_pool` — объект, владеющий N потоками. Он реализует концепт `std::execution::scheduler` через `get_scheduler()`: возвращённый `sch` — это лёгкое значение, которое можно копировать и передавать.\n\n```cpp\nstd::execution::schedule(sch)         // → сендер, запускающий работу на пуле\n    | std::execution::then(fn)        // fn выполняется в одном из потоков пула\n```\n\nКаждый `schedule(sch)` забирает задачу из очереди пула, когда освободится поток.\n\n---\n\n## Практический паттерн: параллельные вычисления\n\n```cpp\nnamespace ex = std::execution;\n\nstd::execution::thread_pool pool{4};\nauto sch = pool.get_scheduler();\n\nauto [r1, r2] = *ex::sync_wait(\n    ex::when_all(\n        ex::schedule(sch) | ex::then([]{ return compute_a(); }),\n        ex::schedule(sch) | ex::then([]{ return compute_b(); })\n    )\n);\n// r1 = compute_a(), r2 = compute_b() — оба работали параллельно\n```\n\n`sync_wait` возвращает `std::optional<std::tuple<A, B>>`. Структурные привязки `auto [r1, r2]` — прямо из `*result`.\n\n---\n\n## `std::execution::split(s)` — многопотребительский сендер\n\nПо умолчанию сендер — **единственный потребитель**: он может быть подключён (`connect`) только один раз, потому что запуск операции потребляет ресурсы. Попытка передать один сендер двум потребителям — ошибка компиляции или UB.\n\n`split` решает это:\n\n```cpp\nauto shared = ex::split(some_sender);\n\n// Оба используют один и тот же результат:\nauto pipeline1 = shared | ex::then([](int v){ return v + 1; });\nauto pipeline2 = shared | ex::then([](int v){ return v * 2; });\n```\n\n- `split(s)` возвращает **копируемый** сендер.\n- Все копии разделяют одну базовую операцию: `s` запускается **ровно один раз**.\n- Первый потребитель, который вызовет `start`, запустит операцию; остальные получат результат без перезапуска.\n- При ошибке или отмене все потребители получают одинаковый сигнал.\n\n### Типичное применение\n\n```\nsplit(expensive_query)\n  ├─► pipeline A (обработка результата по-первому)\n  └─► pipeline B (обработка результата по-второму)\n```\n\n`expensive_query` выполняется **один раз** — но результат доступен обоим.\n\n---\n\n## Сравнение: `when_all` vs `std::async` + `future::get`\n\n| Свойство | `std::async` + `future` | `when_all` |\n|---|---|---|\n| Выделение памяти | Куча на каждую задачу | Нет (всё на стеке) |\n| Отмена при ошибке | Нет | Да — stop-сигнал остальным |\n| Структурный параллелизм | Нет | Да — гарантия завершения всех |\n| Компонуемость | Нет | Да — сам является сендером |\n| Тип результата | `future<T>` на каждую | Один кортеж |\n\n`std::async` не отменяет другие задачи при ошибке: их `future`-деструкторы блокируют поток до завершения — либо вы сами пишете синхронизацию. `when_all` делает это автоматически.",
+      "examples": [
+        {
+          "title": "Базовый when_all: два параллельных вычисления на thread_pool",
+          "code": "#include <execution>\n#include <iostream>\n#include <chrono>\n#include <thread>\n\nint compute_a() {\n    // симулируем работу\n    std::this_thread::sleep_for(std::chrono::milliseconds{100});\n    return 6;\n}\n\nint compute_b() {\n    std::this_thread::sleep_for(std::chrono::milliseconds{80});\n    return 7;\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    std::execution::thread_pool pool{2};  // два рабочих потока\n    auto sch = pool.get_scheduler();\n\n    // Оба вычисления запускаются одновременно:\n    // compute_a() и compute_b() работают параллельно.\n    auto result = ex::sync_wait(\n        ex::when_all(\n            ex::schedule(sch) | ex::then([]{ return compute_a(); }),\n            ex::schedule(sch) | ex::then([]{ return compute_b(); })\n        )\n    );\n\n    // result = std::optional<std::tuple<int, int>>\n    // Порядок совпадает с порядком аргументов when_all,\n    // а не с порядком завершения.\n    auto [r1, r2] = *result;\n    std::cout << r1 << \" * \" << r2 << \" = \" << r1 * r2 << '\\n';\n    // Ожидаемый вывод: 6 * 7 = 42\n}",
+          "expectedOutput": "",
+          "explanation": "`thread_pool{2}` создаёт пул с двумя потоками. Оба вызова `schedule(sch)` помещают задачи в очередь; поскольку потоков два, `compute_a` и `compute_b` выполняются параллельно, а не последовательно. Несмотря на то что `compute_b` завершается раньше (80 мс против 100 мс), `r1` содержит результат `compute_a` (первого аргумента `when_all`), а `r2` — результат `compute_b`. Порядок всегда детерминирован."
+        },
+        {
+          "title": "Обработка ошибки: один сендер падает, второй получает стоп-сигнал",
+          "code": "#include <execution>\n#include <iostream>\n#include <stdexcept>\n\nint main() {\n    namespace ex = std::execution;\n\n    std::execution::thread_pool pool{2};\n    auto sch = pool.get_scheduler();\n\n    // Первый сендер всегда падает с ошибкой.\n    // Второй — «долгое» вычисление, которое должно получить\n    // stop_requested и завершиться через set_stopped.\n    auto result = ex::sync_wait(\n        ex::when_all(\n            ex::schedule(sch)\n                | ex::then([]() -> int {\n                    throw std::runtime_error{\"вычисление A провалилось\"};\n                    return 0;\n                }),\n            ex::schedule(sch)\n                | ex::then([]() -> int {\n                    // В реальном коде здесь была бы проверка stop_token\n                    // и ранний выход. Для примера просто возвращаем значение.\n                    return 99;\n                })\n        )\n    );\n\n    // when_all завершился через set_error — result == std::nullopt,\n    // а исключение переброшено при выходе из sync_wait.\n    // Ниже это не выполнится:\n    if (result) {\n        auto [r1, r2] = *result;\n        std::cout << r1 << ' ' << r2 << '\\n';\n    } else {\n        std::cout << \"результат недоступен (отмена)\\n\";\n    }\n}\n// Как перехватить ошибку — оберните sync_wait в try/catch:\n// try { ex::sync_wait(...); }\n// catch (const std::runtime_error& e) { std::cerr << e.what(); }",
+          "expectedOutput": "",
+          "explanation": "Когда первый сендер бросает исключение, `when_all` получает `set_error` и рассылает **stop-сигнал** второму сендеру. Второй сендер мог бы проверить `stop_token` и завершиться через `set_stopped` досрочно — в производственном коде так и делают. После того как оба сендера завершились (через любой канал), `when_all` пробрасывает исходную ошибку. `sync_wait` в этом случае либо возвращает `std::nullopt`, либо перебрасывает исключение — ни одна задача не «висит» в фоне."
+        },
+        {
+          "title": "split: один источник — два потребителя",
+          "code": "#include <execution>\n#include <iostream>\n\nint expensive_query() {\n    // Представьте: сетевой запрос, парсинг файла и т.п.\n    return 100;\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // Исходный сендер можно подключить только один раз.\n    // split делает его копируемым — обе копии разделяют\n    // одно базовое вычисление.\n    auto shared_source = ex::split(\n        ex::just(0) | ex::then([]([[maybe_unused]] int) {\n            return expensive_query();\n        })\n    );\n\n    // Строим два независимых продолжения от одного источника:\n    auto pipeline_a = shared_source | ex::then([](int v) { return v + 1; });\n    auto pipeline_b = shared_source | ex::then([](int v) { return v * 2; });\n\n    // Запускаем оба параллельно через when_all:\n    auto result = ex::sync_wait(\n        ex::when_all(\n            std::move(pipeline_a),\n            std::move(pipeline_b)\n        )\n    );\n\n    // expensive_query() вызывается ровно один раз.\n    // Результат (100) доступен обоим продолжениям.\n    auto [a, b] = *result;\n    std::cout << \"a = \" << a << '\\n';  // 101\n    std::cout << \"b = \" << b << '\\n';  // 200\n}",
+          "expectedOutput": "",
+          "explanation": "`split(s)` оборачивает сендер так, что его результат кэшируется и разделяется между всеми подписчиками. `expensive_query()` вызывается **один раз** — не дважды. Оба продолжения (`pipeline_a` и `pipeline_b`) получают одно и то же значение `100`, после чего независимо преобразуют его. Без `split` попытка передать один сендер двум аргументам `when_all` была бы ошибкой — сендер не копируется."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l4-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Два сендера `when_all(s1, s2)` завершаются в такой последовательности: сначала `s2` возвращает `\"B\"`, затем `s1` возвращает `\"A\"`. Каков результат `when_all`?",
+          "options": [
+            "tuple{\"B\", \"A\"} — в порядке завершения",
+            "tuple{\"A\", \"B\"} — в порядке аргументов when_all",
+            "Первое из двух значений, которое пришло",
+            "Результат не определён — порядок зависит от реализации"
+          ],
+          "answerIndex": 1,
+          "explanation": "`when_all` всегда собирает значения **в порядке аргументов**, а не в порядке завершения. Если `s1` — первый аргумент и возвращает `\"A\"`, то `\"A\"` будет первым элементом кортежа, независимо от того, когда именно `s1` завершился. Это делает результат детерминированным и предсказуемым."
+        },
+        {
+          "id": "m6-l4-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "В `when_all(s1, s2, s3)` сендер `s2` завершается через `set_error`. Что происходит с `s1` и `s3`, если они ещё работают?",
+          "options": [
+            "Они продолжают работать до конца; ошибка `s2` игнорируется",
+            "Они немедленно уничтожаются без ожидания завершения",
+            "Они получают stop-сигнал; when_all ждёт их завершения, затем пробрасывает ошибку",
+            "when_all возвращает частичный результат: значения s1 и s3 плюс ошибку s2"
+          ],
+          "answerIndex": 2,
+          "explanation": "Это **структурный параллелизм** в действии. `when_all` при ошибке одного из сендеров: 1) рассылает stop-сигнал остальным активным сендерам; 2) **ждёт**, пока все они завершатся (через любой канал — `set_value`, `set_error` или `set_stopped`); 3) после полного завершения всех пробрасывает исходную ошибку. В момент, когда потребитель получает сигнал, ни одна дочерняя операция уже не выполняется."
+        },
+        {
+          "id": "m6-l4-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Программист хочет передать один и тот же сендер двум независимым пайплайнам. Найдите ошибку:\n\n```cpp\nnamespace ex = std::execution;\n\nauto source = ex::just(42);                           // строка 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // строка 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // строка 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);\n```",
+          "answerLine": 3,
+          "explanation": "Обычный сендер (`just(42)`) **не является копируемым многократно используемым объектом** — он предназначен для подключения к одному ресиверу. Использование `source` в двух разных `| ex::then(...)` — это либо ошибка компиляции (если сендер некопируем), либо неопределённое поведение (операция запущена дважды). Исправление: обернуть `source` в `ex::split(source)` до строк 5–6. Тогда обе копии разделяют одно базовое вычисление и `42` вычисляется ровно один раз."
+        },
+        {
+          "id": "m6-l4-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Какую гарантию даёт `when_all` относительно дочерних операций в момент своего завершения — вне зависимости от причины завершения (значение, ошибка или отмена)?",
+          "options": [
+            "Гарантирует, что все дочерние операции завершились через set_value",
+            "Гарантирует, что все дочерние операции либо завершились, либо отменены — ни одна не работает в фоне",
+            "Гарантирует минимальное время ожидания: как только первая операция завершилась, остальные уничтожаются немедленно",
+            "Не даёт никаких гарантий — дочерние операции могут продолжаться после завершения when_all"
+          ],
+          "answerIndex": 1,
+          "explanation": "Это и есть **структурный параллелизм** — ключевое отличие `when_all` от ручного управления потоками. В момент, когда `when_all` вызывает `set_value`, `set_error` или `set_stopped` на своём ресивере, **все** дочерние операции уже завершены. Не «скоро», не «вероятно» — а строго гарантированно. С `std::async` + `std::future` такой гарантии нет: деструктор `future` может блокировать, а при ошибке другие задачи продолжают работать."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "prompt": "Три сендера переданы в `when_all(s1, s2, s3)`. `s2` завершается первым, затем `s3`, затем `s1`. В каком порядке элементы в результирующем кортеже?",
+            "options": [
+              "В порядке завершения: значение s2, затем s3, затем s1",
+              "В порядке аргументов: значение s1, затем s2, затем s3",
+              "Порядок не определён — зависит от планировщика",
+              "when_all возвращает только первое завершившееся значение"
+            ],
+            "answerIndex": 1,
+            "explanation": "`when_all` собирает результаты строго **в порядке аргументов**, а не в порядке завершения. Первый элемент кортежа всегда соответствует первому аргументу (`s1`), второй — второму (`s2`), третий — третьему (`s3`). Это делает код предсказуемым: `auto [r1, r2, r3]` всегда соответствует `when_all(s1, s2, s3)`."
+          },
+          {
+            "prompt": "Что означает «структурный параллелизм» (structured concurrency) в контексте `when_all`?",
+            "options": [
+              "Задачи выполняются строго по одной — никакого настоящего параллелизма",
+              "В момент завершения when_all все дочерние операции гарантированно завершены — нет осиротевших фоновых задач",
+              "when_all автоматически распределяет задачи по процессорным ядрам оптимальным образом",
+              "Каждая задача выполняется в отдельном структурированном блоке try/catch"
+            ],
+            "answerIndex": 1,
+            "explanation": "Структурный параллелизм — это гарантия **ограничения времени жизни**: дочерние операции не переживают своего родителя. Когда `when_all` завершается (по любой причине), все запущенные им операции уже закончили работу. Это устраняет целый класс багов: утечки потоков, гонки при уничтожении объектов, неперехваченные ошибки в фоне."
+          },
+          {
+            "prompt": "Зачем нужен `std::execution::split(s)`, если сендер уже есть?",
+            "options": [
+              "Чтобы ускорить выполнение сендера за счёт кэширования",
+              "Чтобы сделать сендер копируемым и дать нескольким потребителям разделить один результат без повторного вычисления",
+              "Чтобы разбить один сендер на несколько параллельных независимых вычислений",
+              "Чтобы перенести выполнение сендера на другой планировщик"
+            ],
+            "answerIndex": 1,
+            "explanation": "Обычный сендер предназначен для **одного** потребителя. `split` превращает его в **многопотребительский**: возвращаемый сендер — копируемое значение, все копии разделяют одну базовую операцию. Исходное вычисление запускается **ровно один раз**, а результат доступен всем подписчикам. Без `split` передать один сендер двум `then`-продолжениям невозможно корректно."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l5",
+      "title": "Обработка ошибок и отмена: типизированный канал ошибок, let_error, stop-токены",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3",
+        "m6-l4"
+      ],
+      "background": {
+        "title": "C++20: stop-токены",
+        "content": "C++20 ввёл механизм **совместной отмены** из трёх частей:\n\n- `std::stop_source` — владеет состоянием отмены; только он может **запросить** остановку (`request_stop()`).\n- `std::stop_token` — лёгкое значение без владения; `stop_token.stop_requested()` возвращает `true`, если `stop_source::request_stop()` уже был вызван.\n- `std::stop_callback` — регистрирует функцию, которая будет вызвана **немедленно** в момент запроса остановки.\n\nМеханизм кооперативный: никто не прерывает поток насильно. Тот, кто получает `stop_token`, обязан сам периодически проверять `stop_requested()` и корректно завершаться. Именно эти объекты `std::execution` использует для отмены пайплайнов."
+      },
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution not yet on Compiler Explorer"
+      },
+      "motivation": "После уроков 1–4 вы умеете строить пайплайны, запускать параллельные задачи и планировать работу на потоках. Но в реальных программах случаются ошибки, и способ их доставки не менее важен, чем способ доставки результата.\n\nС `std::future` выбора не было: ошибка — это всегда `std::exception_ptr`, и чтобы понять, что именно пошло не так, нужно поймать исключение и приводить типы вручную. С `std::execution` ситуация другая:\n\n- **Канал ошибок типизирован**: сендер может нести `std::error_code`, `int`, `std::exception_ptr` или любой другой тип — и это часть его типа. Обработчик получает нужный тип напрямую, без `dynamic_cast`.\n- **`let_error`** позволяет на пути ошибки вернуть *новый сендер* — то есть полноценно восстановиться или переключиться на запасной план прямо в цепочке.\n- **Отмена — это отдельный канал**, не ошибка-замаскированная-под-исключение. Stop-токены позволяют родительскому пайплайну послать дочерним сигнал «хватит работать» и дождаться их корректного завершения.\n\nПонимание трёх каналов (`set_value` / `set_error` / `set_stopped`) и инструментов для работы с ними — ключ к написанию надёжного асинхронного кода на `std::execution`.",
+      "theory": "## Канал ошибок — часть типа сендера\n\nКаждый сендер в `std::execution` декларирует три вещи:\n- какие **значения** он может передать через `set_value`,\n- какие **типы ошибок** он может передать через `set_error`,\n- может ли он завершиться через `set_stopped` (отмена).\n\nЭто означает, что сендер, несущий `std::error_code` как ошибку, имеет другой тип, чем сендер с `std::exception_ptr`. Система типов проверяет согласованность на этапе компиляции:\n\n```cpp\n// Сендер, который либо возвращает int, либо выдаёт ошибку std::error_code:\nauto s = std::execution::just_error(std::make_error_code(std::errc::timed_out));\n// Тип ошибки здесь — std::error_code, а не exception_ptr.\n```\n\nОбработчик в `upon_error` (или `let_error`) должен принимать **именно этот тип** — компилятор не даст передать лямбду с неподходящей сигнатурой.\n\n---\n\n## `upon_error` — преобразование ошибки в значение\n\n`upon_error` был введён в уроке 3. Вкратце:\n\n```cpp\nupon_error(sender, fn)  // fn(ErrorType) -> Value\n```\n\n`fn` принимает **конкретный тип ошибки** сендера и возвращает **значение** — на этом пайплайн продолжается по пути `set_value`. Ключевое ограничение: `fn` возвращает **значение**, а не сендер.\n\n```cpp\nauto pipeline =\n    risky_sender\n    | std::execution::upon_error([](std::error_code ec) {\n        // ec — уже правильный тип, без dynamic_cast\n        return ec == std::errc::timed_out ? 0 : -1;\n    });\n```\n\n---\n\n## `let_error` — ошибка открывает новый пайплайн\n\n`let_error` — мощный вариант `upon_error`: вместо значения функция возвращает **новый сендер**.\n\n```cpp\nlet_error(sender, fn)  // fn(ErrorType) -> Sender\n```\n\nЭто позволяет на пути ошибки запустить полноценную операцию — например, обратиться к запасному источнику данных, выполнить попытку повтора или записать диагностику:\n\n```cpp\nauto pipeline =\n    primary_source()\n    | std::execution::let_error([](std::error_code ec) {\n        // Вместо значения — новый сендер:\n        return fallback_source();\n    });\n```\n\nАналогия с путём значений: `then` возвращает значение, `let_value` возвращает новый сендер. Так же `upon_error` возвращает значение, а `let_error` возвращает новый сендер.\n\n| Адаптор | Путь | fn возвращает |\n|---|---|---|\n| `then` | значение | значение |\n| `let_value` | значение | новый сендер |\n| `upon_error` | ошибка | значение |\n| `let_error` | ошибка | новый сендер |\n\n---\n\n## Stop-токены в `std::execution`\n\nКаждый **receiver** (получатель), подключённый к сендеру, имеет метод `get_stop_token()`. Сендер может запросить его у своего receiver'а и проверить, была ли запрошена отмена:\n\n```cpp\n// Внутри реализации кастомного сендера:\nauto token = std::execution::get_stop_token(receiver);\nif (token.stop_requested()) {\n    // Отменяемся аккуратно:\n    std::execution::set_stopped(std::move(receiver));\n    return;\n}\n```\n\nОтмена распространяется **сверху вниз**: если родитель запрашивает остановку, `stop_token` дочернего receiver'а начинает возвращать `true`. Именно так `when_all` отменяет оставшиеся сендеры при ошибке одного из них (см. урок 4).\n\n---\n\n## `stop_when(s, stop_token)` — связь внешней отмены с пайплайном\n\n```cpp\nauto cancelable = std::execution::stop_when(my_pipeline, external_token);\n```\n\n`stop_when` оборачивает сендер `s` так, что если `external_token` получает сигнал остановки, `s` тоже получает `stop_requested`. Используется, когда нужно связать пайплайн с внешним источником отмены — например, с кнопкой «Отмена» или таймаутом:\n\n```cpp\nstd::stop_source user_cancel;\n\n// Запустить кнопку «Отмена» в другом потоке:\n// user_cancel.request_stop();\n\nauto pipeline = std::execution::stop_when(\n    long_operation(),\n    user_cancel.get_token()\n);\n```\n\n---\n\n## Почему три канала лучше, чем один\n\n| Свойство | `std::future` | `std::execution` сендеры |\n|---|---|---|\n| Тип ошибки | Всегда `exception_ptr` | Любой тип — часть типа сендера |\n| Отмена | Нет (или исключение-обёртка) | Отдельный канал `set_stopped` |\n| Нулевые накладные расходы без ошибок | Нет | Да — неиспользуемые каналы компилируются в ничто |\n| Типизированная обработка ошибок | Нет — `dynamic_cast` внутри `catch` | Да — лямбда с правильным типом |\n\n---\n\n## Паттерн: конвертация типов ошибок\n\nИногда нижний слой возвращает `std::error_code`, а верхний слой ожидает `std::exception_ptr`. Преобразование элементарно:\n\n```cpp\nauto pipeline =\n    io_operation()\n    | std::execution::upon_error([](std::error_code ec) -> int {\n        throw std::system_error{ec};  // конвертируем error_code в исключение\n        return 0;  // никогда не достигается, но нужно для типа\n    });\n```\n\nЛибо через `let_error`:\n\n```cpp\nauto pipeline =\n    io_operation()\n    | std::execution::let_error([](std::error_code ec) {\n        return std::execution::just_error(\n            std::make_exception_ptr(std::system_error{ec})\n        );\n    });\n```",
+      "examples": [
+        {
+          "title": "Типизированный канал ошибок: std::error_code → значение по умолчанию",
+          "code": "#include <execution>\n#include <system_error>\n#include <iostream>\n\n// Симулируем операцию, которая может вернуть std::error_code.\n// just_error создаёт сендер, завершающийся через set_error.\nauto fetch_data(bool fail) {\n    namespace ex = std::execution;\n    if (fail) {\n        // Тип ошибки — std::error_code, НЕ exception_ptr.\n        return ex::just_error(\n            std::make_error_code(std::errc::connection_refused)\n        );\n    }\n    return ex::just(std::make_error_code({}))  // «нет ошибки», но для симметрии типов\n        | ex::then([](std::error_code) { return 42; });\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // upon_error: fn принимает std::error_code, возвращает int-значение.\n    // Лямбда должна принимать именно std::error_code — иначе ошибка компиляции.\n    auto pipeline =\n        fetch_data(/*fail=*/true)\n        | ex::upon_error([](std::error_code ec) -> int {\n            std::cerr << \"Ошибка: \" << ec.message() << '\\n';\n            return -1;  // значение по умолчанию вместо ошибки\n        });\n\n    auto result = ex::sync_wait(std::move(pipeline));\n    // Канал set_error был преобразован в set_value(-1),\n    // поэтому result содержит std::optional<std::tuple<int>>.\n    if (result) {\n        std::cout << \"Результат: \" << std::get<0>(*result) << '\\n';\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`just_error(ec)` создаёт сендер с типом ошибки `std::error_code` — это видно в типе сендера, а не только в runtime. `upon_error` принимает лямбду с сигнатурой `(std::error_code) -> int`: компилятор проверяет, что тип совпадает. Ошибка преобразуется в значение `-1`, и дальше пайплайн продолжается по нормальному пути. `sync_wait` возвращает `optional<tuple<int>>` с `-1` внутри."
+        },
+        {
+          "title": "let_error: ошибка открывает запасной пайплайн",
+          "code": "#include <execution>\n#include <system_error>\n#include <iostream>\n#include <string>\n\n// Симулируем два источника: основной всегда падает.\nauto primary_source() {\n    namespace ex = std::execution;\n    return ex::just_error(\n        std::make_error_code(std::errc::no_such_file_or_directory)\n    );\n}\n\nauto fallback_source() {\n    namespace ex = std::execution;\n    // Запасной источник возвращает строку-результат.\n    return ex::just(std::string{\"данные из кэша\"});\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // let_error: fn возвращает НОВЫЙ СЕНДЕР, а не значение.\n    // Это ключевое отличие от upon_error.\n    auto pipeline =\n        primary_source()\n        | ex::let_error([](std::error_code ec) {\n            if (ec == std::errc::no_such_file_or_directory) {\n                std::cerr << \"Основной источник недоступен, использую кэш\\n\";\n                return fallback_source();  // <-- возвращаем новый сендер\n            }\n            // При другой ошибке — пробрасываем её дальше.\n            return ex::just_error(ec);\n        });\n\n    auto result = ex::sync_wait(std::move(pipeline));\n    if (result) {\n        std::cout << \"Получено: \" << std::get<0>(*result) << '\\n';\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`let_error` похож на `let_value`: лямбда получает ошибку и возвращает **новый сендер** — `fallback_source()`. Этот новый сендер стартует немедленно в качестве продолжения. Если бы мы использовали `upon_error`, лямбда могла бы вернуть только готовое строковое значение, а не целый новый пайплайн. `let_error` открывает возможность полноценного «плана Б»: можно подключиться к другому серверу, прочитать другой файл, запустить любую асинхронную операцию."
+        },
+        {
+          "title": "stop_when: внешняя отмена через stop_source",
+          "code": "#include <execution>\n#include <stop_token>  // std::stop_source, std::stop_token (C++20)\n#include <iostream>\n#include <thread>\n#include <chrono>\n\n// Долгая «операция»: периодически проверяет stop_token.\n// В реальном коде это был бы кастомный сендер с встроенной проверкой.\nauto long_operation() {\n    namespace ex = std::execution;\n    // Для примера просто возвращаем значение через just.\n    // Реальная реализация кастомного сендера проверяла бы get_stop_token(receiver).\n    return ex::just(std::string{\"результат долгой операции\"});\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    std::stop_source cancel_source;  // внешний источник отмены\n\n    // stop_when связывает пайплайн с внешним stop_token.\n    // Если cancel_source.request_stop() будет вызван,\n    // пайплайн получит stop_requested и завершится через set_stopped.\n    auto cancelable_pipeline = ex::stop_when(\n        long_operation(),\n        cancel_source.get_token()\n    );\n\n    // В реальном сценарии отмену могла бы запросить кнопка UI:\n    // std::thread([&]{\n    //     std::this_thread::sleep_for(std::chrono::milliseconds{50});\n    //     cancel_source.request_stop();\n    // }).detach();\n\n    // Здесь мы НЕ отменяем — пайплайн должен завершиться нормально.\n    auto result = ex::sync_wait(std::move(cancelable_pipeline));\n\n    if (result) {\n        std::cout << \"Завершено: \" << std::get<0>(*result) << '\\n';\n    } else {\n        // Если бы cancel_source.request_stop() был вызван,\n        // sync_wait вернул бы std::nullopt (канал set_stopped).\n        std::cout << \"Операция была отменена\\n\";\n    }\n}",
+          "expectedOutput": "",
+          "explanation": "`stop_when(pipeline, token)` не запускает пайплайн немедленно: он оборачивает его так, что при срабатывании `token` дочерний пайплайн получает сигнал `stop_requested`. `sync_wait` при получении `set_stopped` возвращает `std::nullopt` — это сигнал для вызывающего кода. Паттерн позволяет связать *любой* пайплайн с *любым* внешним источником отмены без изменения кода самого пайплайна."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l5-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Сендер `s` имеет тип ошибки `std::error_code`. Вы пишете:\n```cpp\ns | std::execution::upon_error(fn)\n```\nКакую сигнатуру должна иметь `fn`?",
+          "options": [
+            "fn принимает std::error_code и возвращает значение или void",
+            "fn принимает std::exception_ptr — upon_error всегда получает exception_ptr",
+            "fn принимает int — код ошибки всегда конвертируется в int",
+            "fn принимает std::any — тип ошибки стирается при передаче"
+          ],
+          "answerIndex": 0,
+          "explanation": "В `std::execution` тип ошибки — часть типа сендера. `upon_error` передаёт в `fn` ровно тот тип, который объявил сендер — в данном случае `std::error_code`. Если попытаться передать лямбду с другой сигнатурой (например, принимающую `std::exception_ptr`), компилятор выдаст ошибку. Это принципиальное отличие от `std::future`, где ошибка всегда упаковывается в `exception_ptr`."
+        },
+        {
+          "id": "m6-l5-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "В чём ключевое различие между `upon_error(s, fn)` и `let_error(s, fn)` в `std::execution`?",
+          "options": [
+            "Различий нет — это синонимы",
+            "В `upon_error` функция `fn` возвращает значение; в `let_error` функция `fn` возвращает новый сендер",
+            "В `let_error` функция `fn` возвращает значение; в `upon_error` функция `fn` возвращает новый сендер",
+            "`upon_error` работает только с std::exception_ptr, а `let_error` — с любым типом ошибки"
+          ],
+          "answerIndex": 1,
+          "explanation": "`upon_error(s, fn)`: `fn` принимает ошибку и возвращает **значение** — ошибка «заменяется» значением, и пайплайн продолжается по нормальному пути. `let_error(s, fn)`: `fn` принимает ошибку и возвращает **новый сендер** — это позволяет на пути ошибки запустить полноценную асинхронную операцию (запасной источник, повтор и т.п.). Аналогия: `then` vs `let_value` на нормальном пути."
+        },
+        {
+          "id": "m6-l5-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "namespace ex = std::execution;\n\nauto primary() {\n    return ex::just_error(std::make_error_code(std::errc::timed_out));\n}\n\nauto backup() {\n    return ex::just(std::string{\"резерв\"});\n}\n\nauto pipeline =\n    primary()\n    | ex::upon_error([](std::error_code) {\n          return backup();  // <-- ошибка здесь\n      });",
+          "answerLine": 12,
+          "explanation": "На строке 12 (`return backup();`) `upon_error` ожидает, что `fn` вернёт **значение**, но `backup()` возвращает **сендер**. Компилятор либо выдаст ошибку (если типы несовместимы), либо сендер будет воспринят как значение и не будет запущен — вместо строки `\"резерв\"` в пайплайне окажется объект-сендер. Правильный адаптор для «ошибка → новый сендер» — `let_error`, а не `upon_error`:\n```cpp\n| ex::let_error([](std::error_code) {\n      return backup();\n  })\n```"
+        },
+        {
+          "id": "m6-l5-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "В `when_all(s1, s2, s3)` сендер `s2` завершается через `set_error`. Как `when_all` уведомляет `s1` и `s3` о необходимости остановиться?",
+          "options": [
+            "Немедленно уничтожает объекты операций s1 и s3 через деструктор",
+            "Посылает сигнал через исключение в поток, где работает s1/s3",
+            "Отправляет stop-сигнал через stop_token receiver'ов s1 и s3, затем ждёт их завершения",
+            "Ничего не делает — s1 и s3 замечают ошибку самостоятельно при следующей проверке"
+          ],
+          "answerIndex": 2,
+          "explanation": "`when_all` передаёт каждому дочернему receiver'у stop_token, связанный с внутренним `stop_source`. Когда один из сендеров завершается через `set_error`, `when_all` вызывает `request_stop()` на этом источнике — и stop_token'ы `s1` и `s3` начинают возвращать `stop_requested() == true`. `when_all` **ждёт**, пока оба завершатся (через любой канал), и лишь затем пробрасывает ошибку потребителю. Это гарантирует структурный параллелизм: ни одна дочерняя операция не продолжает работать после возврата `when_all`."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Сендер объявляет тип ошибки `int`. Что произойдёт, если написать `upon_error(s, [](std::exception_ptr) { return 0; })`?",
+            "options": [
+              "Код скомпилируется: upon_error автоматически конвертирует int в exception_ptr",
+              "Ошибка компиляции: лямбда принимает неправильный тип ошибки",
+              "Код скомпилируется, но при выполнении бросит std::bad_cast",
+              "Ошибка компиляции только если int не конвертируется в exception_ptr неявно"
+            ],
+            "answerIndex": 1,
+            "explanation": "Тип ошибки — часть типа сендера. `upon_error` сопоставляет тип ошибки сендера с типом параметра лямбды на этапе компиляции. Если сендер несёт `int`, а лямбда принимает `std::exception_ptr` — это несоответствие типов, и компилятор сообщит об ошибке. Никакой автоматической конвертации нет — это одно из ключевых свойств типизированного канала ошибок."
+          },
+          {
+            "type": "choice",
+            "prompt": "Когда следует использовать `let_error` вместо `upon_error`?",
+            "options": [
+              "Когда ошибка имеет тип std::error_code, а не std::exception_ptr",
+              "Когда обработчик ошибки должен запустить новую асинхронную операцию (вернуть новый сендер)",
+              "Когда нужно игнорировать ошибку и продолжить с пустым значением",
+              "Когда пайплайн содержит более одного сендера"
+            ],
+            "answerIndex": 1,
+            "explanation": "`upon_error` подходит, когда обработчик ошибки может вернуть готовое значение синхронно. `let_error` нужен, когда восстановление после ошибки само по себе является асинхронной операцией: обращение к резервному серверу, повторная попытка через задержку, запись лога через I/O. В таких случаях лямбда возвращает новый сендер, который стартует вместо упавшего."
+          },
+          {
+            "type": "choice",
+            "prompt": "Какую роль играет `stop_when(pipeline, token)` в `std::execution`?",
+            "options": [
+              "Немедленно останавливает пайплайн при создании, если token.stop_requested() уже true",
+              "Оборачивает пайплайн так, что срабатывание token приводит к отправке stop-сигнала пайплайну",
+              "Конвертирует сигнал set_stopped в set_error с кодом операции отмены",
+              "Позволяет пайплайну самому запрашивать остановку внешнего stop_source"
+            ],
+            "answerIndex": 1,
+            "explanation": "`stop_when(s, token)` создаёт обёртку, которая подписывается на `token` через `std::stop_callback`. Когда на `token` поступает сигнал остановки (т.е. кто-то вызывает `request_stop()` на соответствующем `stop_source`), обёртка пересылает этот сигнал внутреннему receiver'у `s`. Таким образом любой внешний источник отмены (UI, таймаут, другой пайплайн) можно связать с произвольным пайплайном без изменения его кода."
+          }
+        ]
+      }
+    },
+    {
+      "id": "m6-l6",
+      "title": "let_value / let_error / let_stopped и углублённый разбор гарантии нулевого выделения памяти",
+      "prerequisites": [
+        "m6-l1",
+        "m6-l2",
+        "m6-l3",
+        "m6-l4",
+        "m6-l5"
+      ],
+      "background": null,
+      "outputsVerified": false,
+      "verifiedWith": {
+        "compilerId": "none",
+        "flags": "n/a — std::execution ещё недоступен на Compiler Explorer"
+      },
+      "motivation": "К этому уроку вы умеете строить линейные и параллельные конвейеры отправителей — но все они имеют одно ограничение: **следующая операция фиксируется в момент написания кода**. У `then` функция возвращает обычное значение; она не может сказать «а теперь запусти вот _эту_ асинхронную операцию, которая зависит от только что вычисленного результата». Для этого потребовалось бы возвращать отправитель из `then` — чего `then` не поддерживает.\n\nСемейство `let_*` снимает это ограничение. `let_value(s, fn)` совпадает с `then` во всём **кроме** одного: `fn` возвращает новый отправитель, а не значение. Этот отправитель становится следующим живым шагом конвейера. Это делает условное асинхронное ветвление, динамические циклы повторных попыток и асинхронный откат при ошибке выразимыми как единый составной отправитель — без колбэков, без разделяемого состояния, без ручного управления временем жизни.\n\nВторая тема урока — более глубокий взгляд на **гарантию нулевого выделения памяти**: почему она выполняется, почему `std::async` не может её предложить и что это означает на практике. Как завершающий урок модуля 6, этот урок также включает сравнение на уровне дизайна: отправители против фьючерсов, сырых потоков и корутин C++20 — чтобы вы завершили модуль, зная не только _как_ использовать отправители, но и _когда_ за ними тянуться.",
+      "theory": "## `std::execution::let_value(s, fn)` — зависимое связывание отправителей\n\n`then(s, fn)` требует, чтобы `fn` возвращала обычное значение. Конвейер продолжается с этим значением. Это покрывает большинство синхронных преобразований, но недостаточно, когда следующий шаг сам по себе асинхронный или зависит от текущего результата.\n\n`let_value` — решение:\n\n```cpp\nstd::execution::let_value(s, fn)\n```\n\n- Когда `s` завершается через `set_value(v...)`, `let_value` вызывает `fn(v...)`.\n- `fn` должна вернуть **новый отправитель** — не обычное значение.\n- Этот отправитель становится живым продолжением: `let_value` запускает его и ждёт завершения.\n- Итоговый результат `let_value(s, fn)` — это то, что доставит внутренний отправитель.\n\n### `then` против `let_value` рядом\n\n```\nthen(s, fn)      — fn возвращает T       → конвейер продолжается с T\nlet_value(s, fn) — fn возвращает Sender  → конвейер продолжается с тем, что доставит Sender\n```\n\nВ обоих случаях каналы `set_error` и `set_stopped` проходят насквозь без изменений — `fn` вызывается только на `set_value`.\n\n### Когда выбрать `let_value` вместо `then`\n\nВыбирайте `let_value`, когда:\n\n- `fn` должна решить, **какой отправитель** запустить следующим, а не просто преобразовать значение;\n- следующий шаг — другая асинхронная операция (например, сетевой запрос, смена планировщика);\n- нужно ветвление: одна ветка — `just(ok_result)`, другая — `just_error(...)` или отправитель повтора.\n\nВыбирайте `then`, когда:\n\n- преобразование синхронное;\n- `fn` возвращает обычное значение (или `void`);\n- условный выбор отправителя не нужен.\n\n---\n\n## `let_error(s, fn)` — асинхронное восстановление после ошибки\n\n`let_error` относится к `upon_error` так же, как `let_value` к `then`: вместо того чтобы `fn` возвращала значение восстановления, она возвращает **новый отправитель**.\n\n```\nset_error(e)    → fn(e) должна вернуть Sender → конвейер продолжается с тем, что доставит Sender\nset_value(v...) → проходит насквозь без изменений\nset_stopped()   → проходит насквозь без изменений\n```\n\nТипичный сценарий: основная операция завершилась ошибкой; `fn` получает ошибку и возвращает отправитель, который запрашивает резервный сервис. Результат резервного сервиса становится выводом конвейера — без промежуточной блокировки, без колбэков.\n\n```cpp\nex::let_error(primary_sender, [](std::exception_ptr) {\n    return fallback_sender;  // fn возвращает отправитель, а не значение\n})\n```\n\n---\n\n## `let_stopped(s, fn)` — асинхронный откат при отмене\n\n`let_stopped` зеркально отражает `upon_stopped`, но `fn` снова возвращает отправитель:\n\n```\nset_stopped()   → fn() должна вернуть Sender  (fn не принимает аргументов)\nset_value(v...) → проходит насквозь без изменений\nset_error(e)    → проходит насквозь без изменений\n```\n\n`fn` **не принимает аргументов** — отмена не несёт данных. Возвращённый отправитель может делать что угодно: подставить кэшированное значение, повторить попытку с другим планировщиком или немедленно завершиться со значением по умолчанию.\n\n---\n\n## Полная таблица семейства `let_*` / `upon_*` / `then`\n\n| Канал | `fn` возвращает значение | `fn` возвращает отправитель |\n|---|---|---|\n| `set_value` | `then(fn)` | `let_value(fn)` |\n| `set_error` | `upon_error(fn)` | `let_error(fn)` |\n| `set_stopped` | `upon_stopped(fn)` | `let_stopped(fn)` |\n\nПравило именования последовательно: `upon_*` / `then` → обычное значение. `let_*` → новый отправитель (имя намекает на _передачу_ управления в новый асинхронный подграф).\n\n---\n\n## Гарантия нулевого выделения памяти — углублённый разбор\n\nУроки 1 и 2 упомянули, что отправители не выделяют память в куче. Этот раздел объясняет, почему именно, и почему `std::async` не может предложить того же.\n\n### Почему отправителям не нужна куча\n\nКогда вы пишете:\n\n```cpp\nauto op = std::execution::connect(sender, receiver);\n```\n\nтип возврата `connect` — **конкретный, статически известный тип** — нечто вроде\n\n```\noperation_state<ThenSender<JustSender<int>, Lambda1>, MyReceiver>\n```\n\nКомпилятор знает этот тип на этапе компиляции. Знает его размер. Знает его выравнивание. Может разместить его где угодно: на стеке, внутри структуры, в `std::optional`, внутри другого состояния операции.\n\nДля конвейера из N шагов состояние операции содержит N подсостояний **встроенно**. Никакого динамического выделения на каждом звене:\n\n```\nconnect(\n    just(42) | then(f1) | then(f2) | let_value(f3),\n    my_receiver\n)\n// → один объект на стеке, содержащий все четыре состояния встроенно\n```\n\n### Почему `std::async` не может избежать кучи\n\n`std::async` возвращает `std::future<T>`. `future` и внутренний промис, в который пишет фоновый поток, — это **два объекта, совместно владеющие одним результатом**. Совместное владение требует счётчика ссылок. Счётчик ссылок требует стабильного адреса. Стабильный адрес не может находиться ни на стеке вызывающего, ни на стеке потока — потому что оба стека существуют и исчезают независимо. Единственный вариант — **выделение в куче** с управляющим блоком на основе `shared_ptr`.\n\nЭто не деталь реализации, которую мог бы оптимизировать более умный компилятор. Это следствие модели владения: совместное владение → стабильность адреса → куча.\n\nОтправители используют **единственное владение**: `operation_state` владеет всем. Никакого совместного использования. Ничему не нужен стабильный адрес между стековыми кадрами. Стек (или любое встроенное хранилище) работает отлично.\n\n### Практическое следствие\n\nКонвейер из 10 шагов `then` / `let_value` выделяет ровно **ноль байт** в куче. Цепочка из 10 вызовов `std::async` выделяет управляющий блок на каждом шаге. На горячем пути (высокочастотные события, встраиваемые системы, циклы реального времени) разница решающая.\n\n---\n\n## Сравнение дизайна: отправители против альтернатив\n\n| | `std::async` / `future` | Сырые `std::thread` | Корутины C++20 | Отправители (`std::execution`) |\n|---|---|---|---|---|\n| Выделение в куче | На каждую задачу (неизбежно) | Вручную | Часто (кадр корутины) | Никогда |\n| Отмена | Отсутствует | Вручную | Через `stop_token` | Структурированная (`set_stopped`) |\n| Обработка ошибок | Только `exception_ptr` | Вручную | `exception` / `expected` | Типизированные каналы (любой тип) |\n| Композиция | Затруднена | Вручную | Естественная (`co_await`) | Первоклассная (`|`) |\n| Структурированное время жизни | Нет | Нет | Да | Да |\n| Порог вхождения | Низкий | Низкий | Средний | Высокий |\n\n### Когда выбирать отправители\n\n- **Нулевое выделение обязательно** — встраиваемые системы, реальное время, высокая частота.\n- **Важны типизированные каналы ошибок** — нужен `std::error_code` или собственный тип, а не исключение.\n- **Сложная композиция** — разветвление (`when_all`), слияние (`split`), смена планировщика (`transfer`).\n- **Отмена** должна быть структурированной: при выходе из родительской области дочерняя работа останавливается.\n\n### Когда выбирать корутины\n\n- **Последовательный асинхронный код**, который читается как синхронный — `co_await` просто читабельнее.\n- **Простая обработка ошибок** — один тип исключения достаточен.\n- **Читаемые точки приостановки** важны для команды.\n\nОба подхода **дополняют друг друга**. C++26 включает оба. Корутина может `co_await` отправитель; `fn` в `let_value` может вернуть отправитель, оборачивающий корутину. Реальные системы будут их смешивать: корутины — для читаемой логики, отправители — для планирования и управления ресурсами.\n\n---\n\n## Ключевые правила для запоминания\n\n- Используйте `let_value`, когда `fn` должна вернуть отправитель (а не значение).\n- Используйте `let_error` / `let_stopped` для асинхронного восстановления на канале ошибки / отмены.\n- Всё семейство `let_*` пропускает другие два канала без изменений.\n- Отправители никогда не выделяют память в куче: `connect` создаёт статически типизированный объект, все состояния встроены.\n- `std::async` всегда выделяет память в куче, потому что совместное владение требует стабильности адреса.",
+      "examples": [
+        {
+          "title": "let_value: условное асинхронное ветвление",
+          "code": "// Требует C++26 std::execution (P2300).\n// Показано как пример на основе спецификации — не компилировалось.\n#include <execution>\n#include <print>\n#include <stdexcept>\n\n// Представьте, что это настоящие асинхронные операции:\nauto positive_path(int x) {\n    // Возвращает отправитель, производящий x * 2\n    return std::execution::just(x * 2);\n}\n\nauto negative_path() {\n    // Возвращает отправитель, сигнализирующий об ошибке\n    return std::execution::just_error(\n        std::make_exception_ptr(\n            std::runtime_error{\"отрицательный ввод недопустим\"}\n        )\n    );\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // let_value: fn возвращает НОВЫЙ ОТПРАВИТЕЛЬ, а не обычный int.\n    // Какой отправитель — зависит от значения: в этом и суть.\n    auto pipeline =\n        ex::just(42)\n        | ex::let_value([](int x) {\n            // fn должна вернуть отправитель:\n            if (x > 0)\n                return positive_path(x);   // → just(84)\n            else\n                return negative_path();    // → just_error(...)\n        });\n\n    // При just(42) выполняется положительная ветка → 84.\n    auto result = ex::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // 84\n\n    // Если бы мы начали с just(-1), сработал бы negative_path()\n    // и sync_wait пробросил бы runtime_error.\n}",
+          "expectedOutput": "",
+          "explanation": "Лямбда `let_value` возвращает **отправитель** — `positive_path(x)` или `negative_path()`. `then` так не может: его лямбда должна возвращать обычный `int`. Когда значение равно `42`, `positive_path(42)` возвращает `just(84)`, который становится живым продолжением. При отрицательном значении `negative_path()` возвращает `just_error(...)`, превращая конвейер в ошибку. Решение о том, _какой асинхронный путь выбрать_, принимается во время выполнения, внутри лямбды, на основе переданного значения."
+        },
+        {
+          "title": "let_error: асинхронный откат при ошибке",
+          "code": "// Демонстрирует let_error: fn получает ошибку и возвращает отправитель.\n// В отличие от upon_error (fn возвращает обычное значение),\n// fn в let_error может запустить полноценную асинхронную операцию.\n#include <execution>\n#include <print>\n#include <stdexcept>\n\n// Симулирует асинхронный резервный запрос (возвращает отправитель):\nauto query_fallback_service() {\n    return std::execution::just(-1); // резервное значение\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    // Основной отправитель: немедленно сигнализирует об ошибке.\n    auto primary = ex::just_error(\n        std::make_exception_ptr(std::runtime_error{\"основная операция не удалась\"})\n    );\n\n    auto pipeline =\n        std::move(primary)\n        | ex::let_error([](std::exception_ptr) {\n            // fn получает ошибку, возвращает новый отправитель.\n            // Здесь мы запускаем асинхронный резервный путь.\n            // (В продакшне это мог бы быть отправитель сетевого запроса.)\n            return query_fallback_service();\n        });\n\n    // Ошибка перехвачена; вместо неё выполняется резервный отправитель.\n    auto result = ex::sync_wait(std::move(pipeline));\n    std::println(\"{}\", std::get<0>(*result)); // -1\n\n    // Для сравнения: upon_error потребовал бы, чтобы fn вернула -1 напрямую.\n    // let_error позволяет fn вернуть query_fallback_service()\n    // — асинхронную операцию, а не обычное значение.\n}",
+          "expectedOutput": "",
+          "explanation": "Лямбда `let_error` принимает ошибку типа `std::exception_ptr` и возвращает `query_fallback_service()` — отправитель. `let_error` запускает этот отправитель и ждёт его завершения. Вывод конвейера становится резервным результатом (`-1`), как будто ошибки никогда не было. Это асинхронное восстановление после ошибки: путь восстановления сам является асинхронной операцией, а не синхронным значением. `upon_error` не мог бы этого сделать — он требует обычного возвращаемого значения."
+        },
+        {
+          "title": "Структура конвейера и модель нулевого выделения",
+          "code": "// Концептуальная иллюстрация гарантии нулевого выделения.\n// Все состояния операций встроены — без выделения в куче.\n#include <execution>\n#include <print>\n\nint main() {\n    namespace ex = std::execution;\n\n    // Каждый шаг | оборачивает предыдущий отправитель в новый тип.\n    // Компилятор знает полный тип на этапе компиляции.\n    auto pipeline =\n        ex::just(1)                             // JustSender<int>\n        | ex::then([](int x){ return x + 1; }) // ThenSender<JustSender<int>, L1>\n        | ex::then([](int x){ return x * 3; }) // ThenSender<ThenSender<...>, L2>\n        | ex::let_value([](int x) {             // LetValueSender<..., L3>\n            return ex::just(x - 1);\n          });\n\n    // connect() возвращает объект, тип которого кодирует ВСЕ четыре состояния.\n    // Его размер известен на этапе компиляции. Он живёт на стеке ниже:\n    auto op = ex::connect(std::move(pipeline), /* какой-то приёмник */ 0);\n    // sizeof(op) известен на этапе компиляции — нет new, нет shared_ptr.\n    // Все четыре подсостояния упакованы встроенно внутри op.\n\n    // На практике sync_wait делает connect + start за нас:\n    auto result = ex::sync_wait(\n        ex::just(1)\n        | ex::then([](int x){ return x + 1; })  // 2\n        | ex::then([](int x){ return x * 3; })  // 6\n        | ex::let_value([](int x) {\n            return ex::just(x - 1);              // 5\n          })\n    );\n    std::println(\"{}\", std::get<0>(*result)); // 5\n\n    // Для сравнения: каждый вызов std::async выделяет\n    // управляющий блок shared_ptr в куче.\n    // Цепочка из 4 вызовов async = 4 выделения в куче.\n    // Этот конвейер = 0 выделений в куче.\n}",
+          "expectedOutput": "",
+          "explanation": "Тип `pipeline` — вложенный шаблон: `LetValueSender<ThenSender<ThenSender<JustSender<int>, L1>, L2>, L3>`. Компилятор знает его размер на этапе компиляции. `connect` возвращает `operation_state` другого статически известного типа, содержащего **все четыре подсостояния встроенно**. Нет `new`, нет `shared_ptr`, нет стирания типов. Весь конвейер — четыре отправителя глубиной — живёт на стеке как единый объект. `std::async` не может этого повторить: пара `future`/`promise` требует управляющего блока в куче для совместного владения."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m6-l6-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Вы пишете конвейер, в котором следующий шаг — другая асинхронная операция, зависящая от значения предыдущего шага. Какой адаптор следует использовать?\n\n```cpp\nauto pipeline =\n    ex::just(x)\n    | ex::???([]( int v) {\n        if (v > 0) return async_positive(v); // возвращает отправитель\n        else       return async_negative();  // возвращает отправитель\n    });\n```",
+          "options": [
+            "`then` — потому что он преобразует значения",
+            "`let_value` — потому что fn возвращает отправитель, а не обычное значение",
+            "`upon_error` — потому что мы переключаем пути на основе значения",
+            "`split` — чтобы разделить значение между обеими ветками"
+          ],
+          "answerIndex": 1,
+          "explanation": "Лямбда `then` должна возвращать **обычное значение**; передача ему отправителя сделает отправитель сам по себе значением конвейера, а не запустит его как следующий шаг. `let_value` создан именно для этого: его лямбда возвращает новый отправитель, и `let_value` запускает его как живое продолжение. Всякий раз, когда нужно выбрать между асинхронными подграфами — а не вернуть обычное значение — используйте `let_value`."
+        },
+        {
+          "id": "m6-l6-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что должна возвращать `fn` в `std::execution::let_error(s, fn)`?",
+          "options": [
+            "Обычное значение для подстановки вместо ошибки",
+            "Новый отправитель, завершение которого становится выводом конвейера",
+            "`void` — let_error только отбрасывает ошибку",
+            "`std::error_code`, оборачивающий исходную ошибку"
+          ],
+          "answerIndex": 1,
+          "explanation": "`let_error` принадлежит семейству `let_*`, где лямбда всегда возвращает **новый отправитель**. Этот отправитель запускается, и его завершение — значение, ошибка или остановка — передаётся вниз по цепочке. Сравните с `upon_error`, где лямбда возвращает обычное значение (синхронное восстановление). Используйте `let_error`, когда путь восстановления сам является асинхронным."
+        },
+        {
+          "id": "m6-l6-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <execution>\n\nauto async_lookup(int key) {\n    return std::execution::just(key * 10); // возвращает отправитель\n}\n\nint main() {\n    namespace ex = std::execution;\n\n    auto result = ex::sync_wait(\n        ex::just(5)\n        | ex::then([](int key) {\n            return async_lookup(key); // ОШИБКА: возвращает отправитель, а не int\n        })\n    );\n\n    // result — std::optional<std::tuple<Sender>> ?\n    // Это не то, что мы хотели.\n}",
+          "answerLine": 12,
+          "explanation": "Строка 12: лямбда внутри `then` возвращает **отправитель** (`async_lookup(key)` возвращает `just(50)`), а не `int`. `then` трактует возвращаемое значение лямбды как следующее значение в конвейере — поэтому конвейер теперь несёт **объект-отправитель как значение**, а не запускает его как следующий шаг. Исправление: заменить `then` на `let_value`. `let_value` ожидает, что его лямбда вернёт отправитель, запускает его как живое продолжение, и конвейер в итоге несёт `50` (значение внутри `just(50)`)."
+        },
+        {
+          "id": "m6-l6-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Почему `std::async` не может предложить гарантию нулевого выделения памяти — даже при идеальной реализации?",
+          "options": [
+            "Потому что `std::async` всегда создаёт новый поток, а потокам нужна память в куче",
+            "Потому что `std::future` использует совместное владение между вызывающим и фоновым вычислением, что требует стабильного управляющего блока в куче",
+            "Потому что стандарт C++ не позволяет `std::async` использовать память стека",
+            "Потому что `std::async` хранит результат как `std::any`, который всегда выделяет память в куче"
+          ],
+          "answerIndex": 1,
+          "explanation": "Корневая причина — **совместное владение**. `std::future<T>` и внутренний промис/общее состояние, в которое пишет фоновая задача, — два отдельных объекта, совместно владеющих одними данными. Совместное владение требует счётчика ссылок. Счётчик ссылок нуждается в стабильном адресе — он не может находиться ни на стеке вызывающего (который может вернуться до завершения фоновой задачи), ни на стеке потока. Единственное жизнеспособное место — **управляющий блок в куче**, управляемый `shared_ptr`. Это не деталь качества реализации; это структурное следствие модели совместного владения. Отправители полностью избегают этого: `operation_state` имеет **единственное владение**, и его тип и размер известны на этапе компиляции."
+        }
+      ],
+      "challenge": null,
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что сигнализирует `set_stopped()` приёмнику? (из урока l1)",
+            "options": [
+              "Произошла ошибка, и объект ошибки подавляется",
+              "Задача была отменена — это самостоятельный исход, а не ошибка",
+              "Отправитель не произвёл значений, но завершился успешно",
+              "Выполнение было перенесено на другой планировщик"
+            ],
+            "answerIndex": 1,
+            "explanation": "`set_stopped()` — третий канал завершения, отдельный от `set_value` и `set_error`. Отменённая задача не сломана — она была законно остановлена. `std::execution` трактует отмену как самостоятельный исход с собственным каналом, а не кодирует её как исключение (как делает `std::future` с `std::future_error`)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Что возвращает `std::execution::sync_wait`, когда отправитель завершается через `set_stopped()`? (из урока l2)",
+            "options": [
+              "Бросает `std::execution::cancelled`",
+              "Возвращает `std::nullopt`",
+              "Возвращает пустой `std::tuple<>`",
+              "Блокируется до тех пор, пока не будет произведено значение"
+            ],
+            "answerIndex": 1,
+            "explanation": "`sync_wait` отображает три канала в три исхода: `set_value(v...)` → `optional<tuple<v...>>{value}`, `set_stopped()` → `std::nullopt`, `set_error(e)` → пробросить `e`. Возврат `nullopt` — это однозначный, безисключительный сигнал об отмене операции."
+          },
+          {
+            "type": "choice",
+            "prompt": "Отправитель завершается через `set_error(e)`. Что делает `then(s, fn)` с этим сигналом? (из урока l3)",
+            "options": [
+              "Вызывает `fn(e)` для преобразования ошибки",
+              "Пропускает `set_error(e)` насквозь без изменений — fn не вызывается",
+              "Преобразует ошибку в `set_stopped()`",
+              "Отбрасывает ошибку и вызывает `fn()` без аргументов"
+            ],
+            "answerIndex": 1,
+            "explanation": "`then` обрабатывает **только `set_value`**. `set_error` и `set_stopped` проходят через него прозрачно — лямбда никогда не вызывается. Чтобы перехватить `set_error`, используйте `upon_error` (для синхронного восстановления) или `let_error` (для асинхронного)."
+          },
+          {
+            "type": "choice",
+            "prompt": "Какую гарантию даёт `when_all` о своих дочерних операциях в момент, когда вызывает `set_value`, `set_error` или `set_stopped` на своём приёмнике? (из урока l4)",
+            "options": [
+              "Все дочерние операции завершились через `set_value`",
+              "Все дочерние операции завершились — через любой канал — и ни одна не выполняется в фоне",
+              "Первая завершившаяся операция определяет результат; остальные отсоединяются",
+              "Никакой гарантии о состоянии других дочерних операций не даётся"
+            ],
+            "answerIndex": 1,
+            "explanation": "Это **гарантия структурированного параллелизма**. Когда `when_all` сигнализирует своему потребителю — по любой причине (значение, ошибка или остановка) — каждая запущенная им дочерняя операция уже завершена. Никакой брошенной фоновой работы, никаких гонок при уничтожении. Именно это отличает `when_all` от `std::async`: с `std::future` ошибка в одной задаче не останавливает остальные."
+          },
+          {
+            "type": "choice",
+            "prompt": "Лямбда какого адаптора возвращает отправитель, а не обычное значение?",
+            "options": [
+              "`then` — fn возвращает следующее значение",
+              "`upon_error` — fn возвращает значение восстановления",
+              "`let_value` — fn возвращает новый отправитель, который становится живым продолжением",
+              "`upon_stopped` — fn возвращает резервное значение"
+            ],
+            "answerIndex": 2,
+            "explanation": "Лямбда `let_value` должна возвращать **отправитель**. `let_value` затем запускает этот отправитель и ждёт его завершения — вывод внутреннего отправителя становится выводом конвейера. `then`, `upon_error` и `upon_stopped` требуют от своих лямбд возврата обычных значений. Правило именования `let_*` / `upon_*`: `let_*` → отправитель, `upon_*` / `then` → значение."
+          }
+        ]
+      }
     }
   ]
 }
