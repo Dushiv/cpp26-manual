@@ -2,7 +2,7 @@
   "id": "m9",
   "moduleNumber": 9,
   "title": "Низкоуровневая конкурентность",
-  "significance": "специальный",
+  "significance": "конкурентность",
   "prerequisites": [],
   "lessons": [
     {

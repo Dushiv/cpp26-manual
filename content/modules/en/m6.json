@@ -2,7 +2,7 @@
   "id": "m6",
   "moduleNumber": 6,
   "title": "std::execution (Senders/Receivers)",
-  "significance": "flagship",
+  "significance": "parallelism",
   "prerequisites": [],
   "lessons": [
     {

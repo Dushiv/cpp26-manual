@@ -761,7 +761,6 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
   moduleSkips, lessonStatus, resolveEx, skipEx, unskipEx, passMastery }) {
   const t = useT();
   useEffect(() => { window.scrollTo(0, 0); }, [cur]);
-  const isFlagship = (sig) => /флагман|flagship/i.test(sig);
   return (
     <div className="app">
       <style>{CSS}</style>
@@ -793,7 +792,7 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
                   <div className="mod-h">
                     <span className="mod-n">{m.moduleNumber}</span>
                     <span className="mod-t">{m.title}</span>
-                    <span className={"sig sig-" + (isFlagship(m.significance) ? "flag" : "base")}>{m.significance}</span>
+                    <span className="sig">{m.significance}</span>
                   </div>
                   {sk > 0 && <div className="mod-skip">{t("modSkipped", sk)}</div>}
                   {(m.lessons && m.lessons.length > 0)
@@ -934,9 +933,7 @@ h1,h2,.brand span,.mod-t { font-family:'IBM Plex Serif',Georgia,serif; }
 .mod-h { display:flex; align-items:baseline; gap:7px; padding:4px 4px; }
 .mod-n { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber); background:var(--codebg); border:1px solid var(--line); border-radius:5px; padding:1px 6px; }
 .mod-t { font-size:13px; font-weight:600; flex:1; }
-.sig { font-size:10px; text-transform:uppercase; letter-spacing:.04em; padding:1px 6px; border-radius:99px; }
-.sig-base { color:var(--mut); border:1px solid var(--line); }
-.sig-flag { color:var(--amber); border:1px solid var(--amber); }
+.sig { font-size:10px; text-transform:uppercase; letter-spacing:.04em; padding:1px 6px; border-radius:99px; color:var(--mut); border:1px solid var(--line); }
 .mod-skip { font-size:11px; color:var(--amber); margin:2px 0 4px 30px; }
 .mod ul { list-style:none; margin:2px 0 0; padding:0; }
 .mod li { display:flex; align-items:center; gap:8px; padding:6px 8px 6px 10px; border-radius:7px; cursor:pointer; font-size:13px; color:var(--ink); }

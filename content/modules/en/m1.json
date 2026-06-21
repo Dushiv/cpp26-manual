@@ -2,7 +2,7 @@
   "id": "m1",
   "moduleNumber": 1,
   "title": "Core language ergonomics",
-  "significance": "basic",
+  "significance": "syntax",
   "prerequisites": [],
   "lessons": [
     {

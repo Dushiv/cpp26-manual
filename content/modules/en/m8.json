@@ -2,7 +2,7 @@
   "id": "m8",
   "moduleNumber": 8,
   "title": "Numerics and performance",
-  "significance": "important",
+  "significance": "numerics",
   "prerequisites": [],
   "lessons": [
     {

@@ -2,7 +2,7 @@
   "id": "m9",
   "moduleNumber": 9,
   "title": "Low-level concurrency",
-  "significance": "special",
+  "significance": "concurrency",
   "prerequisites": [],
   "lessons": [
     {
