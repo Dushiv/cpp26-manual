@@ -6,9 +6,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "<debugging>" }).click();
-  await expect(page.locator("h1")).toContainText("<debugging>");
-  await expect(page.locator(".empty-big")).toContainText("ещё не написан");
+  await page.getByRole("listitem").filter({ hasText: "Удалённые и устаревшие" }).click();
+  await expect(page.locator("h1")).toContainText("Удалённые");
+  await expect(page.getByRole("heading", { name: "Упражнения" })).toBeVisible();
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();
   await expect(page.locator("h1")).toContainText("Pack indexing");

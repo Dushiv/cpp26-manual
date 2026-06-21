@@ -5,6 +5,357 @@
   "significance": "final",
   "prerequisites": [],
   "lessons": [
-    { "id": "m10-l1", "title": "<debugging>: breakpoint and is_debugger_present", "stub": true }
+    {
+      "id": "m10-l1",
+      "title": "<debugging>: Debugger detection & breakpoints",
+      "background": null,
+      "outputsVerified": false,
+      "theory": "The `<debugging>` header (P2546) compiles on GCC trunk, but calling `is_debugger_present()` and `breakpoint()` is not available in the Godbolt sandbox (sandbox restricts debug syscalls). Code examples are valid C++26 but cannot be executed in online compilers.\n\n## Motivation\n\nBefore C++26, triggering a programmatic breakpoint or detecting a debugger required platform-specific hacks:\n\n- `__debugbreak()` — MSVC only\n- `__builtin_trap()` — GCC/Clang, but not portable\n- `kill(getpid(), SIGTRAP)` — Unix only\n- `asm(\"int3\")` — x86 only\n\nC++26 standardizes three functions in the `<debugging>` header (proposal P2546) that work uniformly across all platforms.\n\n## Three Functions\n\n### `std::is_debugger_present() → bool`\n\nReturns `true` if a debugger is currently attached to the running process. When no debugger is present, the overhead is minimal — typically just reading a flag set by the OS loader.\n\nPlatform implementations:\n- **Windows**: calls `IsDebuggerPresent()`\n- **Linux**: reads `TracerPid` from `/proc/self/status`\n- **macOS**: uses `sysctl`\n\n### `std::breakpoint()`\n\nTriggers a breakpoint unconditionally:\n- If a debugger is attached: execution pauses at this instruction.\n- If no debugger is attached: behavior is implementation-defined — the program may terminate (SIGTRAP), continue, or call abort. **Do not call this in production without checking first.**\n\n### `std::breakpoint_if_debugging()`\n\nEquivalent to:\n```cpp\nif (std::is_debugger_present()) std::breakpoint();\n```\n\nThe safe variant: without a debugger, this is always a no-op. **This is what you almost always want.**\n\n## Typical Usage Patterns\n\n### Pattern 1 — Debug assertion with debugger stop\n\n```cpp\n#include <debugging>\n#include <print>\n#include <cstdlib>\n\nvoid debug_assert(bool condition, std::string_view msg) {\n    if (!condition) {\n        std::println(stderr, \"Assertion failed: {}\", msg);\n        std::breakpoint_if_debugging(); // pause in debugger if attached\n        std::abort();                   // terminate otherwise\n    }\n}\n```\n\nThe logic: `breakpoint_if_debugging()` gives you the chance to inspect program state in the debugger, while `abort()` ensures termination even when no debugger is attached.\n\n### Pattern 2 — Conditional debug logging\n\n```cpp\n#include <debugging>\n#include <print>\n\nvoid process(int value) {\n    if (std::is_debugger_present()) {\n        std::println(\"[debug] processing value: {}\", value);\n    }\n    // ... actual work ...\n}\n```\n\nExtra diagnostics are printed only when a debugger is active — zero overhead in production.\n\n## `std::breakpoint` vs `std::abort` vs `std::terminate`\n\n| Function | Purpose | Without debugger |\n|---|---|---|\n| `breakpoint()` | Pause for inspection | Implementation-defined (may abort) |\n| `breakpoint_if_debugging()` | Safe pause | No-op |\n| `abort()` | Abnormal termination | SIGABRT, core dump |\n| `terminate()` | Calls terminate handler | Usually abort |\n\nRecommended pattern when an error is detected:\n1. `std::breakpoint_if_debugging()` — give the debugger a chance to inspect\n2. `std::abort()` — terminate cleanly in production\n\n## Why These Functions Are `noexcept`\n\nDebug functions cannot throw exceptions: a breakpoint fires at the lowest level of the runtime. Catching a breakpoint in a `catch` block makes no semantic sense — a debug stop is not an error condition that can be \"handled\".",
+      "examples": [
+        {
+          "id": "m10-l1-ex1",
+          "level": "basic",
+          "title": "Safe debug assertion using breakpoint_if_debugging",
+          "code": "#include <debugging>\n#include <print>\n#include <cstdlib>\n#include <string_view>\n\n// Debug check: pause in debugger if attached, abort otherwise\nvoid debug_assert(bool condition, std::string_view msg) {\n    if (!condition) {\n        std::println(stderr, \"Assertion failed: {}\", msg);\n        std::breakpoint_if_debugging(); // no-op without a debugger\n        std::abort();\n    }\n}\n\nint main() {\n    // Normal run: breakpoint_if_debugging() is a no-op,\n    // then abort() would terminate with the message above.\n    // Debug session: execution pauses on the breakpoint line.\n    debug_assert(1 + 1 == 2, \"basic arithmetic\"); // passes\n    // debug_assert(false, \"test\"); // uncomment to demonstrate\n}",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m10-l1-ex2",
+          "level": "advanced",
+          "title": "Adaptive diagnostics: verbose tracing only under a debugger",
+          "code": "#include <debugging>\n#include <print>\n#include <vector>\n#include <string_view>\n\nstruct Request {\n    int id;\n    std::string_view path;\n};\n\nvoid handle(const Request& req) {\n    // Detailed tracing only when a debugger is attached —\n    // this branch is never taken in production.\n    if (std::is_debugger_present()) {\n        std::println(stderr, \"[trace] handle(): id={} path={}\",\n                     req.id, req.path);\n    }\n\n    if (req.path.empty()) {\n        std::println(stderr, \"[error] empty request path (id={})\", req.id);\n        // Give the debugger a chance to inspect the stack before terminating\n        std::breakpoint_if_debugging();\n        std::abort();\n    }\n\n    std::println(\"OK: {}\", req.path);\n}\n\nint main() {\n    std::vector<Request> requests = {\n        {1, \"/api/users\"},\n        {2, \"/api/orders\"},\n    };\n\n    for (const auto& r : requests) {\n        handle(r);\n    }\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::is_debugger_present()` return when the program is run without a debugger?",
+          "options": [
+            "true",
+            "false",
+            "std::nullopt",
+            "Behavior is undefined"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m10-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Why is `std::breakpoint_if_debugging()` preferred over `std::breakpoint()` in library code?",
+          "options": [
+            "`breakpoint_if_debugging()` is faster",
+            "`breakpoint()` without a debugger has implementation-defined behavior (may terminate the program); `breakpoint_if_debugging()` is always a no-op without a debugger",
+            "`breakpoint()` does not compile on Linux",
+            "They are the same call — there is no difference"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m10-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Find the problem in the following code:",
+          "code": "#include <debugging>\n#include <print>\n#include <cstdlib>\n\nvoid safe_check(bool ok) {\n    if (!ok) {\n        std::breakpoint(); // stop for debugging\n        std::abort();\n    }\n}\n\nint main() {\n    safe_check(false);\n}",
+          "answerLine": 6,
+          "explanation": "Line 6 calls `std::breakpoint()` unconditionally. If no debugger is attached, the behavior is implementation-defined — the program may terminate before the `std::abort()` on line 7, making the termination logic unpredictable. Fix: replace `std::breakpoint()` with `std::breakpoint_if_debugging()`, which is a no-op outside a debugger."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which function from `<debugging>` is safe to call in production code when no debugger is attached?",
+            "options": [
+              "std::breakpoint()",
+              "std::breakpoint_if_debugging()",
+              "std::is_debugger_present() — but only on Linux",
+              "None of them are safe"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::breakpoint()` do when the program is run without a debugger?",
+            "options": [
+              "Nothing (no-op)",
+              "Guaranteed to terminate the program via SIGABRT",
+              "Behavior is implementation-defined",
+              "Throws std::runtime_error"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Which of the following patterns correctly uses `<debugging>` for a debug assertion?",
+            "options": [
+              "if (!ok) { std::breakpoint(); }",
+              "if (!ok) { std::breakpoint_if_debugging(); std::abort(); }",
+              "if (!ok && std::is_debugger_present()) { std::abort(); }",
+              "std::assert(ok);"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m10-l2",
+      "title": "std::format & std::print improvements",
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "motivation": "Before C++26, printing containers and getting a debug view of strings required manual boilerplate: loops over elements, manual character escaping, or `operator<<` overloads. `std::format` arrived in C++20 as a powerful replacement for `printf` and `ostringstream`, and `std::print`/`std::println` landed in C++23. C++26 completes the picture: it adds the `{:?}` debug escape specifier, direct formatting of ranges and containers, `std::tuple` and `std::pair` formatting, and a cleaner path for custom formatters. Instead of writing `for (auto& x : v) std::cout << x << ' ';` you can now write `std::println(\"{}\", v)` and get a readable representation with no extra code.",
+      "theory": "## What's new in C++26\n\n`std::format` and `std::print` were introduced in C++20 and C++23 respectively. C++26 (proposals P2286 and P2093) extends them in four areas:\n\n1. **`{:?}` specifier** — debug/escaped output\n2. **Range and container formatting** — directly, without a manual loop\n3. **`std::tuple` and `std::pair` formatting**\n4. **`std::formatter<T>` improvements** — a consistent way to make user-defined types formattable\n\n---\n\n## The `{:?}` specifier — debug output\n\nThe `{:?}` specifier works for `char`, `std::string`, `std::string_view`, and their wide/UTF-8 counterparts. It:\n- Wraps strings in double quotes\n- Escapes non-printable characters: `\\n`, `\\t`, `\\r`, `\\\\`, `\\\"`, etc.\n- Wraps `char` values in single quotes\n\n```cpp\nstd::println(\"{:?}\", \"hello\\nworld\");  // \"hello\\nworld\"\nstd::println(\"{:?}\", \"tab\\there\");     // \"tab\\there\"\nstd::println(\"{:?}\", 'x');             // 'x'\n```\n\nThis is invaluable for debugging: you see the exact bytes in the string, not rendered whitespace and line breaks.\n\nC++26 also adds the binary format specifier with a `0b` prefix:\n```cpp\nstd::println(\"{:#010b}\", 42u);  // 0b00101010\nstd::println(\"{:#06b}\", 7u);   // 0b0111\n```\nHere `#` adds the `0b` prefix, and the number after sets the minimum field width, zero-padded.\n\n---\n\n## Range and container formatting\n\nStandard containers are now directly formattable via `std::format`/`std::println`:\n\n| Type | Output format |\n|------|---------------|\n| `std::vector<T>`, `std::list<T>`, `std::deque<T>` | `[v1, v2, v3]` |\n| `std::set<T>`, `std::unordered_set<T>` | `{v1, v2, v3}` |\n| `std::map<K,V>`, `std::unordered_map<K,V>` | `{\"k1\": v1, \"k2\": v2}` |\n\nYou can provide a per-element format specifier via `::`, for example `\"{::d}\"` applies `d` to each element of the vector.\n\n```cpp\nstd::vector<int> v = {1, 2, 3, 4};\nstd::println(\"{}\", v);  // [1, 2, 3, 4]\n\nstd::map<std::string, int> m = {{\"b\", 2}, {\"a\", 1}};\nstd::println(\"{}\", m);  // {\"a\": 1, \"b\": 2}\n```\n\nNote: keys in `std::map` come out in sorted order (that's how `std::map` works), and string keys are automatically quoted.\n\n---\n\n## std::tuple and std::pair formatting\n\n`std::tuple<T...>` formats as `(v1, v2, ...)` and `std::pair<K,V>` as `(k, v)`:\n\n```cpp\nauto t = std::make_tuple(42, \"hello\", 3.14);\nstd::println(\"{}\", t);  // (42, \"hello\", 3.14)\n\nstd::pair<int, int> p = {10, 20};\nstd::println(\"{}\", p);  // (10, 20)\n```\n\nString elements inside a tuple are automatically quoted (the same `{:?}`-style quoting is applied to strings inside compound types).\n\n---\n\n## Custom std::formatter<T>\n\nTo make a user-defined type formattable, specialize `std::formatter<T>` with two methods:\n\n```cpp\nstruct Point { int x, y; };\n\ntemplate<> struct std::formatter<Point> {\n    constexpr auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Point& p, auto& ctx) const {\n        return std::format_to(ctx.out(), \"({}, {})\", p.x, p.y);\n    }\n};\n\n// std::println(\"{}\", Point{3, 4}) → (3, 4)\n```\n\n- `parse` — **must be `constexpr`** — parses the format specifier (in simple cases just returns `ctx.begin()`)\n- `format` — formats the value into the output buffer via `ctx.out()`\n- `std::format_to(ctx.out(), ...)` — the most convenient way: works like `std::format` but writes to an output iterator instead of creating a string\n\n---\n\n## std::format_to and std::format_to_n\n\n```cpp\nstd::string s;\nstd::format_to(std::back_inserter(s), \"hello {}\", 42);\n// s == \"hello 42\"\n\nchar buf[32];\nstd::format_to_n(buf, sizeof(buf) - 1, \"{}\", 3.14);\n```\n\n`std::format_to` writes to any output iterator (string, vector, raw buffer). `std::format_to_n` caps the number of characters written.\n\n---\n\n## std::println(FILE*, ...) with an explicit file argument\n\n```cpp\nstd::println(stdout, \"result: {}\", 42);\nstd::println(stderr, \"error: {}\", msg);\nstd::print(stderr, \"no newline\");\n```\n\nThe first argument is a `FILE*`, which lets you write to `stderr` or any file without touching the state of `cout`/`cerr` streams.",
+      "examples": [
+        {
+          "title": "The {:?} specifier and binary format",
+          "code": "#include <format>\n#include <print>\n\nint main() {\n    // {:?} escapes special characters and adds quotes\n    std::println(\"{:?}\", \"hello\\nworld\");\n    std::println(\"{:?}\", \"tab\\there\");\n\n    // Binary format with prefix and minimum width\n    std::println(\"{:#010b}\", 42u);\n    std::println(\"{:#06b}\", 7u);\n}",
+          "expectedOutput": "\"hello\\nworld\"\n\"tab\\there\"\n0b00101010\n0b0111",
+          "explanation": "`{:?}` wraps the string in double quotes and replaces `\\n` with the two literal characters `\\` and `n` — exactly what you need when debugging. The `#010b` specifier means: binary representation with `0b` prefix, minimum width 10, zero-padded. `42` in binary is `0b00101010`."
+        },
+        {
+          "title": "Container and tuple formatting",
+          "code": "#include <format>\n#include <print>\n#include <vector>\n#include <map>\n#include <tuple>\n#include <string>\n\nint main() {\n    std::vector<int> v = {1, 2, 3, 4};\n    std::println(\"{}\", v);\n\n    std::map<std::string, int> m = {{\"b\", 2}, {\"a\", 1}};\n    std::println(\"{}\", m);\n\n    auto t = std::make_tuple(42, \"hello\", 3.14);\n    std::println(\"{}\", t);\n\n    std::pair<int, int> p = {10, 20};\n    std::println(\"{}\", p);\n}",
+          "expectedOutput": "[1, 2, 3, 4]\n{\"a\": 1, \"b\": 2}\n(42, \"hello\", 3.14)\n(10, 20)",
+          "explanation": "The vector prints in square brackets; the map in curly braces with quoted string keys in sorted order (since `std::map` is always ordered). Tuples and pairs use round brackets. The string element `\"hello\"` inside the tuple is automatically quoted."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l2-e1",
+          "type": "predict-output",
+          "difficulty": "basic",
+          "code": "#include <format>\n#include <print>\nint main() {\n    std::println(\"{:?}\", \"a\\tb\");\n    std::println(\"{:?}\", 'x');\n}",
+          "expectedOutput": "\"a\\tb\"\n'x'",
+          "level": "basic"
+        },
+        {
+          "id": "m10-l2-e2",
+          "type": "choice",
+          "difficulty": "basic",
+          "prompt": "What does `std::println(\"{}\", std::vector<int>{1, 2, 3})` print?",
+          "options": [
+            "1 2 3",
+            "[1, 2, 3]",
+            "{1, 2, 3}",
+            "1, 2, 3"
+          ],
+          "answerIndex": 1,
+          "explanation": "Sequential containers (`vector`, `list`, `deque`) are formatted in square brackets with comma separators: `[1, 2, 3]`.",
+          "level": "basic"
+        },
+        {
+          "id": "m10-l2-e3",
+          "type": "predict-output",
+          "difficulty": "advanced",
+          "code": "#include <format>\n#include <print>\n#include <tuple>\n#include <string>\nint main() {\n    auto t = std::make_tuple(42, std::string(\"hi\"));\n    std::println(\"{}\", t);\n}",
+          "expectedOutput": "(42, \"hi\")",
+          "level": "advanced"
+        },
+        {
+          "id": "m10-l2-e4",
+          "type": "find-bug",
+          "difficulty": "advanced",
+          "prompt": "A custom formatter is defined for the `Color` type. Find the bug that prevents the formatter from working in constant-evaluated contexts.",
+          "code": "#include <format>\n#include <print>\n\nstruct Color { int r, g, b; };\n\ntemplate<> struct std::formatter<Color> {\n    auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Color& c, auto& ctx) const {\n        return std::format_to(ctx.out(), \"rgb({},{},{})\", c.r, c.g, c.b);\n    }\n};\n\nint main() {\n    std::println(\"{}\", Color{255, 0, 128});\n}",
+          "answerLine": 7,
+          "explanation": "The `parse` method of a formatter must be `constexpr` — it is called at compile time when the format string is parsed and validated. Without `constexpr`, the format string cannot be checked at compile time. Fix: `constexpr auto parse(auto& ctx) { return ctx.begin(); }`.",
+          "level": "advanced"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does the `{:?}` format specifier do to a string?",
+            "options": [
+              "Wraps the string in single quotes",
+              "Wraps the string in double quotes and escapes non-printable characters",
+              "Prints the length of the string",
+              "Prints the string in hexadecimal"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How does `std::println` format a `std::map<string, int>`?",
+            "options": [
+              "key=value, key=value",
+              "[\"key\": value]",
+              "{\"key\": value, ...}",
+              "key: value\\nkey: value"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What do you need to do to make a user-defined type `T` formattable via `std::println`?",
+            "options": [
+              "Overload `operator<<` for `std::ostream`",
+              "Specialize `std::formatter<T>` with `parse` and `format` methods",
+              "Inherit T from std::formattable",
+              "Add a T::to_string() method"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::println(\"{}\", std::make_tuple(1, \"hi\", 3.14))` print?",
+            "options": [
+              "1 hi 3.14",
+              "(1, hi, 3.14)",
+              "(1, \"hi\", 3.14)",
+              "[1, hi, 3.14]"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Formatter for a 2x2 matrix",
+        "description": "Make the `Matrix2x2` type formattable via `std::println`. The matrix should print as `[[a, b], [c, d]]`. Specialize `std::formatter<Matrix2x2>` with a `constexpr parse` and a `format` method. Verify on gsnapshot (`-std=c++26 -O2`).",
+        "starterCode": "#include <format>\n#include <print>\n#include <array>\n\nstruct Matrix2x2 {\n    std::array<std::array<double, 2>, 2> data;\n};\n\n// TODO: specialize std::formatter<Matrix2x2>\n\nint main() {\n    Matrix2x2 m{{{{{1.0, 2.0}}, {{3.0, 4.0}}}}};\n    std::println(\"{}\", m);\n}",
+        "referenceSolution": "#include <format>\n#include <print>\n#include <array>\n\nstruct Matrix2x2 {\n    std::array<std::array<double, 2>, 2> data;\n};\n\ntemplate<> struct std::formatter<Matrix2x2> {\n    constexpr auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Matrix2x2& m, auto& ctx) const {\n        return std::format_to(ctx.out(),\n            \"[[{}, {}], [{}, {}]]\",\n            m.data[0][0], m.data[0][1],\n            m.data[1][0], m.data[1][1]);\n    }\n};\n\nint main() {\n    Matrix2x2 m{{{{{1.0, 2.0}}, {{3.0, 4.0}}}}};\n    std::println(\"{}\", m);\n}",
+        "expectedOutput": "[[1, 2], [3, 4]]",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m10-l3",
+      "title": "Removed & deprecated features in C++26",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Every major C++ standard not only adds new things but removes old ones — accumulated technical debt from decades of design. C++26 closes several long-running stories: it removes string converters that were never thread-safe, finally buries `strstream` which had outlived its purpose since C++98, and prohibits compound operations on `volatile` that misled developers about atomicity. Understanding what was removed and why matters not just for migrating legacy code — it shows how the standard shapes \"correct C++\": incrementally, with advance warning across multiple standards, without sudden breaks.",
+      "theory": "## 1. The lifecycle: deprecation → removal\n\nC++ never removes features abruptly. The standard process:\n- A feature is **deprecated** in standard year N: still legal to compile, compilers may warn\n- A feature is **removed** in standard year N+4 to N+8: now a compile error\n- Goal: give large codebases time to migrate\n\nExample: `std::auto_ptr` deprecated in C++11, removed in C++17. `std::wstring_convert` deprecated in C++17, removed in C++26.\n\nC++26 closes several such stories started in C++17 and C++20. This is planned housekeeping, not a revolution.\n\n---\n\n## 2. Key removals in C++26\n\n### `std::wstring_convert` and `std::wbuffer_convert` (removed)\n\nDeprecated in C++17, removed in C++26. They lived in `<locale>` and performed narrow↔wide string conversions. Problems:\n- Never thread-safe — used global locale state\n- Awkward and error-prone API\n- Encouraged a wrong mental model: `wstring` ≠ Unicode\n\n```cpp\n// C++23 and earlier — compiles with a deprecation warning:\n#include <locale>\nstd::wstring_convert<std::codecvt_utf8<wchar_t>> conv;\nstd::wstring wide = conv.from_bytes(\"hello\"); // deprecated!\n\n// C++26 — compile error: wstring_convert is not defined\n```\n\n**Replacement:** Platform APIs (`MultiByteToWideChar` on Windows, `mbstowcs`/`iconv` on POSIX) or third-party Unicode libraries (ICU, simdutf). For encoding detection, see `std::text_encoding` (Module 7).\n\n### `std::codecvt_utf8`, `std::codecvt_utf16`, `std::codecvt_utf8_utf16` (removed)\n\nUTF conversion facets from `<codecvt>`. Deprecated in C++17, removed in C++26. The `<codecvt>` header itself is removed. These facets had correctness issues with surrogate pairs and BOM handling. Replacement: platform APIs or third-party libraries.\n\n### `std::strstream`, `std::istrstream`, `std::ostrstream` (removed)\n\nFrom `<strstream>`. Deprecated in C++98 — yes, C++98 — finally removed in C++26. These were C-style string streams that worked directly on `char*` buffers and required manual memory management. Problems:\n- Manual memory management (and the `freeze()` trap)\n- Buffer overflow risk in `ostrstream`\n- A safe alternative existed since C++98: `std::stringstream`\n\n```cpp\n// Was in <strstream> — DO NOT use:\nstd::ostrstream oss;\noss << \"hello \" << 42;\nchar* p = oss.str();    // manual freeze + ownership chaos\n// oss.freeze(false);   // had to call this to avoid a leak!\n\n// Replacement — clean and safe:\n#include <sstream>\nstd::ostringstream oss;\noss << \"hello \" << 42;\nstd::string s = oss.str(); // no manual management\n```\n\n### `volatile` compound assignment operators (removed)\n\nC++20 deprecated compound assignments on `volatile`-qualified lvalues: `vol += 1`, `vol -= 1`, `vol++`, `vol--`. C++26 completes the removal. Reason: these operations suggest read-modify-write atomicity, which `volatile` does NOT guarantee.\n\n```cpp\nvolatile int counter = 0;\n\n// C++26: compile error\ncounter += 1;  // ERROR: compound assignment to volatile removed\ncounter++;     // ERROR: increment of volatile\n\n// Correct alternative — std::atomic:\n#include <atomic>\nstd::atomic<int> counter2 = 0;\ncounter2 += 1;  // fine — actually atomic\n```\n\nPlain `volatile` reads and writes still work — only the compound operators are removed. `volatile` itself remains (needed for memory-mapped I/O, etc.).\n\n### `std::shared_ptr::unique()` (removed)\n\nDeprecated in C++20, removed in C++26. `unique()` was equivalent to `use_count() == 1`. Problem: in multithreaded code the result could become stale by the time you use it, creating a false sense of safety.\n\n```cpp\n// C++26: compile error\nif (ptr.unique()) {  // ERROR: unique() removed\n    // modify *ptr \"safely\"... except it wasn't!\n}\n\n// Replacement:\nif (ptr.use_count() == 1) {  // still works, same MT caveat applies\n    // ...\n}\n```\n\n---\n\n## 3. Deprecated in C++26 (not yet removed)\n\n### `std::basic_string::reserve(0)` with zero argument\n`s.reserve(0)` used to hint at shrinking capacity. Implementations handled it inconsistently. Deprecated; use `s.shrink_to_fit()` for an explicit shrink request.\n\n### `std::bind` (deprecated, not removed)\nWith lambdas available, `std::bind` has no real purpose. Deprecated in C++26 — use lambdas instead.\n\n---\n\n## 4. Common misconceptions — what was NOT removed in C++26\n\n| \"Removed in C++26?\" | Reality |\n|---|---|\n| `std::auto_ptr` | No — removed in C++17 |\n| `throw()` exception specification | No — removed in C++17 |\n| `register` storage class specifier | No — removed in C++17 |\n| `std::endl` | No — still present (just inefficient) |\n| `std::bind` | No — only deprecated in C++26, not removed |\n\nC++26 focused on: the `wstring_convert`/`codecvt` family, the `strstream` family, `volatile` compound ops, and `shared_ptr::unique()`.\n\n---\n\n## 5. Migration cheatsheet\n\n| Removed in C++26 | Replacement |\n|---|---|\n| `std::wstring_convert` | Platform API / third-party Unicode library |\n| `std::codecvt_utf8/utf16` | OS API (`MultiByteToWideChar`, `iconv`) |\n| `std::strstream` | `std::stringstream` from `<sstream>` |\n| `volatile` compound ops (`+=`, `++`, etc.) | `std::atomic<T>` |\n| `shared_ptr::unique()` | `ptr.use_count() == 1` |\n| `string::reserve(0)` | `s.shrink_to_fit()` |\n\nC++26 cleans up decades of accumulated technical debt, making the language cleaner — not by sacrificing power, but by eliminating traps that misled even experienced developers. This is the natural conclusion of a long journey: good engineering means not only adding the new, but honestly retiring the old.",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m10-l3-ex1",
+          "level": "basic",
+          "title": "Correct replacements for deprecated string-conversion APIs",
+          "code": "// BEFORE (C++23, compiles with deprecation warnings):\n// #include <locale>\n// #include <codecvt>\n// std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;\n// std::wstring wide = conv.from_bytes(\"hello\");  // deprecated!\n\n// AFTER (C++26, portable):\n#include <string>\n#include <cstdlib>   // mbstowcs (POSIX/C standard)\n#include <cwchar>\n\n// Example platform replacement (POSIX):\nvoid narrow_to_wide_example() {\n    const char* narrow = \"hello\";\n    std::mbstate_t state{};\n    std::size_t len = std::mbsrtowcs(nullptr, &narrow, 0, &state) + 1;\n    std::wstring wide(len, L'\\0');\n    std::mbsrtowcs(wide.data(), &narrow, len, &state);\n    // wide now contains L\"hello\"\n}\n\n// For C++26: std::text_encoding (Module 7) — encoding detection\n// For actual byte conversion: ICU, simdutf, or OS API",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m10-l3-ex2",
+          "level": "advanced",
+          "title": "Migrating from volatile to std::atomic",
+          "code": "#include <atomic>\n#include <thread>\n\n// BAD: volatile is NOT atomic\n// (and compound ops are removed in C++26)\n// volatile int shared_counter = 0;\n// shared_counter += 1; // COMPILE ERROR in C++26\n\n// GOOD: std::atomic provides real atomicity\nstd::atomic<int> shared_counter{0};\n\nvoid increment_relaxed() {\n    // Explicit memory order — maximum performance\n    shared_counter.fetch_add(1, std::memory_order_relaxed);\n}\n\nvoid increment_sequentially_consistent() {\n    // operator+= on atomic uses seq_cst by default\n    shared_counter += 1;\n}\n\n// shared_ptr::unique() is also removed — use use_count():\n#include <memory>\n\nvoid migrate_unique() {\n    auto ptr = std::make_shared<int>(42);\n\n    // BEFORE (C++23):\n    // if (ptr.unique()) { /* ... */ }  // ERROR in C++26\n\n    // AFTER:\n    if (ptr.use_count() == 1) {\n        // Sole owner — but in MT code this is still racy!\n        *ptr = 100;\n    }\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l3-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What happens when `counter += 1;` is compiled if `counter` is declared as `volatile int` in C++26?",
+          "options": [
+            "Compiles without warnings",
+            "Compiles with a deprecation warning",
+            "Compile error — compound assignment to volatile is removed in C++26",
+            "Undefined behavior at runtime"
+          ],
+          "answerIndex": 2,
+          "explanation": "C++20 deprecated compound assignment operators on volatile-qualified lvalues. C++26 completes the removal: counter += 1 on a volatile int is now a compile error. Plain reads and writes (counter = 1, int x = counter) remain valid."
+        },
+        {
+          "id": "m10-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What is the correct replacement for `std::wstring_convert` in C++26?",
+          "options": [
+            "std::unicode_convert from <unicode>",
+            "Platform APIs (MultiByteToWideChar on Windows, iconv on POSIX) or third-party libraries",
+            "std::text_encoding from <text_encoding>",
+            "std::locale::convert"
+          ],
+          "answerIndex": 1,
+          "explanation": "std::wstring_convert was removed in C++26 with no direct standard-library replacement. The correct path is platform APIs (MultiByteToWideChar on Windows, mbsrtowcs/iconv on POSIX) or third-party Unicode libraries (ICU, simdutf). std::text_encoding (Module 7) identifies the encoding but does not perform conversion."
+        },
+        {
+          "id": "m10-l3-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why was `shared_ptr::unique()` removed in C++26?",
+          "options": [
+            "The function produced incorrect results for empty shared_ptr",
+            "In multithreaded code, the use_count()==1 result can become stale before you act on it, creating a false sense of safety",
+            "unique() was equivalent to !expired() from weak_ptr",
+            "shared_ptr itself was fully removed in C++26"
+          ],
+          "answerIndex": 1,
+          "explanation": "ptr.unique() returned true when use_count() == 1. In multithreaded code, between the check and the action, another thread could create a copy of the shared_ptr — and the \"unique\" pointer would no longer be unique. The function gave a false impression of safe exclusive access. The replacement ptr.use_count() == 1 works but carries the same thread-safety caveat."
+        },
+        {
+          "id": "m10-l3-e4",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <sstream>\n#include <memory>\n#include <print>\n\nint main() {\n    // Migrated from strstream to ostringstream — correct:\n    std::ostringstream oss;\n    oss << \"result: \" << 42;\n    std::println(\"{}\", oss.str());  // line 9 — OK\n\n    auto ptr = std::make_shared<int>(10);\n    if (ptr.unique()) {             // line 12 — BUG\n        *ptr = 20;\n    }\n    std::println(\"{}\", *ptr);\n}",
+          "answerLine": 12,
+          "explanation": "std::shared_ptr::unique() was removed in C++26 (deprecated in C++20). Line 12 causes a compile error. Fix: replace ptr.unique() with ptr.use_count() == 1 — though the same thread-safety caveat still applies."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which C++ standard introduced the deprecation of `std::wstring_convert`?",
+            "options": [
+              "C++14",
+              "C++17",
+              "C++20",
+              "C++23"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Which of the following was removed specifically in C++26 (not in an earlier standard)?",
+            "options": [
+              "std::auto_ptr",
+              "The throw() exception specification",
+              "std::strstream",
+              "The register storage class specifier"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Why is a plain `volatile` read/write still allowed in C++26 while `vol += 1` is not?",
+            "options": [
+              "This is a defect in the standard; both should be forbidden",
+              "volatile is needed for memory-mapped I/O (reads/writes preserved); compound ops imply atomicity that volatile does not provide",
+              "volatile compound ops are only forbidden on POSIX systems",
+              "volatile has been completely removed from C++26"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the correct replacement for `std::ostrstream` in modern C++?",
+            "options": [
+              "std::format",
+              "std::ostringstream from <sstream>",
+              "std::string_view",
+              "std::span<char>"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    }
   ]
 }

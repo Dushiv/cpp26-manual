@@ -5,6 +5,357 @@
   "significance": "завершающий",
   "prerequisites": [],
   "lessons": [
-    { "id": "m10-l1", "title": "<debugging>: breakpoint и is_debugger_present", "stub": true }
+    {
+      "id": "m10-l1",
+      "title": "<debugging>: breakpoint и is_debugger_present",
+      "background": null,
+      "outputsVerified": false,
+      "theory": "Заголовок `<debugging>` (P2546) компилируется в GCC trunk, но вызов `is_debugger_present()` и `breakpoint()` недоступен в среде Godbolt (sandbox ограничивает отладочные syscalls). Примеры кода корректны и компилируются, но не могут быть выполнены в онлайн-компиляторах.\n\n## Мотивация\n\nДо C++26 установить программный breakpoint или обнаружить отладчик можно было только платформозависимыми способами:\n\n- `__debugbreak()` — только MSVC\n- `__builtin_trap()` — GCC/Clang, но непортабельно\n- `kill(getpid(), SIGTRAP)` — только Unix\n- `asm(\"int3\")` — только x86\n\nC++26 стандартизирует три функции в заголовке `<debugging>` (предложение P2546), которые работают одинаково на всех платформах.\n\n## Три функции\n\n### `std::is_debugger_present() → bool`\n\nВозвращает `true`, если к процессу в данный момент подключён отладчик. Когда отладчика нет, накладные расходы минимальны — обычно просто проверяется флаг, установленный загрузчиком ОС.\n\nПлатформенные реализации:\n- **Windows**: вызов `IsDebuggerPresent()`\n- **Linux**: чтение `TracerPid` из `/proc/self/status`\n- **macOS**: системный вызов `sysctl`\n\n### `std::breakpoint()`\n\nБезусловно вызывает breakpoint:\n- Если отладчик подключён — выполнение приостанавливается на этой инструкции.\n- Если отладчика нет — поведение определяется реализацией: программа может завершиться (SIGTRAP), может продолжить работу, может вызвать abort. **Не следует вызывать в продакшне без предварительной проверки.**\n\n### `std::breakpoint_if_debugging()`\n\nЭквивалентно:\n```cpp\nif (std::is_debugger_present()) std::breakpoint();\n```\n\nБезопасный вариант: без отладчика это всегда no-op. **Именно эту функцию следует использовать в большинстве случаев.**\n\n## Типичные паттерны использования\n\n### Паттерн 1 — Отладочная проверка с остановкой в отладчике\n\n```cpp\n#include <debugging>\n#include <print>\n#include <cstdlib>\n\nvoid debug_assert(bool condition, std::string_view msg) {\n    if (!condition) {\n        std::println(stderr, \"Assertion failed: {}\", msg);\n        std::breakpoint_if_debugging(); // приостановить в отладчике, если подключён\n        std::abort();                   // иначе — завершить программу\n    }\n}\n```\n\nЛогика: `breakpoint_if_debugging()` даёт возможность осмотреть состояние программы в отладчике, а затем `abort()` гарантирует завершение даже если отладчик не подключён.\n\n### Паттерн 2 — Условное отладочное логирование\n\n```cpp\n#include <debugging>\n#include <print>\n\nvoid process(int value) {\n    if (std::is_debugger_present()) {\n        std::println(\"[debug] processing value: {}\", value);\n    }\n    // ... основная работа ...\n}\n```\n\nДополнительная диагностика выводится только когда активен отладчик — нет накладных расходов в продакшне.\n\n## `std::breakpoint` vs `std::abort` vs `std::terminate`\n\n| Функция | Назначение | Поведение без отладчика |\n|---|---|---|\n| `breakpoint()` | Пауза для инспекции | Implementation-defined (может abort) |\n| `breakpoint_if_debugging()` | Безопасная пауза | No-op |\n| `abort()` | Аварийное завершение | SIGABRT, core dump |\n| `terminate()` | Вызов terminate handler | Обычно abort |\n\nРекомендуемый паттерн при обнаружении ошибки:\n1. `std::breakpoint_if_debugging()` — дать возможность осмотреть состояние\n2. `std::abort()` — завершить в продакшне\n\n## Почему эти функции `noexcept`\n\nОтладочные функции не могут бросать исключения: breakpoint срабатывает на самом низком уровне среды выполнения. Перехватить его в блоке `catch` не имеет смысла семантически — отладочная остановка не является ошибочным состоянием, которое можно «обработать».",
+      "examples": [
+        {
+          "id": "m10-l1-ex1",
+          "level": "basic",
+          "title": "Безопасная отладочная проверка с breakpoint_if_debugging",
+          "code": "#include <debugging>\n#include <print>\n#include <cstdlib>\n#include <string_view>\n\n// Отладочная проверка: в отладчике — пауза, иначе — abort\nvoid debug_assert(bool condition, std::string_view msg) {\n    if (!condition) {\n        std::println(stderr, \"Assertion failed: {}\", msg);\n        std::breakpoint_if_debugging(); // no-op без отладчика\n        std::abort();\n    }\n}\n\nint main() {\n    // В обычном запуске: breakpoint_if_debugging() — no-op,\n    // затем abort() завершит программу с сообщением выше.\n    // В сеансе отладки: выполнение приостановится на строке breakpoint.\n    debug_assert(1 + 1 == 2, \"базовая арифметика\"); // проходит\n    // debug_assert(false, \"тест\"); // раскомментировать для демонстрации\n}",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m10-l1-ex2",
+          "level": "advanced",
+          "title": "Адаптивная диагностика: подробный лог только под отладчиком",
+          "code": "#include <debugging>\n#include <print>\n#include <vector>\n#include <string_view>\n\nstruct Request {\n    int id;\n    std::string_view path;\n};\n\nvoid handle(const Request& req) {\n    // Детальная трассировка только когда подключён отладчик —\n    // в продакшне эта ветка не выполняется совсем.\n    if (std::is_debugger_present()) {\n        std::println(stderr, \"[trace] handle(): id={} path={}\",\n                     req.id, req.path);\n    }\n\n    if (req.path.empty()) {\n        std::println(stderr, \"[error] пустой путь запроса (id={})\", req.id);\n        // Дать отладчику шанс осмотреть стек до завершения\n        std::breakpoint_if_debugging();\n        std::abort();\n    }\n\n    std::println(\"OK: {}\", req.path);\n}\n\nint main() {\n    std::vector<Request> requests = {\n        {1, \"/api/users\"},\n        {2, \"/api/orders\"},\n    };\n\n    for (const auto& r : requests) {\n        handle(r);\n    }\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l1-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что вернёт `std::is_debugger_present()` при запуске программы без отладчика?",
+          "options": [
+            "true",
+            "false",
+            "std::nullopt",
+            "Поведение не определено"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m10-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Почему `std::breakpoint_if_debugging()` предпочтительнее `std::breakpoint()` в библиотечном коде?",
+          "options": [
+            "`breakpoint_if_debugging()` работает быстрее",
+            "`breakpoint()` без отладчика имеет implementation-defined поведение (может прервать программу); `breakpoint_if_debugging()` всегда является no-op без отладчика",
+            "`breakpoint()` не компилируется на Linux",
+            "Это один и тот же вызов — разницы нет"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "id": "m10-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Найдите проблему в следующем коде:",
+          "code": "#include <debugging>\n#include <print>\n#include <cstdlib>\n\nvoid safe_check(bool ok) {\n    if (!ok) {\n        std::breakpoint(); // остановиться для отладки\n        std::abort();\n    }\n}\n\nint main() {\n    safe_check(false);\n}",
+          "answerLine": 6,
+          "explanation": "На строке 6 вызывается `std::breakpoint()` безусловно. Если отладчик не подключён, поведение определяется реализацией — программа может завершиться до вызова `std::abort()` на строке 7, и логика завершения станет непредсказуемой. Исправление: заменить `std::breakpoint()` на `std::breakpoint_if_debugging()`, которая является no-op вне отладчика."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какая функция из `<debugging>` безопасна для вызова в продакшн-коде вне отладчика?",
+            "options": [
+              "std::breakpoint()",
+              "std::breakpoint_if_debugging()",
+              "std::is_debugger_present() — но только на Linux",
+              "Ни одна из них не безопасна"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что делает `std::breakpoint()` при запуске программы без отладчика?",
+            "options": [
+              "Ничего (no-op)",
+              "Гарантированно завершает программу через SIGABRT",
+              "Поведение определяется реализацией",
+              "Бросает std::runtime_error"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Какой из следующих паттернов правильно использует `<debugging>` для отладочной проверки?",
+            "options": [
+              "if (!ok) { std::breakpoint(); }",
+              "if (!ok) { std::breakpoint_if_debugging(); std::abort(); }",
+              "if (!ok && std::is_debugger_present()) { std::abort(); }",
+              "std::assert(ok);"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m10-l2",
+      "title": "Улучшения std::format и std::print",
+      "background": null,
+      "outputsVerified": true,
+      "verifiedWith": {
+        "compilerId": "gsnapshot",
+        "flags": "-std=c++26 -O2"
+      },
+      "motivation": "До C++26 вывод контейнеров и отладочный вывод строк требовал ручного кода: нужно было писать цикл по элементам, вручную экранировать спецсимволы или переопределять `operator<<`. `std::format` появился в C++20 как мощная замена `printf` и `ostringstream`, а `std::print`/`std::println` — в C++23. C++26 завершает картину: добавляет отладочный спецификатор `{:?}`, прямое форматирование диапазонов, контейнеров, `std::tuple` и `std::pair`, а также упрощает написание пользовательских форматтеров. Теперь вместо `for (auto& x : v) std::cout << x << ' ';` достаточно `std::println(\"{}\", v)` — и структура данных выводится в читаемом виде без лишнего кода.",
+      "theory": "## Что нового в C++26\n\n`std::format` и `std::print` появились в C++20 и C++23 соответственно. C++26 (предложения P2286 и P2093) расширяет их четырьмя направлениями:\n\n1. **Спецификатор `{:?}`** — отладочный/экранированный вывод\n2. **Форматирование диапазонов и контейнеров** — прямо, без ручного цикла\n3. **Форматирование `std::tuple` и `std::pair`**\n4. **Улучшения `std::formatter<T>`** — единообразный способ делать пользовательские типы форматируемыми\n\n---\n\n## Спецификатор `{:?}` — отладочный вывод\n\nСпецификатор `{:?}` работает для `char`, `std::string`, `std::string_view` и их широких аналогов. Он:\n- Оборачивает строку в двойные кавычки\n- Экранирует непечатаемые символы: `\\n`, `\\t`, `\\r`, `\\\\`, `\\\"` и т.д.\n- Для `char` — оборачивает в одинарные кавычки\n\n```cpp\nstd::println(\"{:?}\", \"hello\\nworld\");  // \"hello\\nworld\"\nstd::println(\"{:?}\", \"tab\\there\");     // \"tab\\there\"\nstd::println(\"{:?}\", 'x');             // 'x'\n```\n\nЭто незаменимо при отладке: вы видите точные байты строки, а не отрендеренные пробелы и переносы.\n\nТакже в C++26 появился бинарный форматный спецификатор с префиксом:\n```cpp\nstd::println(\"{:#010b}\", 42u);  // 0b00101010\nstd::println(\"{:#06b}\", 7u);   // 0b0111\n```\nЗдесь `#` добавляет префикс `0b`, а число после — минимальная ширина поля с заполнением нулями.\n\n---\n\n## Форматирование диапазонов и контейнеров\n\nСтандартные контейнеры теперь напрямую форматируются через `std::format`/`std::println`:\n\n| Тип | Формат вывода |\n|-----|---------------|\n| `std::vector<T>`, `std::list<T>`, `std::deque<T>` | `[v1, v2, v3]` |\n| `std::set<T>`, `std::unordered_set<T>` | `{v1, v2, v3}` |\n| `std::map<K,V>`, `std::unordered_map<K,V>` | `{\"k1\": v1, \"k2\": v2}` |\n\nМожно задать форматный спецификатор для каждого элемента через `::`, например `\"{::d}\"` применит `d` к каждому элементу вектора.\n\n```cpp\nstd::vector<int> v = {1, 2, 3, 4};\nstd::println(\"{}\", v);  // [1, 2, 3, 4]\n\nstd::map<std::string, int> m = {{\"b\", 2}, {\"a\", 1}};\nstd::println(\"{}\", m);  // {\"a\": 1, \"b\": 2}\n```\n\nОбратите внимание: ключи в `std::map` выводятся в отсортированном порядке (так работает `std::map`), а строковые ключи автоматически берутся в кавычки.\n\n---\n\n## Форматирование std::tuple и std::pair\n\n`std::tuple<T...>` форматируется как `(v1, v2, ...)`, а `std::pair<K,V>` — как `(k, v)`:\n\n```cpp\nauto t = std::make_tuple(42, \"hello\", 3.14);\nstd::println(\"{}\", t);  // (42, \"hello\", 3.14)\n\nstd::pair<int, int> p = {10, 20};\nstd::println(\"{}\", p);  // (10, 20)\n```\n\nСтроковые элементы внутри tuple автоматически берутся в кавычки (применяется тот же `{:?}`-стиль для строк внутри составных типов).\n\n---\n\n## Пользовательский std::formatter<T>\n\nЧтобы сделать свой тип форматируемым, нужно определить специализацию `std::formatter<T>` с двумя методами:\n\n```cpp\nstruct Point { int x, y; };\n\ntemplate<> struct std::formatter<Point> {\n    constexpr auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Point& p, auto& ctx) const {\n        return std::format_to(ctx.out(), \"({}, {})\", p.x, p.y);\n    }\n};\n\n// std::println(\"{}\", Point{3, 4}) → (3, 4)\n```\n\n- `parse` — **обязательно `constexpr`** — разбирает форматный спецификатор (в простом случае просто возвращает `ctx.begin()`)\n- `format` — форматирует значение в буфер через `ctx.out()`\n- `std::format_to(ctx.out(), ...)` — самый удобный способ записи: работает как `std::format`, но пишет в итератор вывода, а не создаёт строку\n\n---\n\n## std::format_to и std::format_to_n\n\n```cpp\nstd::string s;\nstd::format_to(std::back_inserter(s), \"hello {}\", 42);\n// s == \"hello 42\"\n\nchar buf[32];\nstd::format_to_n(buf, sizeof(buf) - 1, \"{}\", 3.14);\n```\n\n`std::format_to` записывает в произвольный output iterator (строку, вектор, сырой буфер). `std::format_to_n` ограничивает количество записываемых символов.\n\n---\n\n## std::println(FILE*, ...) с явным файловым аргументом\n\n```cpp\nstd::println(stdout, \"результат: {}\", 42);\nstd::println(stderr, \"ошибка: {}\", msg);\nstd::print(stderr, \"без переноса\");\n```\n\nПервый аргумент — указатель `FILE*`, что позволяет выводить в `stderr` или любой файл, не смешивая состояние со стримами `cout`/`cerr`.",
+      "examples": [
+        {
+          "title": "Спецификатор {:?} и бинарный формат",
+          "code": "#include <format>\n#include <print>\n\nint main() {\n    // {:?} экранирует спецсимволы и добавляет кавычки\n    std::println(\"{:?}\", \"hello\\nworld\");\n    std::println(\"{:?}\", \"tab\\there\");\n\n    // Бинарный формат с префиксом и заданной шириной\n    std::println(\"{:#010b}\", 42u);\n    std::println(\"{:#06b}\", 7u);\n}",
+          "expectedOutput": "\"hello\\nworld\"\n\"tab\\there\"\n0b00101010\n0b0111",
+          "explanation": "`{:?}` оборачивает строку в двойные кавычки и заменяет `\\n` на буквальные два символа `\\` и `n` — именно то, что нужно при отладке. Спецификатор `#010b` задаёт бинарный вид с префиксом `0b` и минимальной шириной 10, заполняя нулями: `42` = `0b00101010`."
+        },
+        {
+          "title": "Форматирование контейнеров и кортежей",
+          "code": "#include <format>\n#include <print>\n#include <vector>\n#include <map>\n#include <tuple>\n#include <string>\n\nint main() {\n    std::vector<int> v = {1, 2, 3, 4};\n    std::println(\"{}\", v);\n\n    std::map<std::string, int> m = {{\"b\", 2}, {\"a\", 1}};\n    std::println(\"{}\", m);\n\n    auto t = std::make_tuple(42, \"hello\", 3.14);\n    std::println(\"{}\", t);\n\n    std::pair<int, int> p = {10, 20};\n    std::println(\"{}\", p);\n}",
+          "expectedOutput": "[1, 2, 3, 4]\n{\"a\": 1, \"b\": 2}\n(42, \"hello\", 3.14)\n(10, 20)",
+          "explanation": "Вектор выводится в квадратных скобках, карта — в фигурных со строковыми ключами в кавычках и в отсортированном порядке (`std::map` всегда упорядочен). Кортеж и пара — в круглых скобках. Строковый элемент `\"hello\"` внутри кортежа автоматически берётся в кавычки."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l2-e1",
+          "type": "predict-output",
+          "difficulty": "basic",
+          "code": "#include <format>\n#include <print>\nint main() {\n    std::println(\"{:?}\", \"a\\tb\");\n    std::println(\"{:?}\", 'x');\n}",
+          "expectedOutput": "\"a\\tb\"\n'x'",
+          "level": "basic"
+        },
+        {
+          "id": "m10-l2-e2",
+          "type": "choice",
+          "difficulty": "basic",
+          "prompt": "Что выведет `std::println(\"{}\", std::vector<int>{1, 2, 3})`?",
+          "options": [
+            "1 2 3",
+            "[1, 2, 3]",
+            "{1, 2, 3}",
+            "1, 2, 3"
+          ],
+          "answerIndex": 1,
+          "explanation": "Последовательные контейнеры (`vector`, `list`, `deque`) форматируются в квадратных скобках с запятыми: `[1, 2, 3]`.",
+          "level": "basic"
+        },
+        {
+          "id": "m10-l2-e3",
+          "type": "predict-output",
+          "difficulty": "advanced",
+          "code": "#include <format>\n#include <print>\n#include <tuple>\n#include <string>\nint main() {\n    auto t = std::make_tuple(42, std::string(\"hi\"));\n    std::println(\"{}\", t);\n}",
+          "expectedOutput": "(42, \"hi\")",
+          "level": "advanced"
+        },
+        {
+          "id": "m10-l2-e4",
+          "type": "find-bug",
+          "difficulty": "advanced",
+          "prompt": "В коде определён пользовательский форматтер для типа `Color`. Найдите ошибку, из-за которой форматтер не будет работать в константном контексте.",
+          "code": "#include <format>\n#include <print>\n\nstruct Color { int r, g, b; };\n\ntemplate<> struct std::formatter<Color> {\n    auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Color& c, auto& ctx) const {\n        return std::format_to(ctx.out(), \"rgb({},{},{})\", c.r, c.g, c.b);\n    }\n};\n\nint main() {\n    std::println(\"{}\", Color{255, 0, 128});\n}",
+          "answerLine": 7,
+          "explanation": "Метод `parse` форматтера обязан быть `constexpr` — он вызывается во время компиляции при разборе форматной строки. Без `constexpr` форматная строка не может быть проверена на этапе компиляции. Исправление: `constexpr auto parse(auto& ctx) { return ctx.begin(); }`.",
+          "level": "advanced"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что делает форматный спецификатор `{:?}` для строки?",
+            "options": [
+              "Выводит строку в одинарных кавычках",
+              "Выводит строку в двойных кавычках с экранированием непечатаемых символов",
+              "Выводит длину строки",
+              "Выводит строку в шестнадцатеричном виде"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Как `std::println` форматирует `std::map<string, int>`?",
+            "options": [
+              "key=value, key=value",
+              "[\"key\": value]",
+              "{\"key\": value, ...}",
+              "key: value\\nkey: value"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Что нужно сделать, чтобы пользовательский тип `T` стал форматируемым через `std::println`?",
+            "options": [
+              "Перегрузить `operator<<` для `std::ostream`",
+              "Определить специализацию `std::formatter<T>` с методами `parse` и `format`",
+              "Наследовать T от std::formattable",
+              "Добавить метод T::to_string()"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что выведет `std::println(\"{}\", std::make_tuple(1, \"hi\", 3.14))`?",
+            "options": [
+              "1 hi 3.14",
+              "(1, hi, 3.14)",
+              "(1, \"hi\", 3.14)",
+              "[1, hi, 3.14]"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Форматтер для матрицы 2×2",
+        "description": "Сделайте тип `Matrix2x2` форматируемым через `std::println`. Матрица должна выводиться в виде `[[a, b], [c, d]]`. Используйте `std::formatter<Matrix2x2>` с методами `constexpr parse` и `format`. Проверьте на gsnapshot (`-std=c++26 -O2`).",
+        "starterCode": "#include <format>\n#include <print>\n#include <array>\n\nstruct Matrix2x2 {\n    std::array<std::array<double, 2>, 2> data;\n};\n\n// TODO: определите std::formatter<Matrix2x2>\n\nint main() {\n    Matrix2x2 m{{{{{1.0, 2.0}}, {{3.0, 4.0}}}}};\n    std::println(\"{}\", m);\n}",
+        "referenceSolution": "#include <format>\n#include <print>\n#include <array>\n\nstruct Matrix2x2 {\n    std::array<std::array<double, 2>, 2> data;\n};\n\ntemplate<> struct std::formatter<Matrix2x2> {\n    constexpr auto parse(auto& ctx) { return ctx.begin(); }\n    auto format(const Matrix2x2& m, auto& ctx) const {\n        return std::format_to(ctx.out(),\n            \"[[{}, {}], [{}, {}]]\",\n            m.data[0][0], m.data[0][1],\n            m.data[1][0], m.data[1][1]);\n    }\n};\n\nint main() {\n    Matrix2x2 m{{{{{1.0, 2.0}}, {{3.0, 4.0}}}}};\n    std::println(\"{}\", m);\n}",
+        "expectedOutput": "[[1, 2], [3, 4]]",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m10-l3",
+      "title": "Удалённые и устаревшие возможности C++26",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Каждый крупный стандарт C++ не только добавляет новое, но и убирает старое — то, что накопилось как технический долг за десятилетия. C++26 завершает несколько давно начатых историй: убирает конвертеры строк, которые никогда не были потокобезопасны, хоронит `strstream`, переживший своё время ещё в C++98, и запрещает составные операции на `volatile`, которые вводили в заблуждение насчёт атомарности. Понять, что убрано и почему, важно не только для миграции унаследованного кода — это помогает понять, как стандарт формирует «правильный C++»: последовательно, с предупреждением за несколько стандартов, без резких движений.",
+      "theory": "## 1. Жизненный цикл: устаревание → удаление\n\nC++ никогда не удаляет возможности резко. Стандартный процесс:\n- Возможность **устаревает** (deprecated) в стандарте года N: компилировать всё ещё можно, компиляторы могут предупреждать\n- Возможность **удаляется** в стандарте года N+4 … N+8: теперь ошибка компиляции\n- Цель: дать большим кодовым базам время на миграцию\n\nПример: `std::auto_ptr` устарел в C++11, удалён в C++17. `std::wstring_convert` устарел в C++17, удалён в C++26.\n\nC++26 завершает сразу несколько таких историй, начатых в C++17 и C++20. Это плановая «уборка», а не революция.\n\n---\n\n## 2. Ключевые удаления в C++26\n\n### `std::wstring_convert` и `std::wbuffer_convert` (удалены)\n\nУстарели в C++17, удалены в C++26. Жили в `<locale>` и выполняли конвертацию между узкими и широкими строками. Проблемы:\n- Никогда не были потокобезопасными — использовали глобальное состояние локали\n- Неудобный и error-prone API\n- Формировали неверную ментальную модель: `wstring` ≠ Unicode\n\n```cpp\n// C++23 и ранее — компилируется с предупреждением об устаревании:\n#include <locale>\nstd::wstring_convert<std::codecvt_utf8<wchar_t>> conv;\nstd::wstring wide = conv.from_bytes(\"hello\"); // deprecated!\n\n// C++26 — ошибка компиляции: wstring_convert не определён\n```\n\n**Замена:** платформенные API (`MultiByteToWideChar` на Windows, `mbstowcs`/`iconv` на POSIX) или сторонние Unicode-библиотеки (ICU, simdutf). Для определения кодировки — `std::text_encoding` (Модуль 7).\n\n### `std::codecvt_utf8`, `std::codecvt_utf16`, `std::codecvt_utf8_utf16` (удалены)\n\nФасеты конвертации из `<codecvt>`. Устарели в C++17, удалены в C++26. Вместе с ними удалён сам заголовок `<codecvt>`. Эти фасеты всегда имели проблемы с корректностью обработки суррогатных пар и BOM. Замена та же: платформенные API или сторонние библиотеки.\n\n### `std::strstream`, `std::istrstream`, `std::ostrstream` (удалены)\n\nИз `<strstream>`. Устарели ещё в C++98 — и вот наконец удалены в C++26. Это были «строковые потоки» в стиле C, работавшие непосредственно с буферами `char*` и требовавшие ручного управления памятью. Проблемы:\n- Ручное управление памятью (и `freeze()`-ловушка)\n- Риск переполнения буфера в `ostrstream`\n- Безопасная альтернатива существовала с C++98: `std::stringstream`\n\n```cpp\n// Было в <strstream> — НЕ использовать:\nstd::ostrstream oss;\noss << \"hello \" << 42;\nchar* p = oss.str();    // ручная заморозка + хаос с владением\n// oss.freeze(false);   // нужно было вызывать, иначе утечка!\n\n// Замена — чисто и безопасно:\n#include <sstream>\nstd::ostringstream oss;\noss << \"hello \" << 42;\nstd::string s = oss.str(); // никакого ручного управления\n```\n\n### Составные операторы присваивания на `volatile` (удалены)\n\nC++20 объявил устаревшими составные присваивания на `volatile`-lvalue: `vol += 1`, `vol -= 1`, `vol++`, `vol--`. C++26 завершает удаление. Причина: эти операции намекают на атомарность операции чтение-модификация-запись, которой `volatile` не даёт.\n\n```cpp\nvolatile int counter = 0;\n\n// C++26: ошибка компиляции\ncounter += 1;  // ОШИБКА: compound assignment на volatile удалён\ncounter++;     // ОШИБКА: инкремент volatile\n\n// Правильная альтернатива — std::atomic:\n#include <atomic>\nstd::atomic<int> counter2 = 0;\ncounter2 += 1;  // нормально — действительно атомарно\n```\n\nПростые чтение и запись `volatile`-переменной по-прежнему работают — удалены только составные операторы. `volatile` сам по себе никуда не делся (нужен для memory-mapped I/O и т. п.).\n\n### `std::shared_ptr::unique()` (удалён)\n\nУстарел в C++20, удалён в C++26. `unique()` был эквивалентен `use_count() == 1`. Проблема: в многопоточном коде результат мог устареть к моменту использования, создавая ложное ощущение безопасности.\n\n```cpp\n// C++26: ошибка компиляции\nif (ptr.unique()) {  // ОШИБКА: unique() удалён\n    // изменить *ptr «безопасно»... хотя на самом деле нет!\n}\n\n// Замена:\nif (ptr.use_count() == 1) {  // работает, но та же оговорка о MT\n    // ...\n}\n```\n\n---\n\n## 3. Устаревшее в C++26 (ещё не удалено)\n\n### `std::basic_string::reserve(0)` с нулевым аргументом\n`s.reserve(0)` раньше служило подсказкой для уменьшения ёмкости. Реализации трактовали его по-разному. Устарело; для явного запроса на уменьшение используйте `s.shrink_to_fit()`.\n\n### `std::bind` (устарел, не удалён)\nС появлением лямбд `std::bind` потерял смысл. В C++26 объявлен устаревшим — используйте лямбды.\n\n---\n\n## 4. Распространённые заблуждения: что НЕ было удалено в C++26\n\n| «Удалено в C++26?» | На самом деле |\n|---|---|\n| `std::auto_ptr` | Нет — удалён в C++17 |\n| Спецификация исключений `throw()` | Нет — удалена в C++17 |\n| Ключевое слово `register` как класс хранения | Нет — удалено в C++17 |\n| `std::endl` | Нет — присутствует (просто неэффективен) |\n| `std::bind` | Нет — только устарел в C++26, не удалён |\n\nC++26 сосредоточился на: семействе `wstring_convert`/`codecvt`, семействе `strstream`, составных операциях на `volatile` и `shared_ptr::unique()`.\n\n---\n\n## 5. Таблица миграции\n\n| Удалено в C++26 | Замена |\n|---|---|\n| `std::wstring_convert` | Платформенный API / стороняя Unicode-библиотека |\n| `std::codecvt_utf8/utf16` | ОС API (`MultiByteToWideChar`, `iconv`) |\n| `std::strstream` | `std::stringstream` из `<sstream>` |\n| Составные операции на `volatile` (`+=`, `++` и т. д.) | `std::atomic<T>` |\n| `shared_ptr::unique()` | `ptr.use_count() == 1` |\n| `string::reserve(0)` | `s.shrink_to_fit()` |\n\nC++26 убирает технический долг, накопленный десятилетиями, и делает язык чище — не жертвуя мощью, а избавляясь от ловушек, которые вводили в заблуждение даже опытных разработчиков. Это закономерный финал долгого пути: хорошая инженерия — это не только добавлять новое, но и честно убирать старое.",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m10-l3-ex1",
+          "level": "basic",
+          "title": "Правильная замена для устаревших API конвертации строк",
+          "code": "// БЫЛО (C++23, компилируется с предупреждениями):\n// #include <locale>\n// #include <codecvt>\n// std::wstring_convert<std::codecvt_utf8<wchar_t>> conv;\n// std::wstring wide = conv.from_bytes(\"hello\");  // deprecated!\n\n// СТАЛО (C++26, переносимо):\n#include <string>\n#include <cstdlib>   // mbstowcs (POSIX/C standard)\n#include <cwchar>\n\n// Пример платформенной замены (POSIX):\nvoid narrow_to_wide_example() {\n    const char* narrow = \"hello\";\n    std::mbstate_t state{};\n    std::size_t len = std::mbsrtowcs(nullptr, &narrow, 0, &state) + 1;\n    std::wstring wide(len, L'\\0');\n    std::mbsrtowcs(wide.data(), &narrow, len, &state);\n    // wide теперь содержит L\"hello\"\n}\n\n// Для C++26: std::text_encoding (Модуль 7) — определение кодировки\n// Для реальной конвертации: ICU, simdutf или ОС API",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m10-l3-ex2",
+          "level": "advanced",
+          "title": "Миграция с volatile на std::atomic",
+          "code": "#include <atomic>\n#include <thread>\n\n// ПЛОХО: volatile НЕ атомарен\n// (и составные операции удалены в C++26)\n// volatile int shared_counter = 0;\n// shared_counter += 1; // ОШИБКА КОМПИЛЯЦИИ в C++26\n\n// ХОРОШО: std::atomic даёт настоящую атомарность\nstd::atomic<int> shared_counter{0};\n\nvoid increment_relaxed() {\n    // Явный контроль memory order — максимальная производительность\n    shared_counter.fetch_add(1, std::memory_order_relaxed);\n}\n\nvoid increment_sequentially_consistent() {\n    // Оператор += на atomic — это seq_cst по умолчанию\n    shared_counter += 1;\n}\n\n// shared_ptr::unique() тоже удалён — используем use_count():\n#include <memory>\n\nvoid migrate_unique() {\n    auto ptr = std::make_shared<int>(42);\n\n    // БЫЛО (C++23):\n    // if (ptr.unique()) { /* ... */ }  // ОШИБКА в C++26\n\n    // СТАЛО:\n    if (ptr.use_count() == 1) {\n        // Единственный владелец — но в MT-коде это всё равно racy!\n        *ptr = 100;\n    }\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m10-l3-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что произойдёт при компиляции `counter += 1;`, если `counter` объявлен как `volatile int` в C++26?",
+          "options": [
+            "Скомпилируется без предупреждений",
+            "Скомпилируется с предупреждением об устаревании",
+            "Ошибка компиляции — составное присваивание на volatile удалено в C++26",
+            "Undefined behavior в runtime"
+          ],
+          "answerIndex": 2,
+          "explanation": "C++20 объявил составные операторы присваивания на volatile-lvalue устаревшими. C++26 завершил удаление: `counter += 1` на `volatile int` теперь вызывает ошибку компиляции. Простые чтение и запись (`counter = 1`, `int x = counter`) по-прежнему допустимы."
+        },
+        {
+          "id": "m10-l3-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Чем заменить `std::wstring_convert` в C++26?",
+          "options": [
+            "std::unicode_convert из <unicode>",
+            "Платформенными API (MultiByteToWideChar на Windows, iconv на POSIX) или сторонними библиотеками",
+            "std::text_encoding из <text_encoding>",
+            "std::locale::convert"
+          ],
+          "answerIndex": 1,
+          "explanation": "std::wstring_convert удалён в C++26 без прямой стандартной замены. Правильный путь: платформенные API (MultiByteToWideChar на Windows, mbsrtowcs/iconv на POSIX) или сторонние Unicode-библиотеки (ICU, simdutf). std::text_encoding (Модуль 7) определяет кодировку, но не выполняет конвертацию."
+        },
+        {
+          "id": "m10-l3-e3",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Почему `shared_ptr::unique()` был удалён в C++26?",
+          "options": [
+            "Функция работала некорректно для пустых shared_ptr",
+            "В многопоточном коде результат use_count()==1 может устареть до момента использования, что создаёт ложное ощущение безопасности",
+            "unique() был эквивалентен !expired() из weak_ptr",
+            "shared_ptr полностью удалён в C++26"
+          ],
+          "answerIndex": 1,
+          "explanation": "ptr.unique() возвращал true, если use_count() == 1. В многопоточном коде между проверкой и использованием другой поток мог создать копию shared_ptr — и «уникальный» указатель переставал быть таковым. Функция создавала ложное ощущение безопасного эксклюзивного доступа. Замена ptr.use_count() == 1 работает, но имеет ту же оговорку о потокобезопасности."
+        },
+        {
+          "id": "m10-l3-e4",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <sstream>\n#include <memory>\n#include <print>\n\nint main() {\n    // Перенесено с strstream на ostringstream — правильно:\n    std::ostringstream oss;\n    oss << \"result: \" << 42;\n    std::println(\"{}\", oss.str());  // line 9 — OK\n\n    auto ptr = std::make_shared<int>(10);\n    if (ptr.unique()) {             // line 12 — ОШИБКА\n        *ptr = 20;\n    }\n    std::println(\"{}\", *ptr);\n}",
+          "answerLine": 12,
+          "explanation": "std::shared_ptr::unique() удалён в C++26 (deprecated в C++20). Строка 12 вызывает ошибку компиляции. Замена: ptr.use_count() == 1 — хотя та же оговорка о потокобезопасности остаётся в силе."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какой стандарт C++ ввёл deprecation для `std::wstring_convert`?",
+            "options": [
+              "C++14",
+              "C++17",
+              "C++20",
+              "C++23"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что из перечисленного было удалено именно в C++26 (а не в более ранних стандартах)?",
+            "options": [
+              "std::auto_ptr",
+              "Спецификация исключений throw()",
+              "std::strstream",
+              "register как класс хранения"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему простое чтение/запись `volatile`-переменной допустимо в C++26, а `vol += 1` — нет?",
+            "options": [
+              "Это ошибка в стандарте, оба должны быть запрещены",
+              "volatile нужен для memory-mapped I/O (read/write сохранены); составные операции подразумевают атомарность, которой volatile не даёт",
+              "volatile составные операции запрещены только на POSIX-системах",
+              "volatile полностью удалён из C++26"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Какая замена для `std::ostrstream` в современном C++?",
+            "options": [
+              "std::format",
+              "std::ostringstream из <sstream>",
+              "std::string_view",
+              "std::span<char>"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": null
+    }
   ]
 }
