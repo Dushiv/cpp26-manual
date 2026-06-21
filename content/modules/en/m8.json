@@ -5,6 +5,487 @@
   "significance": "important",
   "prerequisites": [],
   "lessons": [
-    { "id": "m8-l1", "title": "std::simd", "stub": true }
+    {
+      "id": "m8-l1",
+      "title": "std::simd",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Motivation\n\nModern CPUs — x86 (AVX/AVX-512), ARM (NEON/SVE), RISC-V (V-extension) — can process 4, 8, or even 16 `float` values in a single instruction. These are called **SIMD** (Single Instruction, Multiple Data) instructions. Without SIMD, summing 8 floats takes 8 instructions; with AVX, just one.\n\nThe problem with manual SIMD:\n- Intrinsics like `_mm256_add_ps` are x86-only and incompatible with ARM or RISC-V.\n- Code is unreadable and fragile: upgrading CPU generation (AVX → AVX-512) requires a rewrite.\n- No language-level type safety.\n\n**`std::simd`** (P1928, C++26) is a portable, type-safe SIMD abstraction. You write the code once; the compiler maps it to the best available instructions for the target CPU.\n\nIn GCC trunk, this feature is available via the `<experimental/simd>` header in the `std::experimental` namespace (commonly aliased as `stdx`).\n\n---\n\n## `stdx::simd<T, Abi>`\n\nThe type `stdx::simd<T, Abi>` represents **N values of type T** packed together. The `Abi` (Application Binary Interface tag) parameter controls the vector width and storage strategy.\n\n### Key Abi tags\n\n| Tag | Width | Use case |\n|---|---|---|\n| `stdx::simd_abi::native<T>` | Maximum for T on this CPU | Maximum performance, non-portable lane count |\n| `stdx::fixed_size_simd<T, N>` | Exactly N lanes | Portability: same on all platforms |\n| `stdx::simd_abi::scalar` | 1 lane | Disable SIMD, generic algorithms |\n| `stdx::simd_abi::compatible<T>` | At least 1 | Safe portable choice |\n\nFor most examples we use `fixed_size_simd<T, N>` — the lane count is fixed and identical on any machine.\n\n---\n\n## Construction\n\n```cpp\n// Broadcast: all 4 lanes equal 1.0\nstdx::fixed_size_simd<float, 4> a(1.0f);\n\n// Generator: lanes computed from index\nstdx::fixed_size_simd<float, 4> b([](int i){ return float(i + 1); });\n// Result: {1, 2, 3, 4}\n```\n\n---\n\n## Arithmetic\n\nOperators `+`, `-`, `*`, `/` work element-wise. The compiler automatically emits SIMD instructions:\n\n```cpp\nauto c = a + b; // {1+1, 1+2, 1+3, 1+4} = {2, 3, 4, 5}\n```\n\n---\n\n## Element access\n\n`v[i]` returns a **proxy type** `_SmartReference`, not a raw `float`. The proxy cannot be passed to `std::println` or any function expecting `T`. Explicit extraction is required:\n\n```cpp\nfloat val = v[0]; // extract to a local variable\nstd::println(\"{}\", val); // OK\n```\n\n---\n\n## Reduction functions\n\nFunctions from `<experimental/simd>` that fold an entire vector into a scalar:\n\n```cpp\nfloat sum  = stdx::reduce(v);                      // sum (std::plus by default)\nfloat prod = stdx::reduce(v, std::multiplies<>{}); // product\nfloat mx   = stdx::hmax(v);                        // horizontal max\nfloat mn   = stdx::hmin(v);                        // horizontal min\n```\n\n---\n\n## Masks and conditional operations\n\nA `simd_mask` is the result of an element-wise comparison. `stdx::where` applies an operation only to the lanes where the mask is `true`:\n\n```cpp\nauto mask = v < stdx::fixed_size_simd<float, 4>(0.0f); // {true,false,true,false} for {-1,2,-3,4}\nstdx::where(mask, v) = stdx::fixed_size_simd<float, 4>(0.0f); // zero out negative lanes\n```\n\n---\n\n## Loading and storing from arrays\n\n```cpp\nfloat arr[4] = {1, 2, 3, 4};\nstdx::fixed_size_simd<float, 4> v;\nv.copy_from(arr, stdx::element_aligned); // load\nv.copy_to(arr, stdx::element_aligned);   // store\n```\n\nThe `stdx::element_aligned` tag tells the compiler the buffer has ordinary (element-size) alignment. Use `stdx::vector_aligned` for specially aligned buffers.\n\n---\n\n## Compile-time lane count\n\n```cpp\nconstexpr int N = stdx::simd_size_v<float, stdx::simd_abi::native<float>>;\n// or:\nconstexpr int M = stdx::fixed_size_simd<float, 4>::size();\n```\n\n---\n\n## C++26 standardized names (for reference)\n\nIn the final C++26 standard the type is named `std::simd<T>` in the header `<simd>`. In GCC trunk this version is not yet implemented — use `<experimental/simd>` with the `std::experimental` namespace.",
+      "examples": [
+        {
+          "id": "m8-l1-ex1",
+          "title": "Broadcast, element-wise addition, reduction",
+          "level": "basic",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> a(1.0f);\n    stdx::fixed_size_simd<float, 4> b([](int i){ return float(i + 1); });\n    auto c = a + b;\n    std::println(\"lanes: {}\", stdx::fixed_size_simd<float,4>::size());\n    for (int i = 0; i < 4; ++i) {\n        float val = c[i];\n        std::print(\"{} \", val);\n    }\n    std::println(\"\");\n    float sum = stdx::reduce(c);\n    std::println(\"sum={}\", sum);\n}",
+          "expectedOutput": "lanes: 4\n2 3 4 5 \nsum=14",
+          "explanation": "Vector `a` is broadcast-initialized: all 4 lanes equal 1.0. Vector `b` is built with a generator: `b[i] = float(i+1)`, giving {1, 2, 3, 4}. The sum `c = a + b` is element-wise: {2, 3, 4, 5}. To access each element we must extract it explicitly: `float val = c[i]` — `operator[]` returns a proxy. `stdx::reduce(c)` sums all lanes: 2+3+4+5=14."
+        },
+        {
+          "id": "m8-l1-ex2",
+          "title": "Load from array, masking, store",
+          "level": "advanced",
+          "code": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    std::array<float, 4> data = {-1.0f, 2.0f, -3.0f, 4.0f};\n    stdx::fixed_size_simd<float, 4> v;\n    v.copy_from(data.data(), stdx::element_aligned);\n\n    // clamp negatives to zero\n    auto mask = v < stdx::fixed_size_simd<float, 4>(0.0f);\n    stdx::where(mask, v) = stdx::fixed_size_simd<float, 4>(0.0f);\n\n    std::array<float, 4> result;\n    v.copy_to(result.data(), stdx::element_aligned);\n    for (float x : result)\n        std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "0 2 0 4 ",
+          "explanation": "`copy_from` loads the array {-1, 2, -3, 4} into the SIMD vector. The expression `v < 0.0f` creates a mask {true, false, true, false} — `true` where elements are negative. `stdx::where(mask, v) = 0.0f` zeroes only those lanes where the mask is true. `copy_to` stores the result back: {0, 2, 0, 4}."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l1-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "What does this program print?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<int, 4> v([](int i){ return i * i; });\n    int sum = stdx::reduce(v);\n    std::println(\"{}\", sum);\n}",
+          "expectedOutput": "14"
+        },
+        {
+          "id": "m8-l1-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "Why can't `v[i]` on a `std::experimental::simd` be passed directly to `std::println`?",
+          "options": [
+            "Because `operator[]` returns a proxy type, not a raw T value",
+            "Because std::println does not support any SIMD types at all",
+            "Because `v[i]` returns a pointer to the element",
+            "This is a GCC-only limitation — Clang handles it differently"
+          ],
+          "answerIndex": 0
+        },
+        {
+          "id": "m8-l1-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "On which line is the bug and what is it?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> v(3.0f);\n    std::println(\"{}\", v[0]); // print first element\n}",
+          "answerLine": 7,
+          "explanation": "`v[0]` returns a proxy type `_SmartReference`, not a `float`. `std::println` cannot format the proxy — this produces a compile error. Fix: `float val = v[0]; std::println(\"{}\", val);`"
+        },
+        {
+          "id": "m8-l1-e4",
+          "type": "predict-output",
+          "level": "advanced",
+          "prompt": "What does this program print?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> v([](int i){ return float(i + 1); });\n    float mx = stdx::hmax(v);\n    float mn = stdx::hmin(v);\n    std::println(\"{} {}\", mx, mn);\n}",
+          "expectedOutput": "4 1"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the Abi tag in `std::experimental::simd<T, Abi>`?",
+            "options": [
+              "A compiler optimization flag",
+              "A parameter that controls the vector width and storage strategy",
+              "The ABI version of the library interface",
+              "The memory alignment type"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `v[i]` return for `fixed_size_simd<float, 4>`?",
+            "options": [
+              "float",
+              "float&",
+              "A proxy type (not a raw float)",
+              "std::optional<float>"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "How do you compute the sum of all elements of a SIMD vector `v`?",
+            "options": [
+              "v.sum()",
+              "std::accumulate(v.begin(), v.end(), 0.0f)",
+              "stdx::reduce(v)",
+              "v.reduce(std::plus<>{})"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Why use `fixed_size_simd<T, N>` instead of `simd<T, simd_abi::native<T>>`?",
+            "options": [
+              "For maximum performance on the current CPU",
+              "For portability: guarantees exactly N lanes on all platforms",
+              "To support signed types",
+              "They are identical — the difference is only syntax"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Dot product with SIMD",
+        "description": "Write a function `dot_product_simd(const float* a, const float* b)` that computes the dot product of two float arrays of length 4 using `fixed_size_simd<float, 4>`. Use `copy_from` to load both arrays, element-wise multiplication `*`, and `stdx::reduce` to sum the products. Test with arrays {1,2,3,4} and {4,3,2,1} — expected result: 1*4 + 2*3 + 3*2 + 4*1 = 20.",
+        "starterCode": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nfloat dot_product_simd(const float* a, const float* b) {\n    // TODO: load a and b into two fixed_size_simd<float,4>,\n    //       multiply element-wise, return reduce\n}\n\nint main() {\n    std::array<float,4> a = {1.0f, 2.0f, 3.0f, 4.0f};\n    std::array<float,4> b = {4.0f, 3.0f, 2.0f, 1.0f};\n    std::println(\"{}\", dot_product_simd(a.data(), b.data()));\n}",
+        "referenceSolution": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nfloat dot_product_simd(const float* a, const float* b) {\n    stdx::fixed_size_simd<float, 4> va, vb;\n    va.copy_from(a, stdx::element_aligned);\n    vb.copy_from(b, stdx::element_aligned);\n    return stdx::reduce(va * vb);\n}\n\nint main() {\n    std::array<float,4> a = {1.0f, 2.0f, 3.0f, 4.0f};\n    std::array<float,4> b = {4.0f, 3.0f, 2.0f, 1.0f};\n    std::println(\"{}\", dot_product_simd(a.data(), b.data()));\n}",
+        "expectedOutput": "20",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m8-l2",
+      "title": "std::linalg — Linear algebra",
+      "prerequisites": [
+        "m8-l1"
+      ],
+      "background": {
+        "title": "std::mdspan (C++23)",
+        "body": "`std::mdspan<T, Extents>` is a non-owning view over an existing contiguous buffer with multi-dimensional indexing. Example: `std::mdspan m(data.data(), 3, 4)` creates a 3×4 view over an already existing buffer `data`. Element access: `m[i, j]`. The memory layout is controlled by a layout policy: `std::layout_right` — row-major (C order, the default), `std::layout_left` — column-major (Fortran/BLAS order). `std::mdspan` is the matrix/vector type for all `std::linalg` functions — there is no separate \"matrix class\" in the library."
+      },
+      "motivation": "C++ had no standard linear algebra library. Production code relied on Eigen, Armadillo, GSL, or raw BLAS/LAPACK calls — each with its own API, build conventions, and matrix types. Switching between projects meant relearning the library.\n\nP1673 (accepted into C++26) adds a standard BLAS-level interface: a set of free functions operating on `std::mdspan` views, with no hidden allocations and no new matrix class. You own your storage; `std::linalg` only describes operations over your buffers.",
+      "theory": "Note: `std::linalg` (P1673) is part of the C++26 standard but has not yet been implemented by GCC or Clang. Code examples follow the specification.\n\n## Design philosophy\n\n`std::linalg` is **not a matrix class**. It is a set of free functions that operate on `std::mdspan` views over your storage. You create a `std::vector`, `std::array`, or raw buffer yourself, wrap it in an `mdspan`, and pass it to linalg functions. No hidden allocations.\n\n```cpp\n#include <linalg>\n#include <mdspan>\n#include <vector>\n\nstd::vector<double> buf = {1, 2, 3, 4, 5, 6};\nauto A = std::mdspan(buf.data(), 2, 3);  // 2×3, row-major\n// A[0,0]=1  A[0,1]=2  A[0,2]=3\n// A[1,0]=4  A[1,1]=5  A[1,2]=6\n```\n\n## Key types and memory layout\n\n```cpp\n// Static extents (known at compile time)\nstd::mdspan<double, std::extents<size_t, 3, 4>>  A;  // always 3×4\n\n// Dynamic extents (set at runtime)\nstd::mdspan<double, std::dextents<size_t, 2>>    B;  // any 2D size\n\n// Mixed: one axis static, one dynamic\nstd::mdspan<double, std::extents<size_t, 3, std::dynamic_extent>> C;\n```\n\n| Policy | Order | Contiguous elements |\n|---|---|---|\n| `std::layout_right` | row-major (C order) | `A[i, j]` and `A[i, j+1]` |\n| `std::layout_left` | column-major (Fortran/BLAS) | `A[i, j]` and `A[i+1, j]` |\n\nSystem BLAS (MKL, OpenBLAS) expects column-major order. `std::linalg::transposed()` lets you pass a row-major matrix as its transpose without copying data.\n\n## BLAS 1 — vector operations\n\n```cpp\n// z = x + y\nstd::linalg::add(x, y, z);\n\n// x *= alpha (in-place)\nstd::linalg::scale(alpha, x);\n\n// dot product\ndouble d = std::linalg::dot(x, y);\n\n// Euclidean norm √(Σxᵢ²)\ndouble n2 = std::linalg::vector_norm2(x);\n\n// L1 norm Σ|xᵢ|\ndouble n1 = std::linalg::vector_abs_sum(x);\n```\n\n## BLAS 2 — matrix-vector operations\n\n```cpp\n// y = A·x (overwrites y)\nstd::linalg::matrix_vector_product(A, x, y);\n\n// z = alpha * A·x + beta * y\nstd::linalg::matrix_vector_product(alpha, A, x, beta, y, z);\n```\n\n## BLAS 3 — matrix-matrix operations\n\n```cpp\n// C = A·B (overwrites C)\nstd::linalg::matrix_product(A, B, C);\n```\n\n## Triangular and symmetric operations\n\n```cpp\n// y = triangular_A · x (upper triangle only)\nstd::linalg::triangular_matrix_vector_product(A, std::linalg::upper_triangle, x, y);\n\n// C += alpha * A·Aᵀ (symmetric rank-k update)\nstd::linalg::symmetric_matrix_rank_k_update(alpha, A, C);\n```\n\n## Lazy view transformations (zero-copy)\n\nTransformation functions return a new `mdspan` with a different mapping or accessor policy — no data copying:\n\n```cpp\nauto At  = std::linalg::transposed(A);           // transposed view\nauto Ac  = std::linalg::conjugated(A);           // conjugate view (for complex)\nauto Acd = std::linalg::conjugate_transposed(A); // A† (Hermitian transpose)\nauto sA  = std::linalg::scaled(2.0, A);          // 2·A, read-only\n```\n\n`transposed(A)` swaps the extents (`extent(0)` and `extent(1)` are exchanged) and redefines the mapping so that `A[i,j]` and `At[j,i]` address the same cell in memory.\n\n## Accessor policies\n\nUnder the hood, lazy views are implemented through `std::mdspan` accessor policies:\n\n- `std::linalg::scaled_accessor<S, NestedAcc>` — multiplies every read by `S`.\n- `std::linalg::conjugated_accessor<NestedAcc>` — conjugates every read value.\n\nThey compose: `scaled(2.0, conjugated(A))` creates an accessor that reads `2 * conj(A[i,j])` without any intermediate buffers.\n\n## Parallel overloads\n\n```cpp\n// parallel execution — same syntax as std::sort and other algorithms\nstd::linalg::matrix_product(std::execution::par, A, B, C);\n```\n\nThe same execution policies as `<algorithm>`: `seq`, `par`, `par_unseq`.\n\n## Performance: delegating to system BLAS\n\nThe standard permits (and encourages) implementations to delegate calls to the system BLAS — Intel MKL, OpenBLAS, Apple Accelerate. The standard defines the interface; performance is the implementation's responsibility. With column-major data and the correct `layout` policies, there should be no gap compared to direct BLAS calls.\n\n## `std::linalg` vs Eigen\n\n| Criterion | `std::linalg` | Eigen |\n|---|---|---|\n| Dependencies | none | Eigen only |\n| Compatibility | C++26+ | C++14/17 |\n| API style | free functions over `mdspan` | `Matrix` class with operators |\n| Lazy expression chains | no | expression templates |\n| Decompositions (SVD, QR, Cholesky) | no | yes |\n\nChoose `std::linalg` for portability, zero dependencies, and C++26 standard compliance. Choose Eigen for long expression chains like `(A + B * C).transpose()` or built-in matrix decompositions.",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m8-l2-ex1",
+          "level": "basic",
+          "title": "Dot product and matrix-vector product",
+          "code": "// spec-based: std::linalg not yet implemented in any compiler\n#include <linalg>\n#include <mdspan>\n#include <vector>\n#include <print>\n\nint main() {\n    // vectors\n    std::vector<double> x_data = {1.0, 2.0, 3.0};\n    std::vector<double> y_data = {4.0, 5.0, 6.0};\n    auto x = std::mdspan(x_data.data(), 3);\n    auto y = std::mdspan(y_data.data(), 3);\n\n    double d = std::linalg::dot(x, y);  // 1*4 + 2*5 + 3*6 = 32\n    std::println(\"dot = {}\", d);\n\n    // matrix-vector: A·x -> r\n    // identity matrix 3×3, row-major\n    std::vector<double> A_data = {1,0,0,  0,1,0,  0,0,1};\n    auto A = std::mdspan(A_data.data(), 3, 3);\n\n    std::vector<double> result(3);\n    auto r = std::mdspan(result.data(), 3);\n    std::linalg::matrix_vector_product(A, x, r);\n\n    std::print(\"A·x = \");\n    for (double v : result) std::print(\"{} \", v);\n    std::println(\"\");\n}",
+          "expectedOutput": "",
+          "explanation": "`std::linalg::dot(x, y)` returns a scalar (1·4 + 2·5 + 3·6 = 32) with no output parameter. `matrix_vector_product(A, x, r)` overwrites `r` with A·x; for the identity matrix A·x = x, i.e. {1, 2, 3}. Storage lives in our `vector<double>` objects; `mdspan` is merely a view over them."
+        },
+        {
+          "id": "m8-l2-ex2",
+          "level": "advanced",
+          "title": "Transposed view and scaled view",
+          "code": "// spec-based: std::linalg not yet implemented in any compiler\n#include <linalg>\n#include <mdspan>\n#include <vector>\n#include <print>\n\nint main() {\n    // 2×3 matrix, row-major\n    std::vector<double> data = {1,2,3,  4,5,6};\n    auto A  = std::mdspan(data.data(), 2, 3);  // 2 rows, 3 cols\n    auto At = std::linalg::transposed(A);      // 3 rows, 2 cols; no copy\n\n    std::println(\"A[0,1] = {}  At[1,0] = {}\",\n                 A[0,1], At[1,0]);             // same cell: 2\n\n    std::println(\"A  extents: {}x{}\", A.extent(0),  A.extent(1));\n    std::println(\"At extents: {}x{}\", At.extent(0), At.extent(1));\n\n    // lazy scaled view: 2·A (read-only)\n    auto twoA = std::linalg::scaled(2.0, A);\n    std::println(\"2·A[0,0] = {}\", twoA[0,0]);  // 2*1 = 2\n    std::println(\"2·A[1,2] = {}\", twoA[1,2]);  // 2*6 = 12\n}",
+          "expectedOutput": "",
+          "explanation": "`transposed(A)` swaps the extents and changes the index mapping: `A[i,j]` and `At[j,i]` address the same cell in the original buffer. No copy is made — only the indexing policy changes. `scaled(2.0, A)` creates an `mdspan` with a `scaled_accessor` that multiplies every read value by 2.0 — also without copying or temporary buffers."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What is the input/output type for `std::linalg` functions?",
+          "options": [
+            "std::matrix<T> — a special matrix type introduced by linalg",
+            "std::mdspan — a non-owning view over an existing buffer",
+            "std::vector<std::vector<T>> — a nested vector",
+            "Any container that supports operator[]"
+          ],
+          "answerIndex": 1,
+          "explanation": "`std::linalg` does not introduce its own matrix class. All functions accept and return `std::mdspan` — non-owning views over buffers managed by the caller."
+        },
+        {
+          "id": "m8-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `std::linalg::transposed(A)` do?",
+          "options": [
+            "Copies matrix A into a new buffer in transposed order",
+            "Returns a lazy view with rows and columns swapped — no data copying",
+            "Transposes matrix A in-place",
+            "Returns a new std::mdspan with data shuffled in memory"
+          ],
+          "answerIndex": 1,
+          "explanation": "`transposed(A)` only changes the `mdspan` mapping policy: it swaps the extents and redefines the element address computation. Data in memory stays in place — no copying."
+        },
+        {
+          "id": "m8-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <linalg>\n#include <mdspan>\n#include <vector>\n\nint main() {\n    std::vector<double> a_data = {1,2,3,4};\n    std::vector<double> b_data = {5,6,7,8};\n    auto a = std::mdspan(a_data.data(), 4);\n    auto b = std::mdspan(b_data.data(), 4);\n\n    // compute the matrix product of a and b?\n    std::vector<double> c_data(4);\n    auto c = std::mdspan(c_data.data(), 4);\n    std::linalg::matrix_product(a, b, c);\n}",
+          "answerLine": 14,
+          "explanation": "Line 14: `std::linalg::matrix_product` requires rank-2 `mdspan` arguments (2D matrices), but `a`, `b`, and `c` are rank-1 (1D vectors). There is no form of `matrix_product` for 1D operands. For the dot product of two 1D vectors use `std::linalg::dot(a, b)`. For a true matrix product, `a` and `b` must be wrapped as 2D: `std::mdspan(data, rows, cols)`."
+        },
+        {
+          "id": "m8-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Why does `std::linalg` not allocate memory on its own?",
+          "options": [
+            "This is an implementation limitation that will be fixed in a future standard",
+            "By design: `std::linalg` operates on `std::mdspan` views over caller-owned buffers. No hidden allocations.",
+            "Because all matrices must be of fixed size known at compile time",
+            "Due to C++26 restrictions on dynamic memory in standard algorithms"
+          ],
+          "answerIndex": 1,
+          "explanation": "`std::linalg` is a set of functions over `std::mdspan`, which is a non-owning view. The entire memory lifecycle is controlled by the caller. This is an intentional design decision: no hidden allocations means no surprise overhead."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Which type is used as the matrix/vector in `std::linalg` functions?",
+            "options": [
+              "std::vector<std::vector<T>>",
+              "std::mdspan",
+              "std::matrix<T> (a new C++26 type)",
+              "C-style arrays"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How does `std::layout_left` differ from `std::layout_right`?",
+            "options": [
+              "layout_left is for integer types, layout_right is for floating-point types",
+              "layout_left is column-major (Fortran/BLAS order); layout_right is row-major (C order, the default)",
+              "layout_left aligns the matrix start to the left edge of a memory page",
+              "They are aliases for the same thing — only the name differs"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::linalg::transposed(A)` return?",
+            "options": [
+              "A new matrix with data copied in transposed order",
+              "A lazy view — no data is copied",
+              "std::optional<mdspan> (may be empty for a degenerate matrix)",
+              "void — the transpose is performed in-place"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "When may a `std::linalg` implementation call the system BLAS (MKL, OpenBLAS)?",
+            "options": [
+              "Never — the standard forbids third-party dependencies in the implementation",
+              "Always and mandatorily — the standard requires delegating to BLAS",
+              "This is permitted by the standard as an implementation detail to improve performance",
+              "Only for operations on complex numbers"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m8-l3",
+      "title": "Saturating arithmetic: add_sat, sub_sat, saturating_cast",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Motivation: overflow as a systemic bug\n\nInteger overflow is one of the oldest hazards in C++. For signed types it is **undefined behavior**; for unsigned types it wraps around. Both are wrong when the mathematically correct behavior is **saturation**: clamp to the type's min or max instead.\n\nTypical domains: audio mixing (exceeding amplitude → clipping, not wrap-around noise), image processing (brightness overflow → 255, not 0), fixed-point arithmetic, packet-length counters.\n\n**Why `std::clamp` is NOT a substitute:**\n```cpp\n// WRONG: addition executes BEFORE clamping — UB for signed int!\nint result = std::clamp(INT_MAX + 1, INT_MIN, INT_MAX);\n\n// CORRECT: add_sat performs the arithmetic without UB\nint result = std::add_sat(INT_MAX, 1); // = INT_MAX\n```\nThe expression `a + b` is evaluated before `clamp` ever gets a chance to intervene. Saturating functions handle the arithmetic internally, preventing overflow at the source.\n\n---\n\n## Five functions from `<numeric>` (C++26, P0543)\n\n### Arithmetic functions (spec-based — not yet in GCC trunk)\n\nAll four require **the same type** for both operands (no mixing `int8_t` with `int`):\n\n```cpp\n// spec-based — not available in GCC trunk at the time of writing\n#include <numeric>\n\nint8_t  a = std::add_sat(int8_t(120),  int8_t(20));   // 127 (saturated)\nuint8_t b = std::sub_sat(uint8_t(0),   uint8_t(1));   // 0   (saturated at min)\nint     c = std::mul_sat(100000,       100000);        // INT_MAX\nint     d = std::div_sat(INT_MIN,      -1);            // INT_MAX (avoids UB)\n```\n\n| Function | Description |\n|---|---|\n| `std::add_sat(a, b)` | `a + b` clamped to `[min, max]` of the type |\n| `std::sub_sat(a, b)` | `a - b`, saturated |\n| `std::mul_sat(a, b)` | `a * b`, saturated |\n| `std::div_sat(a, b)` | `a / b`, saturated (`INT_MIN / -1` → `INT_MAX`, not UB) |\n\nAll work for both **signed** and **unsigned** integers:\n- `sub_sat(0u, 1u)` → `0` (no wrap-around to `UINT_MAX`)\n- `add_sat(INT_MAX, 1)` → `INT_MAX` (no UB)\n\n### `std::saturating_cast<T>(x)` — available in GCC trunk ✅\n\nA saturating type conversion: converts any integer `x` to type `T`, clamping instead of truncating or causing UB:\n\n```cpp\n#include <numeric>\n\nauto a = std::saturating_cast<uint8_t>(300);      // 255  (max uint8_t)\nauto b = std::saturating_cast<int8_t>(-200);      // -128 (min int8_t)\nauto c = std::saturating_cast<int>(9999999999LL); // INT_MAX\n```\n\n**Difference from `static_cast`:** `static_cast<uint8_t>(300)` is implementation-defined on truncation; `saturating_cast<uint8_t>(300)` is always `255`, guaranteed by the standard.\n\n---\n\n## The saturation rule\n\nIf the mathematical result falls outside `[std::numeric_limits<T>::min(), std::numeric_limits<T>::max()]`:\n- Exceeds max → returns `max`\n- Below min → returns `min`\n- No UB, no wrap-around\n\n---\n\n## Practical use cases\n\n- **Audio mixing:** summing two `int16_t` samples → clamp to `[-32768, 32767]` instead of wrap-around distortion\n- **Pixel brightness:** adding a brightness delta to `uint8_t` → clamp to `[0, 255]`\n- **Packet lengths:** summing lengths must not overflow `uint32_t`\n- **Fixed-point:** intermediate results safely clamped before packing back into a narrow type",
+      "examples": [
+        {
+          "id": "m8-l3-ex1",
+          "title": "Basic: saturating_cast for various types",
+          "level": "basic",
+          "description": "Demonstrates `std::saturating_cast` for values that exceed the target type's range.",
+          "code": "#include <numeric>\n#include <print>\n\nint main() {\n    auto a = std::saturating_cast<unsigned char>(300);\n    auto b = std::saturating_cast<signed char>(-200);\n    auto c = std::saturating_cast<int>(9999999999LL);\n    std::println(\"{} {} {}\", (int)a, (int)b, c);\n}",
+          "expectedOutput": "255 -128 2147483647"
+        },
+        {
+          "id": "m8-l3-ex2",
+          "title": "Advanced: pixel brightness adjustment",
+          "level": "advanced",
+          "description": "A function that adds a brightness delta to an array of pixels (0–255) using saturation. `saturating_cast<unsigned char>` ensures the result always stays within `[0, 255]` — no wrap-around noise.",
+          "code": "#include <numeric>\n#include <array>\n#include <print>\n\n// Add a brightness delta to pixels (0-255) with saturation\nstd::array<unsigned char, 4> add_brightness(\n    std::array<unsigned char, 4> pixels, int delta)\n{\n    std::array<unsigned char, 4> result;\n    for (int i = 0; i < 4; ++i)\n        result[i] = std::saturating_cast<unsigned char>(\n            (int)pixels[i] + delta);\n    return result;\n}\n\nint main() {\n    auto pixels = std::array<unsigned char, 4>{200, 100, 50, 240};\n    auto bright = add_brightness(pixels, 80);\n    for (auto p : bright)\n        std::print(\"{} \", (int)p);\n    std::println(\"\");\n}",
+          "expectedOutput": "255 180 130 255"
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l3-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "What will this program print?",
+          "code": "#include <numeric>\n#include <print>\nint main() {\n    auto a = std::saturating_cast<unsigned char>(256);\n    auto b = std::saturating_cast<unsigned char>(0);\n    std::println(\"{} {}\", (int)a, (int)b);\n}",
+          "expectedOutput": "255 0"
+        },
+        {
+          "id": "m8-l3-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "What does `std::add_sat(INT_MAX, 1)` return for type `int`?",
+          "options": [
+            "INT_MIN (wraps around)",
+            "Undefined behavior",
+            "INT_MAX (saturated)",
+            "0"
+          ],
+          "answerIndex": 2
+        },
+        {
+          "id": "m8-l3-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "The code below contains a bug. Find the line where undefined behavior occurs.",
+          "code": "#include <numeric>\n#include <climits>\n#include <print>\n\nint main() {\n    // Safely add two large numbers without overflow\n    int a = INT_MAX;\n    int b = 1;\n    int result = std::clamp(a + b, INT_MIN, INT_MAX); // safe saturation?\n    std::println(\"{}\", result);\n}",
+          "answerLine": 9,
+          "explanation": "Line 9: `a + b` computes `INT_MAX + 1` before `std::clamp` is ever called. This is signed integer overflow — **undefined behavior** in C++. `std::clamp` receives an already-corrupt value. The correct fix is `std::add_sat(a, b)`, which performs saturating addition without UB."
+        },
+        {
+          "id": "m8-l3-e4",
+          "type": "choice",
+          "level": "advanced",
+          "prompt": "How does `std::saturating_cast<uint8_t>(300)` differ from `static_cast<uint8_t>(300)`?",
+          "options": [
+            "They are equivalent — both return 255",
+            "`static_cast` is implementation-defined on truncation; `saturating_cast` is guaranteed to return 255 (clamps to max)",
+            "`saturating_cast` throws an exception on overflow",
+            "`static_cast` causes UB for unsigned types"
+          ],
+          "answerIndex": 1
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What is the result of `std::sub_sat(uint8_t(0), uint8_t(1))`?",
+            "options": [
+              "255 (unsigned wrap-around)",
+              "0 (saturated at minimum)",
+              "Undefined behavior",
+              "-1 (sign extension)"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Why is `std::clamp(a + b, INT_MIN, INT_MAX)` NOT a safe replacement for `std::add_sat(a, b)` when `a` and `b` are `int`?",
+            "options": [
+              "Because clamp does not work with int",
+              "Because `a + b` can trigger UB before clamp ever sees the result",
+              "Because clamp saturates differently",
+              "They are equivalent — both are safe"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Which types are supported by `add_sat`, `sub_sat`, `mul_sat`, and `div_sat`?",
+            "options": [
+              "Unsigned integer types only",
+              "Signed integer types only (int, long)",
+              "Any integer type, both signed and unsigned",
+              "Any arithmetic type, including float"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Audio mixer with saturation",
+        "description": "Write an `audio_mix` function that takes two `int16_t` audio samples and returns their saturated sum, clamped to `[-32768, 32767]`. Use `std::saturating_cast`.\n\nVerify with three cases:\n- `audio_mix(30000, 30000)` → saturates to maximum\n- `audio_mix(-30000, -30000)` → saturates to minimum\n- `audio_mix(100, 200)` → ordinary addition, no saturation",
+        "starterCode": "#include <numeric>\n#include <cstdint>\n#include <print>\n\nint16_t audio_mix(int16_t a, int16_t b) {\n    // TODO: return the saturated sum of a + b within int16_t range\n}\n\nint main() {\n    std::println(\"{}\", audio_mix(30000, 30000));\n    std::println(\"{}\", audio_mix(-30000, -30000));\n    std::println(\"{}\", audio_mix(100, 200));\n}",
+        "referenceSolution": "#include <numeric>\n#include <cstdint>\n#include <print>\n\nint16_t audio_mix(int16_t a, int16_t b) {\n    return std::saturating_cast<int16_t>((int)a + (int)b);\n}\n\nint main() {\n    std::println(\"{}\", audio_mix(30000, 30000));   // saturates to 32767\n    std::println(\"{}\", audio_mix(-30000, -30000)); // saturates to -32768\n    std::println(\"{}\", audio_mix(100, 200));       // no saturation: 300\n}",
+        "expectedOutput": "32767\n-32768\n300",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m8-l4",
+      "title": "Bit utilities: <bit> and <stdbit.h>",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Why bit utilities?\n\nBefore C++20, portable bit manipulation required non-standard compiler extensions: `__builtin_popcount`, `__builtin_clz`, `_BitScanReverse` (MSVC), and friends. These are non-portable and carry no guarantees across platforms and types.\n\nC++20 fixed this by introducing **`<bit>`** — a portable, standard interface for bit manipulation. C++26 adds **`<stdbit.h>`** (P1956) — a C-compatibility layer for code shared between C23 and C++26 translation units.\n\n---\n\n## `<bit>` — the primary C++ API (since C++20)\n\nAll functions require **unsigned integer types** (`unsigned char`, `unsigned short`, `unsigned int`, `unsigned long`, `unsigned long long`). Passing a signed type is a **compile error**.\n\n| Function | Description |\n|---|---|\n| `std::popcount(x)` | Count set bits (1s) |\n| `std::countl_zero(x)` | Count leading zeros |\n| `std::countl_one(x)` | Count leading ones |\n| `std::countr_zero(x)` | Count trailing zeros (index of lowest set bit) |\n| `std::countr_one(x)` | Count trailing ones |\n| `std::has_single_bit(x)` | Is x a power of 2? (exactly one bit set) |\n| `std::bit_ceil(x)` | Smallest power of 2 ≥ x |\n| `std::bit_floor(x)` | Largest power of 2 ≤ x |\n| `std::bit_width(x)` | Minimum bits to represent x: ⌊log₂(x)⌋ + 1 |\n| `std::rotl(x, n)` | Rotate left by n bits |\n| `std::rotr(x, n)` | Rotate right by n bits |\n\n---\n\n## `<stdbit.h>` — C compatibility layer (C++26)\n\nC++26 introduces `<stdbit.h>`, mirroring `<bit>` with C23 naming conventions:\n\n- `stdc_popcount(x)`, `stdc_leading_zeros(x)`, `stdc_trailing_zeros(x)`\n- `stdc_leading_ones(x)`, `stdc_trailing_ones(x)`\n- `stdc_bit_ceil(x)`, `stdc_bit_floor(x)`, `stdc_bit_width(x)`\n- `stdc_has_single_bit(x)`, `stdc_rotate_left(x, n)`, `stdc_rotate_right(x, n)`\n\nIn C23 these are `_Generic` macros. In C++26 they become function templates with identical semantics.\n\n**When to use `<stdbit.h>`**: when writing headers shared between C23 and C++26 (e.g., embedded firmware, cross-language libraries). For pure C++ code, always prefer `<bit>`.\n\n> Note: `<stdbit.h>` is not yet implemented in GCC trunk at time of writing — the names above are spec-based.",
+      "examples": [
+        {
+          "title": "Basic operations: popcount, leading zeros, power of 2",
+          "level": "basic",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    unsigned int x = 0b10110101u;\n    std::println(\"popcount: {}\", std::popcount(x));\n    std::println(\"leading zeros: {}\", std::countl_zero(x));\n    std::println(\"is power of 2: {}\", std::has_single_bit(x));\n\n    unsigned int y = 64u; // 0b01000000\n    std::println(\"popcount(64): {}\", std::popcount(y));\n    std::println(\"is power of 2(64): {}\", std::has_single_bit(y));\n}",
+          "expectedOutput": "popcount: 5\nleading zeros: 24\nis power of 2: false\npopcount(64): 1\nis power of 2(64): true",
+          "explanation": "0b10110101 has five 1-bits. In a 32-bit unsigned int the value 181 fits in the low 8 bits, leaving 24 leading zeros. 64 = 2⁶ is a power of two, so has_single_bit returns true."
+        },
+        {
+          "title": "Power-of-2 rounding and bit rotation",
+          "level": "advanced",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    unsigned int x = 5u;\n    std::println(\"bit_ceil(5): {}\", std::bit_ceil(x));     // next power of 2 >= 5\n    std::println(\"bit_floor(5): {}\", std::bit_floor(x));   // largest power of 2 <= 5\n    std::println(\"bit_width(5): {}\", std::bit_width(x));   // bits needed to represent 5\n\n    unsigned char b = 0b10110001u;\n    std::println(\"rotl(0b10110001, 2): {:08b}\", std::rotl(b, 2));\n    std::println(\"rotr(0b10110001, 2): {:08b}\", std::rotr(b, 2));\n}",
+          "expectedOutput": "bit_ceil(5): 8\nbit_floor(5): 4\nbit_width(5): 3\nrotl(0b10110001, 2): 11000110\nrotr(0b10110001, 2): 01101100",
+          "explanation": "5 → next power of 2 ceiling: 8 (2³); floor: 4 (2²). bit_width(5) = ⌊log₂5⌋ + 1 = 3. Rotating 0b10110001 left by 2: the top 2 bits (10) wrap to the bottom → 0b11000110. Right by 2: bottom 2 bits (01) wrap to the top → 0b01101100."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l4-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "What does this code print?",
+          "code": "#include <bit>\n#include <print>\nint main() {\n    std::println(\"{}\", std::popcount(0b10110101u));\n    std::println(\"{}\", std::countr_zero(0b10110100u));\n}",
+          "expectedOutput": "5\n2"
+        },
+        {
+          "id": "m8-l4-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "What does `std::countl_zero(1u)` return for a 32-bit `unsigned int`?",
+          "options": [
+            "0",
+            "1",
+            "31",
+            "32"
+          ],
+          "answerIndex": 2,
+          "explanation": "The number 1 in binary is 0b00000000000000000000000000000001 — all bits except the last are zero, giving 31 leading zeros."
+        },
+        {
+          "id": "m8-l4-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "Which line contains a bug, and why?",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    int x = -5;\n    std::println(\"{}\", std::popcount(x)); // count set bits\n}",
+          "answerLine": 6,
+          "explanation": "std::popcount requires an unsigned integer type. Passing a signed `int` is a compile error in C++20/26. Fix: use `std::popcount(static_cast<unsigned int>(x))` or declare x as `unsigned int`."
+        },
+        {
+          "id": "m8-l4-e4",
+          "type": "predict-output",
+          "level": "advanced",
+          "prompt": "What does this code print?",
+          "code": "#include <bit>\n#include <print>\nint main() {\n    std::println(\"{}\", std::bit_ceil(8u));\n    std::println(\"{}\", std::bit_ceil(9u));\n    std::println(\"{}\", std::bit_floor(15u));\n}",
+          "expectedOutput": "8\n16\n8"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Why was `<stdbit.h>` added in C++26 when `<bit>` already exists since C++20?",
+            "options": [
+              "`<stdbit.h>` is a faster version of `<bit>`",
+              "`<stdbit.h>` is a C-compatible counterpart for code shared between C23 and C++26",
+              "`<bit>` is deprecated and replaced by `<stdbit.h>`",
+              "`<stdbit.h>` supports signed types while `<bit>` does not"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::has_single_bit(0u)` return?",
+            "options": [
+              "true",
+              "false",
+              "Undefined behavior",
+              "Compile error"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What happens when `std::popcount(-1)` is called?",
+            "options": [
+              "Returns 32 (for a 32-bit int)",
+              "Returns the number of set bits in two's complement representation",
+              "Compile error: popcount requires an unsigned type",
+              "Undefined behavior"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Aligning to the next power of two",
+        "description": "Write a function `next_aligned_size(size_t n)` that returns the smallest power of 2 that is ≥ n. Use `std::bit_ceil`. Test it on several values including 0.",
+        "starterCode": "#include <bit>\n#include <print>\n\nsize_t next_aligned_size(size_t n) {\n    // your code here\n}\n\nint main() {\n    std::println(\"{}\", next_aligned_size(0));\n    std::println(\"{}\", next_aligned_size(1));\n    std::println(\"{}\", next_aligned_size(5));\n    std::println(\"{}\", next_aligned_size(8));\n    std::println(\"{}\", next_aligned_size(9));\n}",
+        "referenceSolution": "#include <bit>\n#include <print>\n\nsize_t next_aligned_size(size_t n) {\n    return n == 0 ? 1 : std::bit_ceil(n);\n}\n\nint main() {\n    std::println(\"{}\", next_aligned_size(0));\n    std::println(\"{}\", next_aligned_size(1));\n    std::println(\"{}\", next_aligned_size(5));\n    std::println(\"{}\", next_aligned_size(8));\n    std::println(\"{}\", next_aligned_size(9));\n}",
+        "expectedOutput": "1\n1\n8\n8\n16",
+        "godboltLink": null
+      }
+    }
   ]
 }

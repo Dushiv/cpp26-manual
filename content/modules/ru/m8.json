@@ -5,6 +5,487 @@
   "significance": "важный",
   "prerequisites": [],
   "lessons": [
-    { "id": "m8-l1", "title": "std::simd", "stub": true }
+    {
+      "id": "m8-l1",
+      "title": "std::simd",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Мотивация\n\nСовременные процессоры — x86 (AVX/AVX-512), ARM (NEON/SVE), RISC-V (V-extension) — умеют обрабатывать 4, 8 или даже 16 значений типа `float` за одну инструкцию. Такие инструкции называются **SIMD** (Single Instruction, Multiple Data). Без SIMD цикл суммирует 8 float-ов за 8 инструкций; с AVX — за одну.\n\nПроблема ручного SIMD:\n- Интринсики вроде `_mm256_add_ps` привязаны к x86 и несовместимы с ARM или RISC-V.\n- Код нечитаем и хрупок: смена поколения CPU (AVX → AVX-512) требует переписывания.\n- Нет проверки типов на уровне языка.\n\n**`std::simd`** (P1928, C++26) — переносимая типобезопасная абстракция над SIMD. Вы пишете код один раз; компилятор автоматически выбирает лучшие доступные инструкции для целевого процессора.\n\nВ GCC trunk фича доступна через заголовок `<experimental/simd>` в пространстве имён `std::experimental` (алиас `stdx`).\n\n---\n\n## `stdx::simd<T, Abi>`\n\nТип `stdx::simd<T, Abi>` представляет **N значений типа T**, упакованных вместе. Параметр `Abi` (Application Binary Interface tag) управляет шириной вектора и стратегией хранения.\n\n### Ключевые Abi-теги\n\n| Тег | Ширина | Применение |\n|---|---|---|\n| `stdx::simd_abi::native<T>` | Максимум для T на данном CPU | Максимальная производительность, непереносимое число элементов |\n| `stdx::fixed_size_simd<T, N>` | Ровно N элементов | Переносимость: одинаково на всех платформах |\n| `stdx::simd_abi::scalar` | 1 элемент | Отключение SIMD, универсальные алгоритмы |\n| `stdx::simd_abi::compatible<T>` | Минимум 1 | Безопасный переносимый выбор |\n\nДля большинства учебных примеров используем `fixed_size_simd<T, N>` — число элементов фиксировано и одинаково на любой машине.\n\n---\n\n## Конструирование\n\n```cpp\n// Broadcast: все 4 элемента равны 1.0\nstdx::fixed_size_simd<float, 4> a(1.0f);\n\n// Generator: элементы вычисляются по индексу\nstdx::fixed_size_simd<float, 4> b([](int i){ return float(i + 1); });\n// Результат: {1, 2, 3, 4}\n```\n\n---\n\n## Арифметика\n\nОператоры `+`, `-`, `*`, `/` работают поэлементно. Компилятор автоматически использует SIMD-инструкции:\n\n```cpp\nauto c = a + b; // {1+1, 1+2, 1+3, 1+4} = {2, 3, 4, 5}\n```\n\n---\n\n## Доступ к элементам\n\n`v[i]` возвращает **прокси-тип** `_SmartReference`, а не `float` напрямую. Прокси нельзя передать в `std::println` или другую функцию, ожидающую `T`. Необходимо явное извлечение:\n\n```cpp\nfloat val = v[0]; // извлечь в локальную переменную\nstd::println(\"{}\", val); // OK\n```\n\n---\n\n## Редукции\n\nФункции из `<experimental/simd>` для свёртки всего вектора в скаляр:\n\n```cpp\nfloat sum  = stdx::reduce(v);                      // сумма (std::plus по умолчанию)\nfloat prod = stdx::reduce(v, std::multiplies<>{}); // произведение\nfloat mx   = stdx::hmax(v);                        // максимум\nfloat mn   = stdx::hmin(v);                        // минимум\n```\n\n---\n\n## Маски и условные операции\n\n`simd_mask` — результат поэлементного сравнения. `stdx::where` применяет операцию только к элементам, где маска `true`:\n\n```cpp\nauto mask = v < stdx::fixed_size_simd<float, 4>(0.0f); // {true, false, true, false} для {-1, 2, -3, 4}\nstdx::where(mask, v) = stdx::fixed_size_simd<float, 4>(0.0f); // обнулить отрицательные\n```\n\n---\n\n## Загрузка и сохранение из массивов\n\n```cpp\nfloat arr[4] = {1, 2, 3, 4};\nstdx::fixed_size_simd<float, 4> v;\nv.copy_from(arr, stdx::element_aligned); // загрузить\nv.copy_to(arr, stdx::element_aligned);   // сохранить\n```\n\nФлаг `stdx::element_aligned` сообщает компилятору, что выравнивание обычное (по размеру элемента). Для специально выровненных буферов используйте `stdx::vector_aligned`.\n\n---\n\n## Число элементов на этапе компиляции\n\n```cpp\nconstexpr int N = stdx::simd_size_v<float, stdx::simd_abi::native<float>>;\n// или:\nconstexpr int M = stdx::fixed_size_simd<float, 4>::size();\n```\n\n---\n\n## Стандартизованные имена C++26 (справочно)\n\nВ финальном стандарте C++26 тип называется `std::simd<T>` в заголовке `<simd>`. В GCC trunk эта версия ещё не реализована — используйте `<experimental/simd>` с пространством имён `std::experimental`.",
+      "examples": [
+        {
+          "id": "m8-l1-ex1",
+          "title": "Broadcast, поэлементное сложение, редукция",
+          "level": "basic",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> a(1.0f);\n    stdx::fixed_size_simd<float, 4> b([](int i){ return float(i + 1); });\n    auto c = a + b;\n    std::println(\"lanes: {}\", stdx::fixed_size_simd<float,4>::size());\n    for (int i = 0; i < 4; ++i) {\n        float val = c[i];\n        std::print(\"{} \", val);\n    }\n    std::println(\"\");\n    float sum = stdx::reduce(c);\n    std::println(\"sum={}\", sum);\n}",
+          "expectedOutput": "lanes: 4\n2 3 4 5 \nsum=14",
+          "explanation": "Вектор `a` инициализируется broadcast-ом: все 4 элемента равны 1.0. Вектор `b` строится через генератор: `b[i] = float(i+1)`, то есть {1, 2, 3, 4}. Сумма `c = a + b` — поэлементная: {2, 3, 4, 5}. Для доступа к элементам необходимо явно извлечь значение в `float val = c[i]` — `operator[]` возвращает прокси. `stdx::reduce(c)` складывает все элементы: 2+3+4+5=14."
+        },
+        {
+          "id": "m8-l1-ex2",
+          "title": "Загрузка из массива, маскирование, сохранение",
+          "level": "advanced",
+          "code": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    std::array<float, 4> data = {-1.0f, 2.0f, -3.0f, 4.0f};\n    stdx::fixed_size_simd<float, 4> v;\n    v.copy_from(data.data(), stdx::element_aligned);\n\n    // обнулить отрицательные элементы\n    auto mask = v < stdx::fixed_size_simd<float, 4>(0.0f);\n    stdx::where(mask, v) = stdx::fixed_size_simd<float, 4>(0.0f);\n\n    std::array<float, 4> result;\n    v.copy_to(result.data(), stdx::element_aligned);\n    for (float x : result)\n        std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "0 2 0 4 ",
+          "explanation": "`copy_from` загружает массив {-1, 2, -3, 4} в SIMD-вектор. Выражение `v < 0.0f` создаёт маску {true, false, true, false} — `true` там, где элемент отрицательный. `stdx::where(mask, v) = 0.0f` обнуляет только те позиции, где маска истинна. `copy_to` сохраняет результат обратно в массив: {0, 2, 0, 4}."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l1-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "Что выведет программа?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<int, 4> v([](int i){ return i * i; });\n    int sum = stdx::reduce(v);\n    std::println(\"{}\", sum);\n}",
+          "expectedOutput": "14"
+        },
+        {
+          "id": "m8-l1-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "Почему `v[i]` у `std::experimental::simd` нельзя напрямую передать в `std::println`?",
+          "options": [
+            "Потому что `operator[]` возвращает прокси-тип, а не значение T напрямую",
+            "Потому что std::println не поддерживает SIMD-типы вообще",
+            "Потому что `v[i]` возвращает указатель на элемент",
+            "Это ограничение только GCC — Clang работает иначе"
+          ],
+          "answerIndex": 0
+        },
+        {
+          "id": "m8-l1-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "На какой строке ошибка и в чём она?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> v(3.0f);\n    std::println(\"{}\", v[0]); // вывести первый элемент\n}",
+          "answerLine": 7,
+          "explanation": "`v[0]` возвращает прокси-тип `_SmartReference`, а не `float`. `std::println` не знает, как форматировать прокси — возникает ошибка компиляции. Исправление: `float val = v[0]; std::println(\"{}\", val);`"
+        },
+        {
+          "id": "m8-l1-e4",
+          "type": "predict-output",
+          "level": "advanced",
+          "prompt": "Что выведет программа?",
+          "code": "#include <experimental/simd>\n#include <print>\nnamespace stdx = std::experimental;\n\nint main() {\n    stdx::fixed_size_simd<float, 4> v([](int i){ return float(i + 1); });\n    float mx = stdx::hmax(v);\n    float mn = stdx::hmin(v);\n    std::println(\"{} {}\", mx, mn);\n}",
+          "expectedOutput": "4 1"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что такое Abi-тег в `std::experimental::simd<T, Abi>`?",
+            "options": [
+              "Флаг оптимизации компилятора",
+              "Параметр, определяющий ширину вектора и стратегию хранения",
+              "Версия ABI-интерфейса библиотеки",
+              "Тип выравнивания памяти"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что возвращает `v[i]` у `fixed_size_simd<float, 4>`?",
+            "options": [
+              "float",
+              "float&",
+              "Прокси-тип (не float напрямую)",
+              "std::optional<float>"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Как вычислить сумму всех элементов SIMD-вектора `v`?",
+            "options": [
+              "v.sum()",
+              "std::accumulate(v.begin(), v.end(), 0.0f)",
+              "stdx::reduce(v)",
+              "v.reduce(std::plus<>{})"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "Зачем использовать `fixed_size_simd<T, N>` вместо `simd<T, simd_abi::native<T>>`?",
+            "options": [
+              "Для максимальной производительности на текущем CPU",
+              "Для переносимости: гарантирует ровно N элементов на всех платформах",
+              "Для работы с signed-типами",
+              "Это то же самое, разница только в синтаксисе"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Скалярное произведение через SIMD",
+        "description": "Напишите функцию `dot_product_simd(const float* a, const float* b)`, которая вычисляет скалярное произведение двух массивов из 4 элементов типа `float` с помощью `fixed_size_simd<float, 4>`. Используйте `copy_from` для загрузки, поэлементное умножение `*`, и `stdx::reduce` для суммирования. Проверьте на массивах {1,2,3,4} и {4,3,2,1} — ожидаемый результат: 1·4 + 2·3 + 3·2 + 4·1 = 20.",
+        "starterCode": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nfloat dot_product_simd(const float* a, const float* b) {\n    // TODO: загрузить a и b в два fixed_size_simd<float,4>,\n    //       перемножить поэлементно, вернуть reduce\n}\n\nint main() {\n    std::array<float,4> a = {1.0f, 2.0f, 3.0f, 4.0f};\n    std::array<float,4> b = {4.0f, 3.0f, 2.0f, 1.0f};\n    std::println(\"{}\", dot_product_simd(a.data(), b.data()));\n}",
+        "referenceSolution": "#include <experimental/simd>\n#include <array>\n#include <print>\nnamespace stdx = std::experimental;\n\nfloat dot_product_simd(const float* a, const float* b) {\n    stdx::fixed_size_simd<float, 4> va, vb;\n    va.copy_from(a, stdx::element_aligned);\n    vb.copy_from(b, stdx::element_aligned);\n    return stdx::reduce(va * vb);\n}\n\nint main() {\n    std::array<float,4> a = {1.0f, 2.0f, 3.0f, 4.0f};\n    std::array<float,4> b = {4.0f, 3.0f, 2.0f, 1.0f};\n    std::println(\"{}\", dot_product_simd(a.data(), b.data()));\n}",
+        "expectedOutput": "20",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m8-l2",
+      "title": "std::linalg — линейная алгебра",
+      "prerequisites": [
+        "m8-l1"
+      ],
+      "background": {
+        "title": "std::mdspan (C++23)",
+        "body": "`std::mdspan<T, Extents>` — невладеющее представление (view) над существующим непрерывным буфером с многомерной индексацией. Пример: `std::mdspan m(data.data(), 3, 4)` создаёт представление 3×4 над уже существующим буфером `data`. Доступ к элементу: `m[i, j]`. Порядок данных задаётся политикой размещения: `std::layout_right` — строка-мажорный (C-порядок, по умолчанию), `std::layout_left` — столбец-мажорный (Fortran/BLAS-порядок). Именно `std::mdspan` служит типом матриц и векторов во всех функциях `std::linalg` — никакого отдельного «класса матрицы» в библиотеке нет."
+      },
+      "motivation": "C++ не имел стандартной библиотеки линейной алгебры. Промышленный код использовал Eigen, Armadillo, GSL или сырые вызовы BLAS/LAPACK — у каждого своя API, свои соглашения по сборке, свои типы матриц. Переход между проектами превращался в переучивание.\n\nP1673 (принят в C++26) добавляет стандартный интерфейс уровня BLAS: набор свободных функций над `std::mdspan`, без скрытых аллокаций и без нового класса матрицы. Хранение данных — ваше дело; `std::linalg` лишь описывает операции над вашими буферами.",
+      "theory": "Примечание: `std::linalg` (P1673) включён в стандарт C++26, но ещё не реализован ни одним компилятором. Примеры соответствуют спецификации.\n\n## Философия дизайна\n\n`std::linalg` — это **не класс матрицы**. Это набор свободных функций, которые работают с `std::mdspan`-представлениями над вашим хранилищем. Вы сами заводите `std::vector`, `std::array` или сырой буфер, оборачиваете его в `mdspan` и передаёте в функции linalg. Никаких скрытых аллокаций.\n\n```cpp\n#include <linalg>\n#include <mdspan>\n#include <vector>\n\nstd::vector<double> buf = {1, 2, 3, 4, 5, 6};\nauto A = std::mdspan(buf.data(), 2, 3);  // 2×3, строка-мажорный\n// A[0,0]=1  A[0,1]=2  A[0,2]=3\n// A[1,0]=4  A[1,1]=5  A[1,2]=6\n```\n\n## Ключевые типы и порядок данных\n\n```cpp\n// Статические размеры (известны на этапе компиляции)\nstd::mdspan<double, std::extents<size_t, 3, 4>>  A;  // строго 3×4\n\n// Динамические размеры (задаются в рантайме)\nstd::mdspan<double, std::dextents<size_t, 2>>    B;  // любой 2D\n\n// Смешанный: одна ось статична, другая динамична\nstd::mdspan<double, std::extents<size_t, 3, std::dynamic_extent>> C;\n```\n\n| Политика | Порядок | Смежные элементы |\n|---|---|---|\n| `std::layout_right` | строка-мажорный (C) | `A[i, j]` и `A[i, j+1]` |\n| `std::layout_left` | столбец-мажорный (Fortran/BLAS) | `A[i, j]` и `A[i+1, j]` |\n\nСистемный BLAS (MKL, OpenBLAS) ожидает столбец-мажорный порядок. `std::linalg::transposed()` позволяет передать строка-мажорную матрицу как транспонированную без копирования данных.\n\n## BLAS 1 — операции над векторами\n\n```cpp\n// z = x + y\nstd::linalg::add(x, y, z);\n\n// x *= alpha (на месте)\nstd::linalg::scale(alpha, x);\n\n// скалярное произведение\ndouble d = std::linalg::dot(x, y);\n\n// евклидова норма √(Σxᵢ²)\ndouble n2 = std::linalg::vector_norm2(x);\n\n// L1-норма Σ|xᵢ|\ndouble n1 = std::linalg::vector_abs_sum(x);\n```\n\n## BLAS 2 — матрично-векторные операции\n\n```cpp\n// y = A·x (перезаписывает y)\nstd::linalg::matrix_vector_product(A, x, y);\n\n// z = alpha * A·x + beta * y\nstd::linalg::matrix_vector_product(alpha, A, x, beta, y, z);\n```\n\n## BLAS 3 — матрично-матричные операции\n\n```cpp\n// C = A·B (перезаписывает C)\nstd::linalg::matrix_product(A, B, C);\n```\n\n## Треугольные и симметричные операции\n\n```cpp\n// y = triangular_A · x (только верхний треугольник)\nstd::linalg::triangular_matrix_vector_product(A, std::linalg::upper_triangle, x, y);\n\n// C += alpha * A·Aᵀ (ранговое обновление симметричной матрицы)\nstd::linalg::symmetric_matrix_rank_k_update(alpha, A, C);\n```\n\n## Ленивые представления (zero-copy)\n\nФункции-трансформации возвращают новый `mdspan` с изменённым маппингом или accessor-политикой — никакого копирования данных:\n\n```cpp\nauto At  = std::linalg::transposed(A);           // транспонированный view\nauto Ac  = std::linalg::conjugated(A);           // сопряжённый view (для комплексных)\nauto Acd = std::linalg::conjugate_transposed(A); // A† (эрмитово транспонирование)\nauto sA  = std::linalg::scaled(2.0, A);          // 2·A, только для чтения\n```\n\n`transposed(A)` меняет экстенты (`extent(0)` и `extent(1)` меняются местами) и переопределяет маппинг так, что `A[i,j]` и `At[j,i]` обращаются к одной и той же ячейке в памяти.\n\n## Accessor-политики\n\nПод капотом ленивые представления реализованы через accessor-политики `std::mdspan`:\n\n- `std::linalg::scaled_accessor<S, NestedAcc>` — умножает все обращения на `S`.\n- `std::linalg::conjugated_accessor<NestedAcc>` — сопрягает все прочитанные значения.\n\nОни компонуются: `scaled(2.0, conjugated(A))` создаёт accessor, который читает `2 * conj(A[i,j])` без каких-либо промежуточных буферов.\n\n## Параллельные перегрузки\n\n```cpp\n// параллельно, синтаксис как у std::sort и других алгоритмов\nstd::linalg::matrix_product(std::execution::par, A, B, C);\n```\n\nТе же политики выполнения, что у `<algorithm>` — `seq`, `par`, `par_unseq`.\n\n## Производительность: делегирование в системный BLAS\n\nСтандарт разрешает (и поощряет) реализациям делегировать вызовы в системный BLAS — Intel MKL, OpenBLAS, Apple Accelerate. Стандарт определяет интерфейс; производительность — зона ответственности реализации. При столбец-мажорных данных и правильных `layout`-политиках разрыва с прямыми вызовами BLAS быть не должно.\n\n## `std::linalg` vs Eigen\n\n| Критерий | `std::linalg` | Eigen |\n|---|---|---|\n| Зависимости | нет | только Eigen |\n| Совместимость | C++26+ | C++14/17 |\n| API-стиль | свободные функции над `mdspan` | класс `Matrix` с операторами |\n| Ленивые цепочки | нет | expression templates |\n| Декомпозиции (SVD, QR, Cholesky) | нет | есть |\n\n`std::linalg` — выбор, когда нужна портируемость, нулевые зависимости и стандарт C++26. Eigen — когда нужны длинные выражения типа `(A + B * C).transpose()` или готовые разложения матриц.",
+      "outputsVerified": false,
+      "examples": [
+        {
+          "id": "m8-l2-ex1",
+          "level": "basic",
+          "title": "Скалярное произведение и матрично-векторное произведение",
+          "code": "// spec-based: std::linalg не реализован ни одним компилятором\n#include <linalg>\n#include <mdspan>\n#include <vector>\n#include <print>\n\nint main() {\n    // векторы\n    std::vector<double> x_data = {1.0, 2.0, 3.0};\n    std::vector<double> y_data = {4.0, 5.0, 6.0};\n    auto x = std::mdspan(x_data.data(), 3);\n    auto y = std::mdspan(y_data.data(), 3);\n\n    double d = std::linalg::dot(x, y);  // 1*4 + 2*5 + 3*6 = 32\n    std::println(\"dot = {}\", d);\n\n    // матрично-векторное: A·x -> r\n    // единичная матрица 3×3, строка-мажорная\n    std::vector<double> A_data = {1,0,0,  0,1,0,  0,0,1};\n    auto A = std::mdspan(A_data.data(), 3, 3);\n\n    std::vector<double> result(3);\n    auto r = std::mdspan(result.data(), 3);\n    std::linalg::matrix_vector_product(A, x, r);\n\n    std::print(\"A·x = \");\n    for (double v : result) std::print(\"{} \", v);\n    std::println(\"\");\n}",
+          "expectedOutput": "",
+          "explanation": "`std::linalg::dot(x, y)` возвращает скаляр (1·4 + 2·5 + 3·6 = 32) без выходного параметра. `matrix_vector_product(A, x, r)` перезаписывает `r` результатом A·x; для единичной матрицы A·x = x, то есть {1, 2, 3}. Хранение данных — наши `vector<double>`; `mdspan` — лишь представление над ними."
+        },
+        {
+          "id": "m8-l2-ex2",
+          "level": "advanced",
+          "title": "Транспонированное представление и scaled view",
+          "code": "// spec-based: std::linalg не реализован ни одним компилятором\n#include <linalg>\n#include <mdspan>\n#include <vector>\n#include <print>\n\nint main() {\n    // матрица 2×3, строка-мажорная\n    std::vector<double> data = {1,2,3,  4,5,6};\n    auto A  = std::mdspan(data.data(), 2, 3);  // 2 строки, 3 столбца\n    auto At = std::linalg::transposed(A);      // 3 строки, 2 столбца; без копирования\n\n    std::println(\"A[0,1] = {}  At[1,0] = {}\",\n                 A[0,1], At[1,0]);             // одна и та же ячейка: 2\n\n    std::println(\"Размер A:  {}x{}\", A.extent(0), A.extent(1));\n    std::println(\"Размер At: {}x{}\", At.extent(0), At.extent(1));\n\n    // ленивый масштабированный view: 2·A (только чтение)\n    auto twoA = std::linalg::scaled(2.0, A);\n    std::println(\"2·A[0,0] = {}\", twoA[0,0]);  // 2*1 = 2\n    std::println(\"2·A[1,2] = {}\", twoA[1,2]);  // 2*6 = 12\n}",
+          "expectedOutput": "",
+          "explanation": "`transposed(A)` переставляет экстенты местами и меняет маппинг: `A[i,j]` и `At[j,i]` адресуют одну ячейку в исходном буфере. Копирования нет — только смена политики индексации. `scaled(2.0, A)` создаёт `mdspan` со `scaled_accessor`, который умножает каждое прочитанное значение на 2.0 — тоже без копирования и без временных буферов."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что является входным/выходным типом функций `std::linalg`?",
+          "options": [
+            "std::matrix<T> — специальный тип матрицы, введённый в linalg",
+            "std::mdspan — невладеющее представление над существующим буфером",
+            "std::vector<std::vector<T>> — вложенный вектор",
+            "Любой контейнер, поддерживающий operator[]"
+          ],
+          "answerIndex": 1,
+          "explanation": "`std::linalg` не вводит собственный класс матрицы. Все функции принимают и возвращают `std::mdspan` — невладеющие представления над буферами, которыми управляет вызывающий код."
+        },
+        {
+          "id": "m8-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Что делает `std::linalg::transposed(A)`?",
+          "options": [
+            "Копирует матрицу A в транспонированном виде в новый буфер",
+            "Возвращает ленивое представление с переставленными строками и столбцами — без копирования данных",
+            "Изменяет матрицу A на месте (in-place transpose)",
+            "Возвращает новый std::mdspan с перемешанными данными в памяти"
+          ],
+          "answerIndex": 1,
+          "explanation": "`transposed(A)` меняет только политику маппинга `mdspan`: меняет местами экстенты и переопределяет вычисление адреса элемента. Данные в памяти остаются на тех же местах — никакого копирования."
+        },
+        {
+          "id": "m8-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "code": "#include <linalg>\n#include <mdspan>\n#include <vector>\n\nint main() {\n    std::vector<double> a_data = {1,2,3,4};\n    std::vector<double> b_data = {5,6,7,8};\n    auto a = std::mdspan(a_data.data(), 4);\n    auto b = std::mdspan(b_data.data(), 4);\n\n    // вычислить произведение матриц a и b?\n    std::vector<double> c_data(4);\n    auto c = std::mdspan(c_data.data(), 4);\n    std::linalg::matrix_product(a, b, c);\n}",
+          "answerLine": 14,
+          "explanation": "Строка 14: `std::linalg::matrix_product` требует двумерных `mdspan` (rank-2), но `a`, `b` и `c` — одномерные (rank-1). Скалярного произведения двух 1D-векторов нет в `matrix_product`. Для скалярного произведения двух векторов используется `std::linalg::dot(a, b)`. Если нужно матричное произведение, `a` и `b` должны быть обёрнуты как 2D: `std::mdspan(data, rows, cols)`."
+        },
+        {
+          "id": "m8-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "Почему `std::linalg` не выделяет память самостоятельно?",
+          "options": [
+            "Это ограничение текущей реализации, которое устранят в следующем стандарте",
+            "По дизайну: `std::linalg` работает с `std::mdspan`-представлениями над буферами, принадлежащими вызывающему коду. Скрытых аллокаций нет.",
+            "Потому что все матрицы должны быть фиксированного размера (известного на этапе компиляции)",
+            "Из-за ограничений C++26 на динамическую память в стандартных алгоритмах"
+          ],
+          "answerIndex": 1,
+          "explanation": "`std::linalg` — это набор функций над `std::mdspan`, который является невладеющим view. Весь жизненный цикл памяти контролируется вызывающим кодом. Это осознанное проектное решение: нет скрытых аллокаций — нет неожиданных накладных расходов."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Какой тип используется как матрица/вектор в функциях `std::linalg`?",
+            "options": [
+              "std::vector<std::vector<T>>",
+              "std::mdspan",
+              "std::matrix<T> (новый тип C++26)",
+              "Массив в стиле C"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Чем `std::layout_left` отличается от `std::layout_right`?",
+            "options": [
+              "layout_left — для целочисленных типов, layout_right — для типов с плавающей точкой",
+              "layout_left — столбец-мажорный (Fortran/BLAS-порядок); layout_right — строка-мажорный (C-порядок, значение по умолчанию)",
+              "layout_left выравнивает начало матрицы по левой границе страницы памяти",
+              "Это псевдонимы для одного и того же — различие только в названии"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что возвращает `std::linalg::transposed(A)`?",
+            "options": [
+              "Новую матрицу с данными, скопированными в транспонированном порядке",
+              "Ленивое представление (view) — никакого копирования данных нет",
+              "std::optional<mdspan> (может быть пустым, если матрица вырожденная)",
+              "Транспонирование на месте — возвращает void"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Когда реализация `std::linalg` может вызвать системный BLAS (MKL, OpenBLAS)?",
+            "options": [
+              "Никогда — стандарт запрещает сторонние зависимости в реализации",
+              "Всегда и обязательно — стандарт требует делегировать в BLAS",
+              "Это разрешено стандартом как деталь реализации для повышения производительности",
+              "Только для операций над комплексными числами"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m8-l3",
+      "title": "Saturating arithmetic: add_sat, sub_sat, saturating_cast",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Мотивация: переполнение как системный баг\n\nЦелочисленное переполнение — один из старейших источников ошибок в C++. Для знаковых типов оно даёт **неопределённое поведение** (UB); для беззнаковых — циклический перенос (wrap-around). Оба варианта нежелательны, когда математически корректное поведение — это **насыщение**: зафиксироваться на максимальном или минимальном значении типа.\n\nОбласти применения: микширование звука (превышение амплитуды → клиппинг, а не хруст), обработка пикселей (переполнение яркости → 255, а не 0), фиксированная арифметика, счётчики пакетов.\n\n**Почему `std::clamp` — НЕ замена:**\n```cpp\n// НЕПРАВИЛЬНО: сложение выполняется ДО зажима — UB для int!\nint result = std::clamp(INT_MAX + 1, INT_MIN, INT_MAX);\n\n// ПРАВИЛЬНО: add_sat выполняет арифметику без UB\nint result = std::add_sat(INT_MAX, 1); // = INT_MAX\n```\nОперация `a + b` вычисляется до того, как `clamp` получит шанс что-то зажать. Насыщающие функции работают внутри, не допуская переполнения.\n\n---\n\n## Пять функций из `<numeric>` (C++26, P0543)\n\n### Арифметические функции (теоретически, не компилируются в GCC trunk)\n\nВсе четыре требуют **одинаковый тип** для обоих операндов (нельзя смешивать `int8_t` и `int`):\n\n```cpp\n// spec-based — не работает в GCC trunk на момент написания\n#include <numeric>\n\nint8_t  a = std::add_sat(int8_t(120),  int8_t(20));   // 127 (насыщение)\nuint8_t b = std::sub_sat(uint8_t(0),   uint8_t(1));   // 0   (насыщение снизу)\nint     c = std::mul_sat(100000,       100000);        // INT_MAX\nint     d = std::div_sat(INT_MIN,      -1);            // INT_MAX (избегает UB)\n```\n\n| Функция | Описание |\n|---|---|\n| `std::add_sat(a, b)` | `a + b`, зажатое в `[min, max]` типа |\n| `std::sub_sat(a, b)` | `a - b`, насыщение |\n| `std::mul_sat(a, b)` | `a * b`, насыщение |\n| `std::div_sat(a, b)` | `a / b`, насыщение (`INT_MIN / -1` → `INT_MAX`, а не UB) |\n\nВсе работают как для **signed**, так и для **unsigned** целых:\n- `sub_sat(0u, 1u)` → `0` (без wrap-around в `UINT_MAX`)\n- `add_sat(INT_MAX, 1)` → `INT_MAX` (без UB)\n\n### `std::saturating_cast<T>(x)` — работает в GCC trunk ✅\n\nНасыщающее приведение типа: преобразует любое целое `x` к типу `T`, зажимая значение вместо усечения или UB:\n\n```cpp\n#include <numeric>\n\nauto a = std::saturating_cast<uint8_t>(300);  // 255  (max uint8_t)\nauto b = std::saturating_cast<int8_t>(-200);  // -128 (min int8_t)\nauto c = std::saturating_cast<int>(9999999999LL); // INT_MAX\n```\n\n**Отличие от `static_cast`:** `static_cast<uint8_t>(300)` — implementation-defined при усечении; `saturating_cast<uint8_t>(300)` — всегда `255`, гарантировано стандартом.\n\n---\n\n## Правило насыщения\n\nЕсли математический результат выходит за диапазон `[std::numeric_limits<T>::min(), std::numeric_limits<T>::max()]`:\n- Превышение max → возвращается `max`\n- Уход ниже min → возвращается `min`\n- Никакого UB, никакого wrap-around\n\n---\n\n## Практические сценарии\n\n- **Аудио-микширование:** сложение двух `int16_t` сэмплов → зажать в `[-32768, 32767]` вместо клиппингового хруста\n- **Яркость пикселей:** добавить дельту яркости к `uint8_t` → зажать в `[0, 255]`\n- **Длины пакетов:** сложение длин не должно переполнять `uint32_t`\n- **Фиксированная точка:** промежуточные результаты надёжно зажимаются перед упаковкой обратно в узкий тип",
+      "examples": [
+        {
+          "id": "m8-l3-ex1",
+          "title": "Базовый: saturating_cast для разных типов",
+          "level": "basic",
+          "description": "Демонстрация `std::saturating_cast` для значений, выходящих за диапазон целевого типа.",
+          "code": "#include <numeric>\n#include <print>\n\nint main() {\n    auto a = std::saturating_cast<unsigned char>(300);\n    auto b = std::saturating_cast<signed char>(-200);\n    auto c = std::saturating_cast<int>(9999999999LL);\n    std::println(\"{} {} {}\", (int)a, (int)b, c);\n}",
+          "expectedOutput": "255 -128 2147483647"
+        },
+        {
+          "id": "m8-l3-ex2",
+          "title": "Продвинутый: коррекция яркости пикселей",
+          "level": "advanced",
+          "description": "Функция добавляет дельту яркости к массиву пикселей (0–255) с насыщением вместо переполнения. `saturating_cast<unsigned char>` гарантирует, что результат всегда остаётся в `[0, 255]`.",
+          "code": "#include <numeric>\n#include <array>\n#include <print>\n\n// Добавляем дельту яркости к пикселям (0-255) с насыщением\nstd::array<unsigned char, 4> add_brightness(\n    std::array<unsigned char, 4> pixels, int delta)\n{\n    std::array<unsigned char, 4> result;\n    for (int i = 0; i < 4; ++i)\n        result[i] = std::saturating_cast<unsigned char>(\n            (int)pixels[i] + delta);\n    return result;\n}\n\nint main() {\n    auto pixels = std::array<unsigned char, 4>{200, 100, 50, 240};\n    auto bright = add_brightness(pixels, 80);\n    for (auto p : bright)\n        std::print(\"{} \", (int)p);\n    std::println(\"\");\n}",
+          "expectedOutput": "255 180 130 255"
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l3-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "Что выведет программа?",
+          "code": "#include <numeric>\n#include <print>\nint main() {\n    auto a = std::saturating_cast<unsigned char>(256);\n    auto b = std::saturating_cast<unsigned char>(0);\n    std::println(\"{} {}\", (int)a, (int)b);\n}",
+          "expectedOutput": "255 0"
+        },
+        {
+          "id": "m8-l3-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "Что вернёт `std::add_sat(INT_MAX, 1)` для типа `int`?",
+          "options": [
+            "INT_MIN (оборачивается)",
+            "Неопределённое поведение",
+            "INT_MAX (насыщение)",
+            "0"
+          ],
+          "answerIndex": 2
+        },
+        {
+          "id": "m8-l3-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "В коде ниже есть ошибка. Найдите строку, где возникает неопределённое поведение.",
+          "code": "#include <numeric>\n#include <climits>\n#include <print>\n\nint main() {\n    // Safely add two large numbers without overflow\n    int a = INT_MAX;\n    int b = 1;\n    int result = std::clamp(a + b, INT_MIN, INT_MAX); // safe saturation?\n    std::println(\"{}\", result);\n}",
+          "answerLine": 9,
+          "explanation": "Строка 9: `a + b` вычисляет `INT_MAX + 1` до вызова `std::clamp`. Это переполнение знакового целого — **неопределённое поведение** в C++. `std::clamp` получит уже испорченный результат. Правильное решение: `std::add_sat(a, b)`, которая выполняет насыщающее сложение без UB."
+        },
+        {
+          "id": "m8-l3-e4",
+          "type": "choice",
+          "level": "advanced",
+          "prompt": "Чем `std::saturating_cast<uint8_t>(300)` отличается от `static_cast<uint8_t>(300)`?",
+          "options": [
+            "Они эквивалентны — оба возвращают 255",
+            "`static_cast` — implementation-defined при усечении; `saturating_cast` гарантированно возвращает 255 (зажимает к max)",
+            "`saturating_cast` бросает исключение при переполнении",
+            "`static_cast` вызывает UB для unsigned-типов"
+          ],
+          "answerIndex": 1
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Что произойдёт с `std::sub_sat(uint8_t(0), uint8_t(1))`?",
+            "options": [
+              "255 (беззнаковое переполнение)",
+              "0 (насыщение снизу)",
+              "Неопределённое поведение",
+              "-1 (знаковое расширение)"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Почему `std::clamp(a + b, INT_MIN, INT_MAX)` НЕ является безопасной заменой `std::add_sat(a, b)` для `int`?",
+            "options": [
+              "Потому что clamp не работает с int",
+              "Потому что сложение `a + b` может вызвать UB до того, как clamp получит результат",
+              "Потому что clamp насыщает по-другому",
+              "Они эквивалентны — оба безопасны"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Для каких типов работают функции `add_sat`, `sub_sat`, `mul_sat`, `div_sat`?",
+            "options": [
+              "Только для unsigned-типов",
+              "Только для signed-типов (int, long)",
+              "Для любых целочисленных типов (signed и unsigned)",
+              "Для любых арифметических типов, включая float"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Аудио-микшер с насыщением",
+        "description": "Напишите функцию `audio_mix`, которая принимает два `int16_t` аудиосэмпла и возвращает их насыщающую сумму, зажатую в диапазоне `[-32768, 32767]`. Используйте `std::saturating_cast`.\n\nПроверьте на трёх случаях:\n- `audio_mix(30000, 30000)` → насыщение до максимума\n- `audio_mix(-30000, -30000)` → насыщение до минимума\n- `audio_mix(100, 200)` → обычное сложение без насыщения",
+        "starterCode": "#include <numeric>\n#include <cstdint>\n#include <print>\n\nint16_t audio_mix(int16_t a, int16_t b) {\n    // TODO: вернуть насыщающую сумму a + b в диапазоне int16_t\n}\n\nint main() {\n    std::println(\"{}\", audio_mix(30000, 30000));\n    std::println(\"{}\", audio_mix(-30000, -30000));\n    std::println(\"{}\", audio_mix(100, 200));\n}",
+        "referenceSolution": "#include <numeric>\n#include <cstdint>\n#include <print>\n\nint16_t audio_mix(int16_t a, int16_t b) {\n    return std::saturating_cast<int16_t>((int)a + (int)b);\n}\n\nint main() {\n    std::println(\"{}\", audio_mix(30000, 30000));   // насыщение до 32767\n    std::println(\"{}\", audio_mix(-30000, -30000)); // насыщение до -32768\n    std::println(\"{}\", audio_mix(100, 200));       // нет насыщения: 300\n}",
+        "expectedOutput": "32767\n-32768\n300",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m8-l4",
+      "title": "Битовые утилиты: <bit> и <stdbit.h>",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Почему нужны битовые утилиты\n\nДо C++20 для подсчёта битов и операций над ними использовались нестандартные расширения компилятора: `__builtin_popcount`, `__builtin_clz`, `_BitScanReverse` (MSVC) и подобные. Они непереносимы и не дают гарантий о поведении для различных типов.\n\nC++20 исправил это, добавив заголовок **`<bit>`** — портируемый, стандартный интерфейс для битовых манипуляций. C++26 добавляет **`<stdbit.h>`** (P1956) — C-совместимый аналог для кода, разделяемого между C23 и C++26.\n\n---\n\n## `<bit>` — основной C++ API (с C++20)\n\nВсе функции работают **только с беззнаковыми целыми типами** (`unsigned char`, `unsigned short`, `unsigned int`, `unsigned long`, `unsigned long long`). Передача знакового типа — **ошибка компиляции**.\n\n| Функция | Описание |\n|---|---|\n| `std::popcount(x)` | Количество единичных битов |\n| `std::countl_zero(x)` | Количество ведущих нулей |\n| `std::countl_one(x)` | Количество ведущих единиц |\n| `std::countr_zero(x)` | Количество хвостовых нулей (индекс младшего установленного бита) |\n| `std::countr_one(x)` | Количество хвостовых единиц |\n| `std::has_single_bit(x)` | Является ли x степенью двойки (ровно один бит установлен)? |\n| `std::bit_ceil(x)` | Наименьшая степень двойки ≥ x |\n| `std::bit_floor(x)` | Наибольшая степень двойки ≤ x |\n| `std::bit_width(x)` | Минимальное число бит для представления x: ⌊log₂(x)⌋ + 1 |\n| `std::rotl(x, n)` | Циклический сдвиг влево на n бит |\n| `std::rotr(x, n)` | Циклический сдвиг вправо на n бит |\n\n---\n\n## `<stdbit.h>` — C-совместимый слой (C++26)\n\nC++26 вводит заголовок `<stdbit.h>`, зеркалирующий `<bit>` с именами из стандарта C23:\n\n- `stdc_popcount(x)`, `stdc_leading_zeros(x)`, `stdc_trailing_zeros(x)`\n- `stdc_leading_ones(x)`, `stdc_trailing_ones(x)`\n- `stdc_bit_ceil(x)`, `stdc_bit_floor(x)`, `stdc_bit_width(x)`\n- `stdc_has_single_bit(x)`, `stdc_rotate_left(x, n)`, `stdc_rotate_right(x, n)`\n\nВ C23 они реализованы как `_Generic`-макросы. В C++26 — как шаблоны функций с теми же семантиками.\n\n**Когда использовать `<stdbit.h>`**: при написании заголовков, общих для C23 и C++26 (например, встроенный firmware или кросс-языковые библиотеки). Для чистого C++-кода всегда предпочитайте `<bit>`.\n\n> Примечание: `<stdbit.h>` ещё не реализован в GCC trunk на момент написания — примеры в теории основаны на спецификации.",
+      "examples": [
+        {
+          "title": "Базовые операции: popcount, ведущие нули, степень двойки",
+          "level": "basic",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    unsigned int x = 0b10110101u;\n    std::println(\"popcount: {}\", std::popcount(x));\n    std::println(\"leading zeros: {}\", std::countl_zero(x));\n    std::println(\"is power of 2: {}\", std::has_single_bit(x));\n\n    unsigned int y = 64u; // 0b01000000\n    std::println(\"popcount(64): {}\", std::popcount(y));\n    std::println(\"is power of 2(64): {}\", std::has_single_bit(y));\n}",
+          "expectedOutput": "popcount: 5\nleading zeros: 24\nis power of 2: false\npopcount(64): 1\nis power of 2(64): true",
+          "explanation": "0b10110101 содержит 5 единичных битов. В 32-битном unsigned int значение 181 занимает младшие 8 бит, поэтому ведущих нулей 24. 64 = 2⁶ — степень двойки, поэтому has_single_bit возвращает true."
+        },
+        {
+          "title": "Округление до степени двойки и циклические сдвиги",
+          "level": "advanced",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    unsigned int x = 5u;\n    std::println(\"bit_ceil(5): {}\", std::bit_ceil(x));     // next power of 2 >= 5\n    std::println(\"bit_floor(5): {}\", std::bit_floor(x));   // largest power of 2 <= 5\n    std::println(\"bit_width(5): {}\", std::bit_width(x));   // bits needed to represent 5\n\n    unsigned char b = 0b10110001u;\n    std::println(\"rotl(0b10110001, 2): {:08b}\", std::rotl(b, 2));\n    std::println(\"rotr(0b10110001, 2): {:08b}\", std::rotr(b, 2));\n}",
+          "expectedOutput": "bit_ceil(5): 8\nbit_floor(5): 4\nbit_width(5): 3\nrotl(0b10110001, 2): 11000110\nrotr(0b10110001, 2): 01101100",
+          "explanation": "5 → ближайшая сверху степень двойки: 8 (2³); снизу: 4 (2²). bit_width(5) = ⌊log₂5⌋ + 1 = 2 + 1 = 3. Циклический сдвиг 0b10110001 влево на 2: старшие 2 бита (10) переходят в младшие → 0b11000110. Вправо на 2: младшие 2 бита (01) переходят в старшие → 0b01101100."
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m8-l4-e1",
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "Что выведет следующий код?",
+          "code": "#include <bit>\n#include <print>\nint main() {\n    std::println(\"{}\", std::popcount(0b10110101u));\n    std::println(\"{}\", std::countr_zero(0b10110100u));\n}",
+          "expectedOutput": "5\n2"
+        },
+        {
+          "id": "m8-l4-e2",
+          "type": "choice",
+          "level": "basic",
+          "prompt": "Что вернёт `std::countl_zero(1u)` для 32-битного `unsigned int`?",
+          "options": [
+            "0",
+            "1",
+            "31",
+            "32"
+          ],
+          "answerIndex": 2,
+          "explanation": "Число 1 в двоичном виде: 0b00000000000000000000000000000001. Все биты, кроме последнего, равны нулю — итого 31 ведущий ноль."
+        },
+        {
+          "id": "m8-l4-e3",
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "На какой строке ошибка и почему?",
+          "code": "#include <bit>\n#include <print>\n\nint main() {\n    int x = -5;\n    std::println(\"{}\", std::popcount(x)); // count set bits\n}",
+          "answerLine": 6,
+          "explanation": "std::popcount требует беззнакового целого типа. Передача знакового `int` является ошибкой компиляции согласно стандарту C++20/26. Исправление: `std::popcount(static_cast<unsigned int>(x))` или объявить x как `unsigned int`."
+        },
+        {
+          "id": "m8-l4-e4",
+          "type": "predict-output",
+          "level": "advanced",
+          "prompt": "Что выведет следующий код?",
+          "code": "#include <bit>\n#include <print>\nint main() {\n    std::println(\"{}\", std::bit_ceil(8u));\n    std::println(\"{}\", std::bit_ceil(9u));\n    std::println(\"{}\", std::bit_floor(15u));\n}",
+          "expectedOutput": "8\n16\n8"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Зачем в C++26 добавили `<stdbit.h>`, если уже есть `<bit>` с C++20?",
+            "options": [
+              "`<stdbit.h>` — более быстрая версия `<bit>`",
+              "`<stdbit.h>` — C-совместимый аналог для кода, разделяемого между C23 и C++26",
+              "`<bit>` устарел и заменён `<stdbit.h>`",
+              "`<stdbit.h>` поддерживает знаковые (signed) типы, а `<bit>` — нет"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что вернёт `std::has_single_bit(0u)`?",
+            "options": [
+              "true",
+              "false",
+              "Неопределённое поведение",
+              "Ошибка компиляции"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "Что произойдёт при вызове `std::popcount(-1)`?",
+            "options": [
+              "Вернёт 32 (для 32-битного int)",
+              "Вернёт количество единичных битов в дополнительном коде",
+              "Ошибка компиляции: popcount требует unsigned-тип",
+              "Неопределённое поведение"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Выравнивание до степени двойки",
+        "description": "Напишите функцию `next_aligned_size(size_t n)`, которая возвращает наименьшую степень двойки, не меньшую n. Используйте `std::bit_ceil`. Проверьте её на нескольких значениях, включая 0.",
+        "starterCode": "#include <bit>\n#include <print>\n\nsize_t next_aligned_size(size_t n) {\n    // ваш код здесь\n}\n\nint main() {\n    std::println(\"{}\", next_aligned_size(0));\n    std::println(\"{}\", next_aligned_size(1));\n    std::println(\"{}\", next_aligned_size(5));\n    std::println(\"{}\", next_aligned_size(8));\n    std::println(\"{}\", next_aligned_size(9));\n}",
+        "referenceSolution": "#include <bit>\n#include <print>\n\nsize_t next_aligned_size(size_t n) {\n    return n == 0 ? 1 : std::bit_ceil(n);\n}\n\nint main() {\n    std::println(\"{}\", next_aligned_size(0));\n    std::println(\"{}\", next_aligned_size(1));\n    std::println(\"{}\", next_aligned_size(5));\n    std::println(\"{}\", next_aligned_size(8));\n    std::println(\"{}\", next_aligned_size(9));\n}",
+        "expectedOutput": "1\n1\n8\n8\n16",
+        "godboltLink": null
+      }
+    }
   ]
 }

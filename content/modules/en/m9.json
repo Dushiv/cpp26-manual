@@ -4,5 +4,7 @@
   "title": "Low-level concurrency",
   "significance": "special",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m9-l1", "title": "std::hazard_pointer", "stub": true }
+  ]
 }
