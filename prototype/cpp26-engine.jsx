@@ -271,15 +271,51 @@ function Markdown({ text }) {
   const fence = /```(\w*)\n([\s\S]*?)```/g;
   let last = 0, m;
   while ((m = fence.exec(text)) !== null) {
-    if (m.index > last) segs.push({ t: "p", c: text.slice(last, m.index) });
+    if (m.index > last) segs.push({ t: "text", c: text.slice(last, m.index) });
     segs.push({ t: "code", c: m[2].replace(/\n$/, "") });
     last = fence.lastIndex;
   }
-  if (last < text.length) segs.push({ t: "p", c: text.slice(last) });
+  if (last < text.length) segs.push({ t: "text", c: text.slice(last) });
+
+  const isSep = l => l.includes("-") && /^\|?[\s:|-]+\|?$/.test(l.trim());
+  const isPipe = l => l.trim().startsWith("|");
+
+  function block(b, key) {
+    const lines = b.split("\n").filter(l => l.trim());
+    if (!lines.length) return null;
+    // heading
+    const hm = lines.length === 1 && lines[0].match(/^(#{1,4}) (.+)/);
+    if (hm) {
+      const Tag = hm[1].length <= 2 ? "h3" : "h4";
+      return <Tag key={key} className={"md-h" + hm[1].length}>{renderInline(hm[2].trim(), key)}</Tag>;
+    }
+    // table
+    if (lines.some(isPipe)) {
+      const rows = lines.filter(l => !isSep(l) && isPipe(l));
+      if (rows.length >= 1) {
+        const cells = l => l.replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+        const [hdr, ...body] = rows;
+        return (
+          <table key={key} className="md-tbl">
+            <thead><tr>{cells(hdr).map((c, i) => <th key={i}>{renderInline(c, key + "h" + i)}</th>)}</tr></thead>
+            {body.length > 0 && <tbody>{body.map((r, ri) => <tr key={ri}>{cells(r).map((c, ci) => <td key={ci}>{renderInline(c, key + ri + ci)}</td>)}</tr>)}</tbody>}
+          </table>
+        );
+      }
+    }
+    // unordered list
+    if (lines.every(l => /^[-*] /.test(l.trim())))
+      return <ul key={key} className="md-ul">{lines.map((l, i) => <li key={i}>{renderInline(l.trim().slice(2), key + i)}</li>)}</ul>;
+    // ordered list
+    if (lines.every(l => /^\d+[.)]\s/.test(l.trim())))
+      return <ol key={key} className="md-ol">{lines.map((l, i) => <li key={i}>{renderInline(l.trim().replace(/^\d+[.)]\s/, ""), key + i)}</li>)}</ol>;
+    // paragraph
+    return <p key={key} className="lp">{renderInline(lines.join(" "), key)}</p>;
+  }
+
   return <>{segs.map((s, si) => s.t === "code"
     ? <CodeBlock key={si} code={s.c} />
-    : s.c.split(/\n\n+/).filter((p) => p.trim()).map((p, pi) =>
-        <p key={si + "-" + pi} className="lp">{renderInline(p, si + "-" + pi + "-")}</p>))}</>;
+    : s.c.split(/\n\n+/).filter(b => b.trim()).map((b, bi) => block(b, si + "-" + bi)))}</>;
 }
 
 function ExampleCard({ ex, idx }) {
@@ -961,6 +997,14 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .thr { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber); font-weight:400; }
 .lp { margin:0 0 13px; }
 .ic { background:var(--codebg); border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:.9em; color:#e3c98c; }
+.md-h2 { font-size:17px; font-weight:700; margin:22px 0 8px; }
+.md-h3, .md-h4 { font-size:14px; font-weight:700; margin:18px 0 6px; color:var(--ink); }
+.md-ul, .md-ol { margin:0 0 13px 22px; padding:0; }
+.md-ul li, .md-ol li { margin-bottom:5px; line-height:1.55; }
+.md-tbl { border-collapse:collapse; width:100%; margin:0 0 16px; font-size:13px; }
+.md-tbl th, .md-tbl td { border:1px solid var(--line); padding:6px 12px; text-align:left; vertical-align:top; }
+.md-tbl th { background:var(--panel2); font-weight:600; }
+.md-tbl tr:nth-child(even) td { background:rgba(255,255,255,.02); }
 
 .cb { background:var(--codebg); border:1px solid var(--line); border-radius:10px; padding:14px 16px; overflow-x:auto; margin:0 0 12px; font-size:13px; line-height:1.55; }
 .cb code { color:#dcd5ca; white-space:pre; }
