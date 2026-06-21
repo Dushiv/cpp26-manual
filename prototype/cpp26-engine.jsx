@@ -760,6 +760,7 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
   strict, setStrict, session, signIn, signOut, lesson, st, doneCount, real, skippedItems,
   moduleSkips, lessonStatus, resolveEx, skipEx, unskipEx, passMastery }) {
   const t = useT();
+  useEffect(() => { window.scrollTo(0, 0); }, [cur]);
   const isFlagship = (sig) => /флагман|flagship/i.test(sig);
   return (
     <div className="app">
