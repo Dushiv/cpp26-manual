@@ -4,5 +4,7 @@
   "title": "Numerics and performance",
   "significance": "important",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m8-l1", "title": "std::simd", "stub": true }
+  ]
 }

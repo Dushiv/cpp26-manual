@@ -5,6 +5,363 @@
   "significance": "important",
   "prerequisites": [],
   "lessons": [
-    { "id": "m7-l1", "title": "std::inplace_vector", "stub": true }
+    {
+      "id": "m7-l1",
+      "title": "std::inplace_vector",
+      "theory": "## Why `std::inplace_vector`?\n\n`std::vector` is powerful, but it has one unavoidable trait: **it always allocates on the heap**. In many scenarios, this is unacceptable:\n\n- **Embedded systems** where heap allocation is forbidden or expensive\n- **Hot loops** where allocation latency is prohibitive\n- **Stack-local buffers**: temporary arrays with a known maximum size\n- **Real-time systems**: code where exceptions are disabled or blocking is forbidden\n\nBefore C++26, workarounds included `std::array<T, N>` (fixed size, not dynamic) or manual `T buf[N]; size_t n = 0;` tricks (no iterator support, no STL algorithms).\n\nC++26 solves this with `std::inplace_vector<T, N>` (P0843R10).\n\n---\n\n## `std::inplace_vector<T, N>`\n\n`inplace_vector<T, N>` is a vector stored **entirely inline** (on the stack or inside a parent object), with zero heap allocation:\n\n- **Capacity fixed** at compile time: always equals `N`\n- **Size is dynamic**: `size()` ranges from 0 to N\n- Include via `#include <inplace_vector>`\n\n```cpp\n#include <inplace_vector>\n\nstd::inplace_vector<int, 4> v; // buffer for 4 ints, currently empty\nv.push_back(1);\nv.push_back(2);\n// v.size() == 2, v.capacity() == 4\n```\n\n---\n\n## `inplace_vector` vs `array` vs `vector`\n\n| Property | `inplace_vector<T,N>` | `array<T,N>` | `vector<T>` |\n|---|---|---|---|\n| Storage | Inline (stack/struct) | Inline (stack/struct) | Heap |\n| Capacity | Fixed (`N`) | Fixed (`N`) | Dynamic |\n| Size | Dynamic (0..N) | Always `N` | Dynamic |\n| `push_back` | Yes (throws on overflow) | No | Yes (reallocates) |\n| Allocations | Never | Never | Always |\n| Non-std analog | — | — | `boost::container::small_vector` |\n\nKey difference from `array`: `array` **always has size N**, all N elements are initialized. `inplace_vector` starts at size 0 and grows dynamically, just like `vector`.\n\n---\n\n## Construction\n\n```cpp\nstd::inplace_vector<int, 6> a;              // empty, size=0\nstd::inplace_vector<int, 6> b = {1, 2, 3}; // from initializer_list, size=3\nstd::inplace_vector<int, 6> c(4, 0);       // four zeros\n```\n\nIf an initializer_list has more than N elements, `std::bad_alloc` is thrown.\n\n---\n\n## Adding elements\n\n### Throwing variants\n\n- `push_back(v)` — appends an element; throws `std::bad_alloc` if `size() == N`\n- `emplace_back(args...)` — constructs in-place; same semantics\n\n```cpp\nstd::inplace_vector<int, 3> v;\nv.push_back(1);   // OK\nv.push_back(2);   // OK\nv.push_back(3);   // OK\nv.push_back(4);   // std::bad_alloc!\n```\n\n### Non-throwing variants: `try_push_back` and `try_emplace_back`\n\nReturn `std::optional<T&>`: a reference to the inserted element, or `std::nullopt` on overflow:\n\n```cpp\nstd::inplace_vector<int, 2> v;\nauto r1 = v.try_push_back(10); // r1.has_value() == true\nauto r2 = v.try_push_back(20); // r2.has_value() == true\nauto r3 = v.try_push_back(30); // r3.has_value() == false (overflow)\n```\n\nThese variants are critical for embedded and real-time code where exceptions are disabled.\n\n---\n\n## Other operations\n\n- `pop_back()` — removes the last element\n- `resize(n)` / `resize(n, val)` — resizes; throws `std::bad_alloc` if `n > N`\n- `clear()` — empties the container (size=0)\n- `erase(it)`, `insert(it, v)` — standard operations\n\n---\n\n## Capacity and iterators\n\n- `capacity()` — **always equals N** (compile-time constant)\n- `max_size()` — also N\n- `reserve(k)` — **throws `std::bad_alloc` if `k > N`**; this is not a silent no-op!\n- `data()` — pointer is stable **forever** (reallocation is impossible)\n- Iterators are contiguous (like `std::vector`)\n\n---\n\n## Trivial relocatability\n\nIf `T` is trivially relocatable, `inplace_vector<T, N>` is too. This matters for efficient move operations on the entire container.\n\n---\n\n## Typical use cases\n\n- **Parser token buffers**: `inplace_vector<Token, 64>` with no allocations\n- **SIMD batches**: `inplace_vector<float, 8>` for SIMD processing\n- **Embedded systems**: strict memory budget\n- **Hot paths**: local temporary collections with a known maximum size",
+      "background": null,
+      "outputsVerified": true,
+      "examples": [
+        {
+          "id": "m7-l1-ex1",
+          "level": "basic",
+          "title": "Basic usage",
+          "code": "#include <inplace_vector>\n#include <print>\n\nint main() {\n    std::inplace_vector<int, 4> v;\n    v.push_back(10);\n    v.push_back(20);\n    v.push_back(30);\n    std::println(\"size={} capacity={}\", v.size(), v.capacity());\n    for (int x : v)\n        std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "size=3 capacity=4\n10 20 30 "
+        },
+        {
+          "id": "m7-l1-ex2",
+          "level": "basic",
+          "title": "try_push_back: non-throwing insertion",
+          "code": "#include <inplace_vector>\n#include <print>\n\nint main() {\n    std::inplace_vector<int, 2> v;\n    auto r1 = v.try_push_back(1);\n    auto r2 = v.try_push_back(2);\n    auto r3 = v.try_push_back(3); // overflow\n    std::println(\"r1={} r2={} r3={}\",\n        r1.has_value(), r2.has_value(), r3.has_value());\n}",
+          "expectedOutput": "r1=true r2=true r3=false"
+        },
+        {
+          "id": "m7-l1-ex3",
+          "level": "advanced",
+          "title": "Sorting and dynamic growth",
+          "code": "#include <inplace_vector>\n#include <algorithm>\n#include <print>\n\nint main() {\n    std::inplace_vector<int, 6> v = {5, 3, 1, 4, 2};\n    std::sort(v.begin(), v.end());\n    v.push_back(6);\n    std::println(\"size={}\", v.size());\n    for (int x : v)\n        std::print(\"{} \", x);\n    std::println(\"\");\n    return 0;\n}",
+          "expectedOutput": "size=6\n1 2 3 4 5 6 "
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m7-l1-e1",
+          "level": "basic",
+          "type": "predict-output",
+          "prompt": "What does this program print?",
+          "code": "#include <inplace_vector>\n#include <print>\nint main() {\n    std::inplace_vector<int, 3> v = {1, 2, 3};\n    v.pop_back();\n    std::println(\"{} {}\", v.size(), v.capacity());\n}",
+          "expectedOutput": "2 3"
+        },
+        {
+          "id": "m7-l1-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What happens when you call `push_back` on a full `inplace_vector` (size == N)?",
+          "options": [
+            "The element is silently dropped",
+            "Returns std::nullopt",
+            "Throws std::bad_alloc",
+            "Reallocates to a larger heap buffer"
+          ],
+          "answerIndex": 2
+        },
+        {
+          "id": "m7-l1-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Which line contains the bug?",
+          "code": "#include <inplace_vector>\n#include <print>\nint main() {\n    std::inplace_vector<int, 3> v = {10, 20, 30};\n    v.reserve(6); // trying to increase capacity\n    v.push_back(40);\n    std::println(\"{}\", v.size());\n}",
+          "answerLine": 5,
+          "explanation": "`reserve(n)` on `inplace_vector` throws `std::bad_alloc` when `n > N` (here N=3 and 6>3). Unlike `std::vector`, it cannot grow its storage. The fix: don't call `reserve` at all (capacity is already fixed at N), or switch to `std::vector` if you need dynamic growth."
+        },
+        {
+          "id": "m7-l1-e4",
+          "level": "advanced",
+          "type": "predict-output",
+          "prompt": "What does this program print?",
+          "code": "#include <inplace_vector>\n#include <print>\nint main() {\n    std::inplace_vector<int, 4> v;\n    for (int i = 0; i < 4; ++i)\n        v.try_push_back(i * i);\n    auto extra = v.try_push_back(99);\n    std::println(\"extra={} back={}\", extra.has_value(), v.back());\n    return 0;\n}",
+          "expectedOutput": "extra=false back=9"
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "What does `try_push_back` return when the `inplace_vector` is full?",
+            "options": [
+              "A reference to the last element",
+              "std::nullopt (empty optional)",
+              "Throws std::bad_alloc",
+              "false"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What is the key difference between `inplace_vector<T,N>` and `array<T,N>`?",
+            "options": [
+              "inplace_vector does not support iterators",
+              "inplace_vector stores elements on the heap",
+              "inplace_vector has a dynamic size ≤ N, while array always has size N",
+              "array supports push_back but inplace_vector does not"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What happens when `push_back` is called on a full `inplace_vector`?",
+            "options": [
+              "The element is silently ignored",
+              "The container reallocates on the heap",
+              "std::bad_alloc is thrown",
+              "Undefined behavior"
+            ],
+            "answerIndex": 2
+          },
+          {
+            "type": "choice",
+            "prompt": "What is `capacity()` always equal to for `inplace_vector<T, N>`?",
+            "options": [
+              "The current number of elements",
+              "N",
+              "The size in bytes",
+              "Implementation-defined"
+            ],
+            "answerIndex": 1
+          }
+        ]
+      },
+      "challenge": {
+        "title": "Top-5 without heap allocation",
+        "description": "Write a function `top_k` that takes a range of integers and returns an `inplace_vector<int, 5>` containing the five largest values sorted in descending order, using no heap allocation. Handle the case where the range has fewer than 5 elements.\n\nHint: use a min-heap (`std::push_heap` / `std::pop_heap` with `std::greater<>`) to track the running top-5.",
+        "starterCode": "#include <inplace_vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nstd::inplace_vector<int, 5> top_k(std::ranges::input_range auto&& r) {\n    // your code here\n}\n\nint main() {\n    int data[] = {3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5};\n    auto top = top_k(data);\n    for (int x : top) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+        "referenceSolution": "#include <inplace_vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nstd::inplace_vector<int, 5> top_k(std::ranges::input_range auto&& r) {\n    std::inplace_vector<int, 5> result;\n    for (int x : r) {\n        if (result.size() < 5) {\n            result.push_back(x);\n            std::push_heap(result.begin(), result.end(), std::greater<>{});\n        } else if (x > result.front()) {\n            std::pop_heap(result.begin(), result.end(), std::greater<>{});\n            result.back() = x;\n            std::push_heap(result.begin(), result.end(), std::greater<>{});\n        }\n    }\n    std::sort_heap(result.begin(), result.end(), std::greater<>{});\n    return result;\n}\n\nint main() {\n    int data[] = {3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5};\n    auto top = top_k(data);\n    for (int x : top) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+        "expectedOutput": "9 6 5 5 5 ",
+        "godboltLink": null
+      }
+    },
+    {
+      "id": "m7-l2",
+      "title": "std::hive",
+      "background": null,
+      "outputsVerified": false,
+      "theory": "**Note:** `std::hive` is proposed for C++26 (P0447) but has not yet been implemented by any compiler. Code examples follow the proposal specification.\n\n---\n\n## The Cache-vs-Stability Dilemma\n\nC++ programmers are well acquainted with the fundamental trade-off between two standard containers:\n\n- **`std::vector`** — the gold standard for cache-friendliness: elements reside in a contiguous memory block, so iteration is a sequential scan of cache lines. But any insertion in the middle shifts all subsequent elements, and buffer growth (reallocation) invalidates **every** iterator, pointer, and reference at once.\n\n- **`std::list`** — guarantees stability: insertion and erasure anywhere leave neighboring elements and their iterators/pointers untouched. But every node is a separate heap object, so iteration is a chain of scattered memory accesses — \"pointer-chasing\" — and the CPU's prefetcher cannot predict the next address, leading to constant cache misses.\n\nBoth extremes are unacceptable for a whole class of real-world systems: game engines, particle systems, physics simulations, ECS (Entity-Component-System) architectures — all of these need **simultaneously** fast iteration and stable element addresses (so that stored pointers/references never go stale).\n\nBefore C++26 this was solved by hand: \"slot maps\", \"pool allocators\", third-party libraries. `std::hive` standardizes the pattern.\n\n---\n\n## `std::hive<T>` — Overview (P0447)\n\n`std::hive` is a **sequence container** (not ordered by key) designed exactly for the scenario above:\n\n- insertion anywhere — **O(1) amortized**\n- erasure anywhere — **O(1)**\n- **stable** pointers and references to live elements\n- iteration remains reasonably cache-friendly\n\nTwo key mechanisms deliver all of these properties at once: **segmented storage** (blocks) and a **skipfield**.\n\n---\n\n## Internal Structure: Blocks and the Skipfield\n\nElements are not stored in a single contiguous buffer but in **fixed-size memory blocks** (segments). Each block has:\n\n1. An array of slots for elements of type `T`.\n2. A **skipfield** — a bit (or byte) array of the same length, where each entry marks whether its slot is occupied or a \"hole\".\n\nOn **insertion**: if a free slot exists (from a previous erasure) it is reused; otherwise the next free slot in the current block is taken, or a new block is allocated.\n\nOn **erasure**: nothing is physically shifted. The slot is marked as a hole in the skipfield. Its address does not change — therefore pointers to all remaining elements stay valid.\n\nOn **iteration**: the traversal algorithm reads the skipfield and \"jumps over\" holes without touching erased slots. Access within each block is still sequential, so cache behavior is good at the block granularity.\n\nThis mechanism explains the name: a \"hive\" is a cellular structure with gaps where each cell stays fixed in place.\n\n---\n\n## Key API\n\n```cpp\nstd::hive<T> h;                  // default-construct (empty)\n\nauto it = h.insert(value);       // insert, O(1) amortized\n                                 // returns iterator to the inserted element\nauto it = h.emplace(args...);    // insert with in-place construction\n\nh.erase(it);                     // erase by iterator, O(1)\n                                 // invalidates only it; all other iterators remain valid\n\nh.size();                        // number of live elements\nh.empty();                       // true if no elements\nh.max_size();                    // theoretical maximum\n\n// Iteration — holes are skipped automatically\nfor (auto& x : h) { ... }\n\nh.sort();                        // member sort (std::sort does not apply)\n```\n\n**What `std::hive` does NOT provide:**\n\n- `operator[]` and `at()` — no random access by index (holes between live elements mean numeric indices are not stable)\n- `push_back` / `push_front` — use `insert` instead\n- `std::sort(h.begin(), h.end())` — `hive` iterators do not satisfy the RandomAccessIterator requirement; use `h.sort()`\n\n---\n\n## Iterator Stability Guarantees\n\n| Operation | Iterators to other elements |\n|---|---|\n| `insert` / `emplace` | **Remain valid** ✅ |\n| `erase(it)` | Only `it` is invalidated; all others **remain valid** ✅ |\n\nFor comparison: `std::vector::push_back` invalidates **all** iterators when reallocation occurs; `insert` in the middle invalidates all iterators past the insertion point.\n\n---\n\n## Block Size Tuning\n\n`std::hive` accepts an optional third template parameter `BlockSizeLimits` to control minimum and maximum block sizes:\n\n```cpp\nstd::hive<int, std::allocator<int>, std::hive_limits<8, 512>> h;\n```\n\nSmaller blocks reduce memory overhead for sparse usage. Larger blocks improve cache behavior for dense usage. By default the implementation chooses sizes automatically.\n\n---\n\n## Comparison Table\n\n| Property | `vector` | `list` | `deque` | `hive` |\n|---|---|---|---|---|\n| Cache-friendly | ✅ full | ❌ | ✓ partial | ✓ per-block |\n| Stable pointers/references | ❌ (on realloc) | ✅ | ❌ | ✅ |\n| O(1) insert anywhere | ❌ | ✅ | ❌ | ✅ |\n| O(1) erase anywhere | ❌ | ✅ | ❌ | ✅ |\n| Random access by index | ✅ | ❌ | ✅ | ❌ |\n| Sort via `std::sort` | ✅ | ❌ | ✅ | ❌ (`.sort()` only) |\n\n---\n\n## When to Use `std::hive`\n\n- **Particle systems and game entities**: thousands of objects with frequent birth/death, need to iterate all live ones fast.\n- **ECS component stores**: components must have stable addresses (other systems hold pointers to them).\n- **Object pools** with arbitrary object lifetimes.\n- Any scenario requiring: **fast iteration + stable references + frequent arbitrary-position insert/erase**.",
+      "examples": [
+        {
+          "id": "m7-l2-ex1",
+          "level": "basic",
+          "title": "Basic insert and erase",
+          "code": "// Note: std::hive is not yet implemented in any compiler (P0447)\n// Code follows the proposal specification\n#include <hive>\n#include <print>\n\nint main() {\n    std::hive<int> h;\n    auto it1 = h.insert(10);\n    auto it2 = h.insert(20);\n    auto it3 = h.insert(30);\n\n    h.erase(it2); // erase 20; it1 and it3 remain valid\n\n    std::println(\"size={}\", h.size()); // 2\n    for (int x : h)\n        std::print(\"{} \", x); // 10 30 (order may vary)\n    std::println(\"\");\n}",
+          "expectedOutput": ""
+        },
+        {
+          "id": "m7-l2-ex2",
+          "level": "advanced",
+          "title": "Pointer stability through many insertions",
+          "code": "// Note: std::hive is not yet implemented in any compiler (P0447)\n// Code follows the proposal specification\n#include <hive>\n#include <print>\n#include <string>\n\nint main() {\n    std::hive<std::string> h;\n    auto it = h.insert(\"hello\");\n    const std::string* ptr = &(*it); // raw pointer to element\n\n    // Insert a thousand more elements — ptr stays valid\n    for (int i = 0; i < 1000; ++i)\n        h.insert(\"item\" + std::to_string(i));\n\n    // With std::vector, push_back could have invalidated ptr via reallocation.\n    // With std::hive, the element's address never changes.\n    std::println(\"{}\", *ptr); // still \"hello\"\n    std::println(\"size={}\", h.size()); // 1001\n}",
+          "expectedOutput": ""
+        }
+      ],
+      "exercises": [
+        {
+          "id": "m7-l2-e1",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "What does `h.insert(value)` return for `std::hive`?",
+          "options": [
+            "void",
+            "A pair {iterator, bool}",
+            "An iterator to the inserted element",
+            "The index of the inserted element"
+          ],
+          "answerIndex": 2,
+          "explanation": "`hive::insert` returns an iterator to the inserted element — unlike `std::set::insert` which returns a pair, and unlike `std::vector::push_back` which returns void."
+        },
+        {
+          "id": "m7-l2-e2",
+          "level": "basic",
+          "type": "choice",
+          "prompt": "Which of the following statements about `std::hive` is true?",
+          "options": [
+            "Inserting an element invalidates all existing iterators",
+            "Erasing an element invalidates only the iterator to that element",
+            "std::hive supports operator[]",
+            "std::hive guarantees strictly contiguous storage of all elements"
+          ],
+          "answerIndex": 1,
+          "explanation": "This is the defining property of `std::hive`: `erase(it)` invalidates only `it`; all other iterators and pointers stay valid. Insertion also does not invalidate existing iterators. `operator[]` is absent, and storage is segmented (not contiguous)."
+        },
+        {
+          "id": "m7-l2-e3",
+          "level": "advanced",
+          "type": "find-bug",
+          "prompt": "Find the bug in the following code:",
+          "code": "#include <hive>\n#include <algorithm>\n#include <print>\n\nint main() {\n    std::hive<int> h = {5, 3, 1, 4, 2};\n    std::sort(h.begin(), h.end()); // sort the hive\n    for (int x : h)\n        std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "answerLine": 7,
+          "explanation": "`std::sort` requires RandomAccessIterators, but `std::hive` iterators are not random-access. Use the member function `h.sort()` instead — it is part of the container's API for exactly this purpose, analogous to `std::list::sort()`."
+        },
+        {
+          "id": "m7-l2-e4",
+          "level": "advanced",
+          "type": "choice",
+          "prompt": "In which scenario is `std::hive` a better fit than `std::vector`?",
+          "options": [
+            "You need fast random access by index",
+            "You need stable pointers during frequent insertions and erasures at arbitrary positions",
+            "You need minimal per-element memory overhead",
+            "You need to sort the collection with std::sort"
+          ],
+          "answerIndex": 1,
+          "explanation": "`std::hive` is designed precisely for scenarios where element addresses must remain stable across active insertions and erasures. `std::vector` fails here because reallocation invalidates all pointers. Random access, minimal overhead, and `std::sort` are not strengths of `hive`."
+        }
+      ],
+      "masteryCheck": {
+        "passThreshold": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "Why does `std::hive` not provide `operator[]`?",
+            "options": [
+              "It saves memory",
+              "Elements have no stable numeric indices — there may be holes between live elements",
+              "For safety reasons",
+              "The designers simply did not add the method"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What happens to iterators pointing to other elements when `h.erase(it)` is called?",
+            "options": [
+              "All iterators are invalidated",
+              "Only iterator `it` becomes invalid; all others remain valid",
+              "Iterators in the same internal block are invalidated",
+              "Behavior is undefined"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "For which scenario is `std::hive` best suited?",
+            "options": [
+              "Storing elements sorted by key",
+              "Particle systems: thousands of objects with stable references and frequent insertions/erasures",
+              "Fast lookup by integer index",
+              "Thread-safe storage with locking"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "How do you sort `std::hive<int> h`?",
+            "options": [
+              "std::sort(h.begin(), h.end())",
+              "std::ranges::sort(h)",
+              "h.sort()",
+              "hive does not support sorting"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": null
+    },
+    {
+      "id": "m7-l3",
+      "title": "std::text_encoding",
+      "background": null,
+      "outputsVerified": true,
+      "theory": "## Motivation\n\nBefore C++26, C++ had no standard way to ask: \"What encoding are narrow string literals in this translation unit?\" Code that worked perfectly on Linux (UTF-8) could silently produce garbage on Windows (CP1252, CP1251) — or vice versa. Developers relied on `#ifdef _WIN32`, fragile string comparisons, or simply ignored the problem.\n\nC++26 adds `std::text_encoding` (P1885R4) — a type that names a character encoding via the IANA charset registry and gives a checkable answer right in code.\n\n## The class `std::text_encoding`\n\n`std::text_encoding` is a lightweight wrapper over an encoding identifier from the IANA registry. It is not directly constructible by users — static factory functions are used instead.\n\nThe key to it is the `.mib()` method, which returns a value of the `std::text_encoding::id` enumeration. MIBenum (Management Information Base enumeration) is a numeric identifier from the IANA registry — stable and platform-independent.\n\n## Key factory functions\n\n`std::text_encoding::literal()` — the encoding of **narrow string literals** (`char`) in the current translation unit. Determined at compile time by compiler flags (e.g., `-fexec-charset=UTF-8` for GCC). This is the encoding in which bytes of strings like `\"Hello, world\"` are stored in your binary.\n\nThe standard also describes `std::text_encoding::environment()` — the encoding of the runtime environment (locale). On Linux/macOS it is almost always UTF-8; on Windows it may be CP1252, CP1251, etc. **Note:** On Compiler Explorer (sandbox environment), `environment()` crashes due to sandbox restrictions — use it only in real applications.\n\n## The `std::text_encoding::id` enum\n\nThe `id` enumeration contains standard MIBenum values:\n\n| Value | MIB | Description |\n|---|---|---|\n| `id::UTF8` | 106 | UTF-8 |\n| `id::ISO_8859_1` | 4 | Latin-1 |\n| `id::UTF_16` | 1015 | UTF-16 |\n| `id::other` | 2 | Non-standard |\n| `id::unknown` | 0 | Unknown |\n\nThe correct way to check for UTF-8:\n\n```cpp\nauto enc = std::text_encoding::literal();\nbool is_utf8 = (enc.mib() == std::text_encoding::id::UTF8);\n```\n\n## Methods\n\n- `.name()` → `const char*` — the IANA name of the encoding (`\"UTF-8\"`, `\"ISO-8859-1\"`, `\"windows-1252\"`)\n- `.mib()` → `std::text_encoding::id` — the numeric MIBenum identifier\n- `operator==` / `operator!=` — comparison of two `text_encoding` objects\n\n## Practical use\n\nThis API is needed when code must know: \"Can I treat `char*` as UTF-8?\"\n\n```cpp\n// Anti-pattern — fragile:\nif (std::string(enc.name()) == \"UTF-8\") { ... }\n\n// Correct:\nif (enc.mib() == std::text_encoding::id::UTF8) { ... }\n```\n\nThe `enc.name()` string returns the canonical IANA name. UTF-8 has dozens of registered aliases (`\"utf-8\"`, `\"UTF8\"`, `\"csUTF8\"`), and string comparison only catches the canonical form. Comparing by MIB is the only reliable method.",
+      "examples": [
+        {
+          "title": "Querying the literal encoding",
+          "level": "basic",
+          "description": "Get the name and MIB number of the encoding used by the compiler for narrow string literals. On a UTF-8 platform (Linux, Compiler Explorer) we expect `UTF-8` and MIB 106.",
+          "code": "#include <text_encoding>\n#include <print>\n\nint main() {\n    auto enc = std::text_encoding::literal();\n    std::println(\"name: {}\", enc.name());\n    std::println(\"mib: {}\", static_cast<int>(enc.mib()));\n}",
+          "expectedOutput": "name: UTF-8\nmib: 106"
+        },
+        {
+          "title": "Checking for UTF-8 via the id enum",
+          "level": "basic",
+          "description": "Use `id::UTF8` (MIB 106) to reliably check the encoding without string comparisons.",
+          "code": "#include <text_encoding>\n#include <print>\n\nint main() {\n    auto enc = std::text_encoding::literal();\n    bool is_utf8 = (enc.mib() == std::text_encoding::id::UTF8);\n    std::println(\"is UTF-8: {}\", is_utf8);\n    std::println(\"UTF8 mib value: {}\", static_cast<int>(std::text_encoding::id::UTF8));\n}",
+          "expectedOutput": "is UTF-8: true\nUTF8 mib value: 106"
+        },
+        {
+          "title": "Object comparison and id enum",
+          "level": "advanced",
+          "description": "Demonstrates `operator==` between two `text_encoding` objects, plus MIB comparison via the `id` enumeration.",
+          "code": "#include <text_encoding>\n#include <print>\n\nint main() {\n    auto a = std::text_encoding::literal();\n    auto b = std::text_encoding::literal();\n    std::println(\"name: {}\", a.name());\n    std::println(\"same object: {}\", a == b);\n    std::println(\"mib: {}\", static_cast<int>(a.mib()));\n    std::println(\"id::UTF8: {}\", static_cast<int>(std::text_encoding::id::UTF8));\n    std::println(\"is UTF-8 encoding: {}\", a.mib() == std::text_encoding::id::UTF8);\n}",
+          "expectedOutput": "name: UTF-8\nsame object: true\nmib: 106\nid::UTF8: 106\nis UTF-8 encoding: true"
+        }
+      ],
+      "exercises": [
+        {
+          "type": "predict-output",
+          "level": "basic",
+          "prompt": "What will this program print on Godbolt (UTF-8 environment)?",
+          "code": "#include <text_encoding>\n#include <print>\nint main() {\n    auto enc = std::text_encoding::literal();\n    std::println(\"{}\", enc.name());\n    std::println(\"{}\", static_cast<int>(enc.mib()));\n}",
+          "expectedOutput": "UTF-8\n106"
+        },
+        {
+          "type": "choice",
+          "level": "basic",
+          "prompt": "What does `std::text_encoding::literal()` return?",
+          "options": [
+            "The runtime locale encoding",
+            "The encoding of narrow string literals in the current translation unit",
+            "Always UTF-8 regardless of platform",
+            "The encoding of wide characters (wchar_t)"
+          ],
+          "answerIndex": 1
+        },
+        {
+          "type": "find-bug",
+          "level": "advanced",
+          "prompt": "This code has a fragile encoding check that may give wrong results on some platforms. Find the buggy line.",
+          "code": "#include <text_encoding>\n#include <string>\n#include <print>\n\nint main() {\n    auto enc = std::text_encoding::literal();\n    if (std::string(enc.name()) == \"UTF-8\") {\n        std::println(\"UTF-8 confirmed\");\n    }\n}",
+          "answerLine": 7,
+          "explanation": "Comparing `enc.name()` to the string `\"UTF-8\"` is fragile: UTF-8 has more than 10 registered aliases in the IANA registry (`\"utf-8\"`, `\"UTF8\"`, `\"csUTF8\"`, etc.). The `.name()` method returns only the canonical name for the current platform, which may differ. The reliable version: `enc.mib() == std::text_encoding::id::UTF8`."
+        }
+      ],
+      "masteryCheck": {
+        "passingScore": 0.8,
+        "questions": [
+          {
+            "type": "choice",
+            "prompt": "How does `std::text_encoding::literal()` differ from `std::text_encoding::environment()`?",
+            "options": [
+              "`literal()` is the compile-time encoding of string literals; `environment()` is the runtime locale encoding",
+              "`literal()` always returns UTF-8; `environment()` does not",
+              "`environment()` is determined by the compiler; `literal()` by the OS",
+              "They always return the same value"
+            ],
+            "answerIndex": 0
+          },
+          {
+            "type": "choice",
+            "prompt": "Which method reliably checks whether the literal encoding is UTF-8?",
+            "options": [
+              "`std::string(enc.name()) == \"UTF-8\"`",
+              "`enc.mib() == std::text_encoding::id::UTF8`",
+              "`enc.id() == \"utf8\"`",
+              "`std::is_utf8(enc)`"
+            ],
+            "answerIndex": 1
+          },
+          {
+            "type": "choice",
+            "prompt": "What does `std::text_encoding::literal().mib()` return on a UTF-8 platform?",
+            "options": [
+              "1",
+              "65001",
+              "106",
+              "Depends on locale"
+            ],
+            "answerIndex": 2
+          }
+        ]
+      },
+      "challenge": {
+        "title": "The encoding_report() function",
+        "description": "Write a function `encoding_report()` that prints: the name of the literal encoding, whether it is UTF-8, and its MIB number. Use `std::text_encoding::id::UTF8` for the check.",
+        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // Your code here\n}\n\nint main() {\n    encoding_report();\n}",
+        "referenceSolution": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    auto lit = std::text_encoding::literal();\n    bool is_utf8 = (lit.mib() == std::text_encoding::id::UTF8);\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}",
+        "expectedOutput": "Encoding: UTF-8\nIs UTF-8: true\nMIB: 106",
+        "godboltLink": null
+      }
+    }
   ]
 }

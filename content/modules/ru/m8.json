@@ -4,5 +4,7 @@
   "title": "Числа и производительность",
   "significance": "важный",
   "prerequisites": [],
-  "lessons": []
+  "lessons": [
+    { "id": "m8-l1", "title": "std::simd", "stub": true }
+  ]
 }

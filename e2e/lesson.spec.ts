@@ -6,8 +6,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("sidebar navigation switches between lessons", async ({ page }) => {
-  await page.getByRole("listitem").filter({ hasText: "std::inplace_vector" }).click();
-  await expect(page.locator("h1")).toContainText("std::inplace_vector");
+  await page.getByRole("listitem").filter({ hasText: "std::simd" }).click();
+  await expect(page.locator("h1")).toContainText("std::simd");
   await expect(page.locator(".empty-big")).toContainText("ещё не написан");
 
   await page.getByRole("listitem").filter({ hasText: "Pack indexing" }).click();
