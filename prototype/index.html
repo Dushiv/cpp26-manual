@@ -29,7 +29,7 @@
   <!-- Plain classic script, NOT data-type="module": module scripts are deferred until after
        parsing, so the bootstrap script below would run first and find window.CPP26Engine
        undefined, rendering nothing into #root. -->
-  <script type="text/babel" data-presets="react-classic" src="./cpp26-engine.jsx?v=2f8d646"></script>
+  <script type="text/babel" data-presets="react-classic" src="./cpp26-engine.jsx"></script>
   <script type="text/babel" data-presets="react-classic">
     const root = ReactDOM.createRoot(document.getElementById("root"));
     root.render(React.createElement(window.CPP26Engine));

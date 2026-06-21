@@ -2,6 +2,7 @@
   "name": "cpp26-prototype-e2e",
   "private": true,
   "scripts": {
+    "serve": "http-server . -p 8901 --cors -c-1",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
