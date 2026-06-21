@@ -15,6 +15,17 @@ test("sidebar navigation switches between lessons", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Упражнения" })).toBeVisible();
 });
 
+test("scroll resets to top when switching lessons", async ({ page }) => {
+  await page.evaluate(() => window.scrollTo(0, 500));
+  const scrollBefore = await page.evaluate(() => window.scrollY);
+  expect(scrollBefore).toBeGreaterThan(0);
+
+  await page.getByRole("listitem").filter({ hasText: "Удалённые и устаревшие" }).click();
+  await expect(page.locator("h1")).toContainText("Удалённые");
+  const scrollAfter = await page.evaluate(() => window.scrollY);
+  expect(scrollAfter).toBe(0);
+});
+
 test("predict-output exercise: correct answer shows verdict", async ({ page }) => {
   const exercise = page.locator(".card.ex").nth(0);
   await exercise.locator(".inp").fill("7");
