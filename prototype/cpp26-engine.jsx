@@ -382,7 +382,7 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
   } else {
     body = <>
       {ex.code && <CodeBlock code={ex.code} />}
-      {ex.prompt && <p className="prompt">{renderInline(ex.prompt, "pr" + idx + "-")}</p>}
+      {ex.prompt && <div className="prompt"><Markdown text={ex.prompt} /></div>}
       <div className="opts">
         {ex.options.map((o, i) => {
           const cls = done
@@ -534,7 +534,7 @@ function Mastery({ lesson, onPass }) {
     <div className="mastery">
       {qs.map((q, i) => (
         <div key={i} className="mq">
-          <div className="mq-p"><span className="mq-n">{i + 1}</span>{renderInline(q.prompt, "mq" + i + "-")}</div>
+          <div className="mq-p"><span className="mq-n">{i + 1}</span><span>{renderInline(q.prompt, "mq" + i + "-")}</span></div>
           <div className="opts">
             {q.options.map((o, oi) => {
               const cls = submitted
