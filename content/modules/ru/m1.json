@@ -97,7 +97,7 @@
       ],
       "challenge": {
         "prompt": "Классический до-C++26 способ достать N-й элемент пака — рекурсивный хелпер. Перепиши его в одну строку через pack indexing.\n\n```cpp\ntemplate <std::size_t N, typename T0, typename... Ts>\nauto nth(T0 t0, Ts... ts) {\n    if constexpr (N == 0) return t0; else return nth<N - 1>(ts...);\n}\n```",
-        "referenceSolution": "```cpp\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n```",
+        "referenceSolution": "```cpp\n#include <print>\n#include <cstddef>\n\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n\nint main() {\n    std::print(\"{}\\n\", nth<1>(10, 20, 30));\n}\n```",
         "expectedOutput": "20",
         "godboltUrl": null
       },
@@ -421,7 +421,7 @@
       ],
       "challenge": {
         "prompt": "Напиши функцию `sum_tail`, которая принимает `std::tuple` из произвольного числа целочисленных элементов и возвращает сумму всех элементов, кроме первого, используя structured-binding pack и fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // твой код: разложи t на first и pack rest, верни сумму rest\n}\n```",
-        "referenceSolution": "```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n```",
+        "referenceSolution": "```cpp\n#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n\nint main() {\n    std::print(\"{}\\n\", sum_tail(std::tuple{1, 2, 3, 4}));\n}\n```",
         "expectedOutput": "9",
         "godboltUrl": null
       },
