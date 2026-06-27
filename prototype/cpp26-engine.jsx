@@ -192,6 +192,34 @@ function saveProgress(data) {
   }
 }
 
+// Merge two progress blobs without losing earned progress. Mastery scores and
+// exercise statuses only ever accumulate (you don't un-pass a lesson), so we
+// keep the "best" of each side instead of letting one blob overwrite the other.
+// This is the fix for two bugs: (1) a stale cloud copy wiping a local pass that
+// hadn't been pushed yet (the cloud push is debounced), and (2) a partial/legacy
+// blob injecting `undefined` into state and blanking the app — the result here
+// is always a complete blob with object fields.
+function mergeProgress(local, cloud) {
+  local = local || {};
+  cloud = cloud || {};
+  const lm = local.mastery || {}, cm = cloud.mastery || {};
+  const mastery = {};
+  for (const k of new Set([...Object.keys(lm), ...Object.keys(cm)]))
+    mastery[k] = Math.max(lm[k] ?? -Infinity, cm[k] ?? -Infinity);
+  const rank = { correct: 3, wrong: 2, skipped: 1 };
+  const le = local.exStatus || {}, ce = cloud.exStatus || {};
+  const exStatus = {};
+  for (const k of new Set([...Object.keys(le), ...Object.keys(ce)]))
+    exStatus[k] = (rank[le[k]] || 0) >= (rank[ce[k]] || 0) ? le[k] : ce[k];
+  return {
+    cur: local.cur || cloud.cur || "m1-l1",
+    view: local.view || cloud.view || "lesson",
+    exStatus, mastery,
+    strict: local.strict ?? cloud.strict ?? false,
+    locale: local.locale || cloud.locale || "ru",
+  };
+}
+
 const SUPABASE_URL = "https://jqkgywgvubecdmimskat.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Impxa2d5d2d2dWJlY2RtaW1za2F0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEwMjMxNjgsImV4cCI6MjA5NjU5OTE2OH0.MZvtQLGJEJ8X4BU8vzu2OycG7JWTO2ubpnxv5WNpBSY";
 
@@ -615,11 +643,11 @@ function App() {
       .catch((err) => { if (!cancelled) { console.error(err); setLoadError(err); } });
     return () => { cancelled = true; };
   }, [locale]);
-  const [cur, setCur] = useState(saved ? saved.cur : "m1-l1");
-  const [view, setView] = useState(saved ? saved.view : "lesson");
-  const [exStatus, setExStatus] = useState(saved ? saved.exStatus : {});
-  const [mastery, setMastery] = useState(saved ? saved.mastery : {});
-  const [strict, setStrict] = useState(saved ? saved.strict : false);
+  const [cur, setCur] = useState(saved && saved.cur ? saved.cur : "m1-l1");
+  const [view, setView] = useState(saved && saved.view ? saved.view : "lesson");
+  const [exStatus, setExStatus] = useState(saved && saved.exStatus ? saved.exStatus : {});
+  const [mastery, setMastery] = useState(saved && saved.mastery ? saved.mastery : {});
+  const [strict, setStrict] = useState(saved ? !!saved.strict : false);
   const [session, setSession] = useState(null);
   const lastSyncedBlob = useRef(null);
   const pulledForUserId = useRef(null);
@@ -663,11 +691,11 @@ function App() {
   }
 
   function applyProgress(blob) {
-    setCur(blob.cur);
-    setView(blob.view);
-    setExStatus(blob.exStatus);
-    setMastery(blob.mastery);
-    setStrict(blob.strict);
+    setCur(blob.cur || "m1-l1");
+    setView(blob.view || "lesson");
+    setExStatus(blob.exStatus || {});
+    setMastery(blob.mastery || {});
+    setStrict(!!blob.strict);
     if (blob.locale) setLocale(blob.locale);
     saveProgress(blob);
   }
@@ -681,8 +709,12 @@ function App() {
       return;
     }
     if (result.blob) {
-      applyProgress(result.blob);
-      lastSyncedBlob.current = result.blob;
+      // Merge cloud with local instead of overwriting: the learner may have
+      // earned progress locally that the debounced push hasn't sent up yet.
+      const merged = mergeProgress(currentLocalBlob(), result.blob);
+      applyProgress(merged);
+      pushProgress(client, userId, merged);
+      lastSyncedBlob.current = merged;
     } else {
       const localBlob = currentLocalBlob();
       pushProgress(client, userId, localBlob);
