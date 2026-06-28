@@ -11,7 +11,8 @@ const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", 
 function unfence(s) {
   return (s || "").replace(/^```\w*\n/, "").replace(/\n```\s*$/, "");
 }
-const isStub = (l) => /\/\/\s*твой код/i.test(l) || l.trim() === "";
+const STUB_RE = /\/\/\s*(твой код|your code)/i; // localized "your code" marker (ru/en)
+const isStub = (l) => STUB_RE.test(l) || l.trim() === "";
 
 // returns true if `needles` (in order) all appear in `hay` preserving order
 function isSubsequence(needles, hay) {
@@ -33,8 +34,8 @@ for (const id of MODULE_IDS) {
       const starterKept = ch.starterCode.split("\n").filter((x) => !isStub(x));
       if (!isSubsequence(starterKept, refLines))
         errors.push(`${loc}/${id} ${l.id}: starterCode scaffold lines are not a subsequence of referenceSolution (a driver/include line was altered?)`);
-      if (!/\/\/\s*твой код/i.test(ch.starterCode))
-        errors.push(`${loc}/${id} ${l.id}: starterCode has no \`// твой код\` stub`);
+      if (!STUB_RE.test(ch.starterCode))
+        errors.push(`${loc}/${id} ${l.id}: starterCode has no \`// твой код\` / \`// your code\` stub`);
     }
   }
 }
