@@ -97,6 +97,7 @@
       ],
       "challenge": {
         "prompt": "The classic pre-C++26 way to get the N-th element of a pack is a recursive helper. Rewrite it as a one-liner using pack indexing.\n\n```cpp\ntemplate <std::size_t N, typename T0, typename... Ts>\nauto nth(T0 t0, Ts... ts) {\n    if constexpr (N == 0) return t0; else return nth<N - 1>(ts...);\n}\n```",
+        "starterCode": "#include <print>\n#include <cstddef>\n\n// твой код\n\nint main() {\n    std::print(\"{}\\n\", nth<1>(10, 20, 30));\n}",
         "referenceSolution": "```cpp\n#include <print>\n#include <cstddef>\n\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n\nint main() {\n    std::print(\"{}\\n\", nth<1>(10, 20, 30));\n}\n```",
         "expectedOutput": "20",
         "godboltUrl": null
@@ -421,6 +422,7 @@
       ],
       "challenge": {
         "prompt": "Write a function `sum_tail` that takes a `std::tuple` of any number of integer elements and returns the sum of all elements except the first, using a structured-binding pack and the fold-expression `(rest + ... + 0)`.\n\n```cpp\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // your code: decompose t into first and a pack rest, return the sum of rest\n}\n```",
+        "starterCode": "#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    // твой код\n}\n\nint main() {\n    std::print(\"{}\\n\", sum_tail(std::tuple{1, 2, 3, 4}));\n}",
         "referenceSolution": "```cpp\n#include <print>\n#include <tuple>\n\ntemplate <typename Tuple>\nauto sum_tail(Tuple t) {\n    auto [first, ...rest] = t;\n    return (rest + ... + 0);\n}\n\nint main() {\n    std::print(\"{}\\n\", sum_tail(std::tuple{1, 2, 3, 4}));\n}\n```",
         "expectedOutput": "9",
         "godboltUrl": null
