@@ -709,6 +709,21 @@ function App() {
     saveProgress(blob);
   }
 
+  // On sign-out, wipe the signed-in user's progress from this browser so the
+  // next person (or anonymous session) starts clean and a subsequent login
+  // can't inherit it via mergeProgress. The cloud copy is preserved (pushed
+  // before sign-out), so re-login restores it. UI locale is kept.
+  function resetProgress() {
+    setCur("m1-l1");
+    setView("lesson");
+    setExStatus({});
+    setMastery({});
+    setStrict(false);
+    lastSyncedBlob.current = null;
+    const prev = loadProgress();
+    saveProgress({ cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: (prev && prev.locale) || locale });
+  }
+
   async function syncOnLogin(userId) {
     const client = getSupabaseClient();
     if (!client) return;
@@ -741,6 +756,9 @@ function App() {
         syncOnLogin(newSession.user.id);
       }
       if (!newSession) {
+        // Only a real sign-out (we had pulled for a user) clears progress;
+        // a null session on initial load = anonymous, must NOT wipe local data.
+        if (pulledForUserId.current !== null) resetProgress();
         pulledForUserId.current = null;
       }
     }
