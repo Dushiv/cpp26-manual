@@ -19,3 +19,14 @@ test("reset link restores the scaffold after edits", async ({ page }) => {
   await page.getByRole("button", { name: "Сбросить к началу" }).click();
   expect(await editor.inputValue()).toBe(original);
 });
+
+test("filling m1-l1 with the reference solution matches via Сверить @network", async ({ page }) => {
+  test.setTimeout(60000);
+  await page.goto("/prototype/index.html");
+  await expect(page.locator(".card.ex").first()).toBeVisible();
+  const ref =
+    "#include <print>\n#include <cstddef>\n\ntemplate <std::size_t N, typename... Ts>\nconstexpr auto nth(Ts... ts) { return ts...[N]; }\n\nint main() {\n    std::print(\"{}\\n\", nth<1>(10, 20, 30));\n}";
+  await page.locator(".chal-editor").fill(ref);
+  await page.getByRole("button", { name: "Сверить" }).click();
+  await expect(page.locator(".verdict.ok")).toBeVisible({ timeout: 45000 });
+});
