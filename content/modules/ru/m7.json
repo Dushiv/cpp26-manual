@@ -130,7 +130,7 @@
       "challenge": {
         "title": "Топ-5 без аллокаций",
         "description": "Напишите функцию `top_k`, которая принимает диапазон целых чисел и возвращает `inplace_vector<int, 5>` с пятью наибольшими значениями, отсортированными по убыванию, без единой аллокации на куче. Обработайте случай, когда в диапазоне менее 5 элементов.\n\nПодсказка: используйте min-heap (`std::push_heap` / `std::pop_heap` с `std::greater<>`) для отслеживания топ-5.",
-        "starterCode": "#include <inplace_vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nstd::inplace_vector<int, 5> top_k(std::ranges::input_range auto&& r) {\n    // ваш код здесь\n}\n\nint main() {\n    int data[] = {3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5};\n    auto top = top_k(data);\n    for (int x : top) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+        "starterCode": "#include <inplace_vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nstd::inplace_vector<int, 5> top_k(std::ranges::input_range auto&& r) {\n    // твой код\n}\n\nint main() {\n    int data[] = {3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5};\n    auto top = top_k(data);\n    for (int x : top) std::print(\"{} \", x);\n    std::println(\"\");\n}",
         "referenceSolution": "```cpp\n#include <inplace_vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nstd::inplace_vector<int, 5> top_k(std::ranges::input_range auto&& r) {\n    std::inplace_vector<int, 5> result;\n    for (int x : r) {\n        if (result.size() < 5) {\n            result.push_back(x);\n            std::push_heap(result.begin(), result.end(), std::greater<>{});\n        } else if (x > result.front()) {\n            std::pop_heap(result.begin(), result.end(), std::greater<>{});\n            result.back() = x;\n            std::push_heap(result.begin(), result.end(), std::greater<>{});\n        }\n    }\n    std::sort_heap(result.begin(), result.end(), std::greater<>{});\n    return result;\n}\n\nint main() {\n    int data[] = {3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5};\n    auto top = top_k(data);\n    for (int x : top) std::print(\"{} \", x);\n    std::println(\"\");\n}\n```",
         "expectedOutput": "9 6 5 5 5 ",
         "godboltLink": null
@@ -365,7 +365,7 @@
       "challenge": {
         "title": "Функция encoding_report()",
         "description": "Напишите функцию `encoding_report()`, которая выводит: имя кодировки строковых литералов, является ли она UTF-8, и её MIB-номер. Используйте `std::text_encoding::id::UTF8` для проверки.",
-        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // Ваш код здесь\n}\n\nint main() {\n    encoding_report();\n}",
+        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // твой код\n}\n\nint main() {\n    encoding_report();\n}",
         "referenceSolution": "```cpp\n#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    auto lit = std::text_encoding::literal();\n    bool is_utf8 = (lit.mib() == std::text_encoding::id::UTF8);\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}\n```",
         "expectedOutput": "Encoding: UTF-8\nIs UTF-8: true\nMIB: 106",
         "godboltLink": null
