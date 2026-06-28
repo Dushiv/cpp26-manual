@@ -5,7 +5,10 @@ const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", 
 
 async function loadCourseData(locale) {
   const modules = await Promise.all(MODULE_IDS.map(async (id) => {
-    const res = await fetch(`../content/modules/${locale}/${id}.json`);
+    // no-cache: always revalidate against the server (conditional GET → 304 if
+    // unchanged) so freshly-deployed lesson content shows up without waiting for
+    // the GitHub Pages max-age=600 window to expire.
+    const res = await fetch(`../content/modules/${locale}/${id}.json`, { cache: "no-cache" });
     if (!res.ok) throw new Error(`failed to load ${locale}/${id}.json: ${res.status}`);
     return res.json();
   }));
