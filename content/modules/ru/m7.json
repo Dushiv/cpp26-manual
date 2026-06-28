@@ -365,7 +365,7 @@
       "challenge": {
         "title": "Функция encoding_report()",
         "description": "Напишите функцию `encoding_report()`, которая выводит: имя кодировки строковых литералов, является ли она UTF-8, и её MIB-номер. Используйте `std::text_encoding::id::UTF8` для проверки.",
-        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // твой код\n}\n\nint main() {\n    encoding_report();\n}",
+        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // твой код\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}",
         "referenceSolution": "```cpp\n#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    auto lit = std::text_encoding::literal();\n    bool is_utf8 = (lit.mib() == std::text_encoding::id::UTF8);\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}\n```",
         "expectedOutput": "Encoding: UTF-8\nIs UTF-8: true\nMIB: 106",
         "godboltLink": null

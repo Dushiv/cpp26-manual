@@ -365,7 +365,7 @@
       "challenge": {
         "title": "The encoding_report() function",
         "description": "Write a function `encoding_report()` that prints: the name of the literal encoding, whether it is UTF-8, and its MIB number. Use `std::text_encoding::id::UTF8` for the check.",
-        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // your code\n}\n\nint main() {\n    encoding_report();\n}",
+        "starterCode": "#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    // your code\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}",
         "referenceSolution": "```cpp\n#include <text_encoding>\n#include <print>\n\nvoid encoding_report() {\n    auto lit = std::text_encoding::literal();\n    bool is_utf8 = (lit.mib() == std::text_encoding::id::UTF8);\n    std::println(\"Encoding: {}\", lit.name());\n    std::println(\"Is UTF-8: {}\", is_utf8);\n    std::println(\"MIB: {}\", static_cast<int>(lit.mib()));\n}\n\nint main() {\n    encoding_report();\n}\n```",
         "expectedOutput": "Encoding: UTF-8\nIs UTF-8: true\nMIB: 106",
         "godboltLink": null
