@@ -48,6 +48,7 @@ const UI_STRINGS = {
     challengeOptional: "Челлендж · необязательно",
     yourSolution: "Твоё решение",
     solutionPlaceholder: "// напиши свой вариант здесь — компилируется и исполняется по кнопке ниже",
+    resetToStarter: "Сбросить к началу",
     run: "Запустить",
     compareWithReference: "Сверить",
     compiling: "Компилирую…",
@@ -117,6 +118,7 @@ const UI_STRINGS = {
     challengeOptional: "Challenge · optional",
     yourSolution: "Your solution",
     solutionPlaceholder: "// write your solution here — it compiles and runs via the button below",
+    resetToStarter: "Reset to start",
     run: "Run",
     compareWithReference: "Compare",
     compiling: "Compiling…",
@@ -481,7 +483,7 @@ function ChallengeResult({ run, expectedOutput }) {
 
 function Challenge({ ch, verifiedWith }) {
   const [show, setShow] = useState(false);
-  const [code, setCode] = useState("");
+  const [code, setCode] = useState(ch.starterCode || "");
   const [busy, setBusy] = useState(false);
   const [pendingMode, setPendingMode] = useState(null); // "run" | "check" | null — which button is in flight
   const [run, setRun] = useState(null); // { mode: "run" | "check", ...godboltVerdict result } | { mode, kind: "network-error" }
@@ -522,6 +524,10 @@ function Challenge({ ch, verifiedWith }) {
         <button className="btn" disabled={busy || !code.trim()} onClick={() => execute("check")}>
           {pendingMode === "check" ? t("compiling") : t("compareWithReference")}
         </button>
+        {ch.starterCode && (
+          <button className="btn ghost sm" disabled={busy || code === ch.starterCode}
+            onClick={() => setCode(ch.starterCode)}>{t("resetToStarter")}</button>
+        )}
       </div>
 
       {run && <ChallengeResult run={run} expectedOutput={ch.expectedOutput} />}
