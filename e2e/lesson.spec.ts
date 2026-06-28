@@ -55,6 +55,36 @@ test("skipping and unskipping an exercise updates the review zone", async ({ pag
   await expect(page.locator(".rep-n")).toHaveText("0");
 });
 
+test("mastery check highlights correct and wrong-picked options after submit", async ({ page }) => {
+  const mastery = page.locator(".mastery");
+  const questions = mastery.locator(".mq");
+  const count = await questions.count();
+  expect(count).toBeGreaterThan(0);
+
+  // m1-l1: no question has its answer at index 0, so picking the first option
+  // everywhere makes every pick wrong — yielding one .no (wrong pick) and one
+  // .ok (the correct answer) per question after submit.
+  for (let i = 0; i < count; i++) {
+    await questions.nth(i).locator(".opt").first().click();
+  }
+  await mastery.getByRole("button", { name: "Завершить проверку" }).click();
+
+  await expect(mastery.locator(".opt.ok")).toHaveCount(count);
+  await expect(mastery.locator(".opt.no")).toHaveCount(count);
+});
+
+test("answered exercise restores its verdict after reload", async ({ page }) => {
+  const exercise = page.locator(".card.ex").nth(0);
+  await exercise.locator(".inp").fill("7");
+  await exercise.getByRole("button", { name: "Проверить" }).click();
+  await expect(exercise.locator(".verdict")).toHaveText("Верно");
+
+  await page.reload();
+  await expect(page.locator(".card.ex").first()).toBeVisible();
+
+  await expect(page.locator(".card.ex").nth(0).locator(".verdict")).toHaveText("Верно");
+});
+
 test("progress persists across reload", async ({ page }) => {
   const exercise = page.locator(".card.ex").nth(1);
   await exercise.getByRole("button", { name: "Пропустить" }).click();

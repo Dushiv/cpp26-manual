@@ -174,6 +174,15 @@ function useT() {
 const STATUS = { NOT_STARTED: "not-started", PROGRESS: "in-progress", SKIPPED: "skipped", DONE: "done" };
 const norm = (s) => (s || "").trim();
 
+// CSS class for a multiple-choice option button, shared by Exercise (choice) and
+// Mastery. `resolved` = the question has been answered/submitted; `selected` =
+// the index the learner picked (undefined/null if none).
+function optionClass(resolved, idx, answerIndex, selected) {
+  if (!resolved) return selected === idx ? "sel" : "";
+  if (idx === answerIndex) return "ok";
+  return selected === idx ? "no" : "";
+}
+
 const PROGRESS_KEY = "cpp26-progress";
 const PROGRESS_VERSION = 1;
 
@@ -371,8 +380,11 @@ function ExampleCard({ ex, idx }) {
 function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
   const [picked, setPicked] = useState(null);
   const [val, setVal] = useState("");
-  const [done, setDone] = useState(false);
-  const [correct, setCorrect] = useState(false);
+  // A persisted "correct"/"wrong" status means the learner already resolved this
+  // exercise; restore the verdict on mount so a reload doesn't reset it to blank
+  // (mirrors how "skipped" is already restored below).
+  const [done, setDone] = useState(() => status === "correct" || status === "wrong");
+  const [correct, setCorrect] = useState(() => status === "correct");
   const [skipped, setSkipped] = useState(() => status === "skipped");
   const t = useT();
 
@@ -418,9 +430,7 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
       {ex.prompt && <div className="prompt"><Markdown text={ex.prompt} /></div>}
       <div className="opts">
         {ex.options.map((o, i) => {
-          const cls = done
-            ? (i === ex.answerIndex ? "ok" : (i === picked && picked !== ex.answerIndex ? "no" : ""))
-            : (i === picked ? "sel" : "");
+          const cls = optionClass(done, i, ex.answerIndex, picked);
           return <button key={i} className={"opt " + cls} onClick={() => { if (done) return; setPicked(i); finish(i === ex.answerIndex); }}>{renderInline(o, "o" + idx + "-" + i + "-")}</button>;
         })}
       </div>
@@ -574,9 +584,7 @@ function Mastery({ lesson, onPass }) {
           <div className="mq-p"><span className="mq-n">{i + 1}</span><span>{renderInline(q.prompt, "mq" + i + "-")}</span></div>
           <div className="opts">
             {q.options.map((o, oi) => {
-              const cls = submitted
-                ? (oi === q.answerIndex ? "ok" : (ans[i] === oi && ans[i] !== q.answerIndex ? "no" : ""))
-                : (ans[i] === oi ? "sel" : "");
+              const cls = optionClass(submitted, oi, q.answerIndex, ans[i]);
               return <button key={oi} className={"opt " + cls} onClick={() => !submitted && setAns((s) => ({ ...s, [i]: oi }))}>{renderInline(o, "mo" + i + "-" + oi + "-")}</button>;
             })}
           </div>
@@ -640,6 +648,7 @@ function LocaleSwitcher({ locale, setLocale }) {
 function App() {
   const [saved] = useState(loadProgress);
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
+  const tr = (key, ...args) => t(locale, key, ...args);
   const [courseData, setCourseData] = useState(null);
   const [loadError, setLoadError] = useState(null);
 
@@ -668,6 +677,8 @@ function App() {
   useEffect(() => {
     document.documentElement.lang = locale;
   }, [locale]);
+
+  useEffect(() => { window.scrollTo(0, 0); }, [cur]);
 
   function signIn(provider) {
     const client = getSupabaseClient();
@@ -798,10 +809,10 @@ function App() {
   }, [cur, view, exStatus, mastery, strict, session?.user?.id]);
 
   if (loadError) {
-    return <div className="app"><style>{CSS}</style><div className="empty-big">{t(locale, "loadError")}</div></div>;
+    return <div className="app"><style>{CSS}</style><div className="empty-big">{tr("loadError")}</div></div>;
   }
   if (!courseData) {
-    return <div className="app"><style>{CSS}</style><div className="empty-big">{t(locale, "loading")}</div></div>;
+    return <div className="app"><style>{CSS}</style><div className="empty-big">{tr("loading")}</div></div>;
   }
   const modules = courseData.modules;
   const allLessons = modules.flatMap((m) => (m.lessons || []).map((l) => ({ ...l, mod: m })));
@@ -841,29 +852,13 @@ function App() {
 
   return (
     <LocaleContext.Provider value={locale}>
-      <App_ locale={locale} setLocale={setLocale} modules={modules} cur={cur} setCur={setCur}
-        view={view} setView={setView} exStatus={exStatus} mastery={mastery} strict={strict}
-        setStrict={setStrict} session={session} signIn={signIn} signOut={signOut}
-        lesson={lesson} st={st} doneCount={doneCount} real={real} skippedItems={skippedItems}
-        moduleSkips={moduleSkips} lessonStatus={lessonStatus} resolveEx={resolveEx}
-        skipEx={skipEx} unskipEx={unskipEx} passMastery={passMastery} />
-    </LocaleContext.Provider>
-  );
-}
-
-function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus, mastery,
-  strict, setStrict, session, signIn, signOut, lesson, st, doneCount, real, skippedItems,
-  moduleSkips, lessonStatus, resolveEx, skipEx, unskipEx, passMastery }) {
-  const t = useT();
-  useEffect(() => { window.scrollTo(0, 0); }, [cur]);
-  return (
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
-        <div className="brand"><BookOpen size={18} /><span>{t("courseTitle")}</span></div>
+        <div className="brand"><BookOpen size={18} /><span>{tr("courseTitle")}</span></div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
-          <span className="prog-txt">{t("lessonsProgress", doneCount, real.length)}</span>
+          <span className="prog-txt">{tr("lessonsProgress", doneCount, real.length)}</span>
         </div>
         <LocaleSwitcher locale={locale} setLocale={setLocale} />
         <AccountWidget session={session} onSignIn={signIn} onSignOut={signOut} />
@@ -872,11 +867,11 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
       <div className="body">
         <aside className="side">
           <button className={"rep " + (view === "repetition" ? "active" : "")} onClick={() => setView("repetition")}>
-            <Repeat size={15} /> {t("repetitionZone")} <span className="rep-n">{skippedItems.length}</span>
+            <Repeat size={15} /> {tr("repetitionZone")} <span className="rep-n">{skippedItems.length}</span>
           </button>
           <label className="strict">
             <input type="checkbox" checked={strict} onChange={(e) => setStrict(e.target.checked)} />
-            {t("strictMode")}
+            {tr("strictMode")}
           </label>
 
           <nav>
@@ -889,7 +884,7 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
                     <span className="mod-t">{m.title}</span>
                     <span className="sig">{m.significance}</span>
                   </div>
-                  {sk > 0 && <div className="mod-skip">{t("modSkipped", sk)}</div>}
+                  {sk > 0 && <div className="mod-skip">{tr("modSkipped", sk)}</div>}
                   {(m.lessons && m.lessons.length > 0)
                     ? <ul>
                         {m.lessons.map((l) => {
@@ -900,13 +895,13 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
                                 onClick={() => { setCur(l.id); setView("lesson"); }}>
                               <StatusIcon kind={ls.kind} />
                               <span className="ltitle">{renderInline(l.title, l.id + "-")}</span>
-                              {l.stub && <span className="soon">{t("soon")}</span>}
+                              {l.stub && <span className="soon">{tr("soon")}</span>}
                               {ls.skipped > 0 && <span className="ldot">{ls.skipped}</span>}
                             </li>
                           );
                         })}
                       </ul>
-                    : <div className="empty">{t("lessonsComingSoon")}</div>}
+                    : <div className="empty">{tr("lessonsComingSoon")}</div>}
                 </div>
               );
             })}
@@ -916,10 +911,10 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
         <main className="main">
           {view === "repetition"
             ? <div className="repview">
-                <h1>{t("repetitionTitle")}</h1>
-                <p className="sub">{t("repetitionSubtitle")}</p>
+                <h1>{tr("repetitionTitle")}</h1>
+                <p className="sub">{tr("repetitionSubtitle")}</p>
                 {skippedItems.length === 0
-                  ? <div className="empty-big">{t("noSkippedItems")}</div>
+                  ? <div className="empty-big">{tr("noSkippedItems")}</div>
                   : skippedItems.map(({ l, e }) => (
                       <div key={e.id} className="repitem" onClick={() => { setCur(l.id); setView("lesson"); }}>
                         <div><span className="tag tag-type">{e.type}</span> <span className="repl">{l.title}</span></div>
@@ -928,37 +923,37 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
                     ))}
               </div>
             : !lesson
-              ? <div className="empty-big">{t("selectLesson")}</div>
+              ? <div className="empty-big">{tr("selectLesson")}</div>
               : lesson.stub
                 ? <div className="lesson">
-                    <div className="lhead"><div className="lhead-top">{t("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
+                    <div className="lhead"><div className="lhead-top">{tr("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{renderInline(lesson.title, "h-")}</h1></div>
-                    <div className="empty-big">{t("stubLesson")}</div>
+                    <div className="empty-big">{tr("stubLesson")}</div>
                   </div>
                 : <div className="lesson">
                     <div className="lhead">
-                      <div className="lhead-top">{t("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
+                      <div className="lhead-top">{tr("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{lesson.title}</h1>
                       <div className="lmeta">
-                        <span className={"badge badge-" + st.kind}>{t(STATUS_KEY[st.kind])}{st.skipped > 0 ? " · " + t("modSkipped", st.skipped) : ""}</span>
-                        {lesson.outputsVerified === false && <span className="badge badge-pending">{t("outputsPending")}</span>}
+                        <span className={"badge badge-" + st.kind}>{tr(STATUS_KEY[st.kind])}{st.skipped > 0 ? " · " + tr("modSkipped", st.skipped) : ""}</span>
+                        {lesson.outputsVerified === false && <span className="badge badge-pending">{tr("outputsPending")}</span>}
                       </div>
                     </div>
 
                     <Background text={lesson.background} />
 
-                    <section><h2>{t("motivation")}</h2><Markdown text={lesson.motivation} /></section>
-                    <section><h2>{t("theory")}</h2><Markdown text={lesson.theory} /></section>
+                    <section><h2>{tr("motivation")}</h2><Markdown text={lesson.motivation} /></section>
+                    <section><h2>{tr("theory")}</h2><Markdown text={lesson.theory} /></section>
 
                     {lesson.examples.length > 0 && (
                       <section>
-                        <h2>{t("examples")}</h2>
+                        <h2>{tr("examples")}</h2>
                         {lesson.examples.map((ex, i) => <ExampleCard key={i} ex={ex} idx={i} />)}
                       </section>
                     )}
 
                     <section>
-                      <h2>{t("exercises")}</h2>
+                      <h2>{tr("exercises")}</h2>
                       {lesson.exercises.map((ex, i) => (
                         <Exercise key={ex.id} ex={ex} idx={i}
                           status={exStatus[ex.id]}
@@ -968,16 +963,17 @@ function App_({ locale, setLocale, modules, cur, setCur, view, setView, exStatus
                       ))}
                     </section>
 
-                    {lesson.challenge && <section><h2>{t("challengeOptional").split(" ·")[0]}</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
+                    {lesson.challenge && <section><h2>{tr("challengeOptional").split(" ·")[0]}</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
 
                     <section>
-                      <h2>{t("masteryCheckTitle")} <span className="thr">{t("threshold", Math.round(lesson.masteryCheck.passThreshold * 100))}</span></h2>
+                      <h2>{tr("masteryCheckTitle")} <span className="thr">{tr("threshold", Math.round(lesson.masteryCheck.passThreshold * 100))}</span></h2>
                       <Mastery lesson={lesson} onPass={(sc) => passMastery(lesson.id, sc)} />
                     </section>
                   </div>}
         </main>
       </div>
     </div>
+    </LocaleContext.Provider>
   );
 }
 
