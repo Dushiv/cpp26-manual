@@ -42,6 +42,7 @@ function describeLesson(l) {
     exampleCount: (l.examples || []).length,
     exercises: (l.exercises || []).map(describeExercise),
     hasChallenge: !!l.challenge,
+    challengeHasStarter: !!(l.challenge && l.challenge.starterCode),
     masteryQuestions: l.masteryCheck.questions.map(describeQuestion),
   };
 }
