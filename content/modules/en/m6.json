@@ -460,7 +460,8 @@
           "id": "m6-l4-e3",
           "level": "advanced",
           "type": "find-bug",
-          "prompt": "A developer wants to pass the same sender to two independent pipelines. Find the bug:\n\n```cpp\nnamespace ex = std::execution;\n\nauto source = ex::just(42);                                        // line 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // line 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // line 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);\n```",
+          "code": "namespace ex = std::execution;\n\nauto source = ex::just(42);                                        // line 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // line 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // line 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);",
+          "prompt": "A developer wants to pass the same sender to two independent pipelines. Find the bug:",
           "answerLine": 3,
           "explanation": "A plain sender (`just(42)`) is **not** a copyable, multi-use object — it is designed to connect to exactly one receiver. Using `source` in two separate `| ex::then(...)` expressions is either a compile error (if the sender is not copyable) or undefined behaviour (the operation started twice). The fix: wrap `source` in `ex::split(source)` before lines 5–6. Then both copies share the same underlying operation and `42` is computed exactly once."
         },

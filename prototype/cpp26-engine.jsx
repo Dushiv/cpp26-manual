@@ -408,8 +408,9 @@ function Exercise({ ex, idx, status, onResolve, onSkip, onUnskip }) {
         : <div className={"verdict " + (correct ? "ok" : "no")}>{correct ? t("correct") : t("correctAnswerIs", ex.answer)}</div>}
     </>;
   } else if (ex.type === "find-bug") {
-    const lines = ex.code.split("\n");
+    const lines = (ex.code || "").split("\n");
     body = <>
+      {ex.prompt && <div className="prompt"><Markdown text={ex.prompt} /></div>}
       <pre className="cb linecode">
         {lines.map((ln, i) => {
           const n = i + 1;

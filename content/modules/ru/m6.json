@@ -460,7 +460,8 @@
           "id": "m6-l4-e3",
           "level": "advanced",
           "type": "find-bug",
-          "prompt": "Программист хочет передать один и тот же сендер двум независимым пайплайнам. Найдите ошибку:\n\n```cpp\nnamespace ex = std::execution;\n\nauto source = ex::just(42);                           // строка 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // строка 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // строка 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);\n```",
+          "code": "namespace ex = std::execution;\n\nauto source = ex::just(42);                           // строка 3\n\nauto pipeline_a = source | ex::then([](int v) { return v + 1; }); // строка 5\nauto pipeline_b = source | ex::then([](int v) { return v * 2; }); // строка 6\n\nauto result = ex::sync_wait(\n    ex::when_all(std::move(pipeline_a), std::move(pipeline_b))\n);",
+          "prompt": "Программист хочет передать один и тот же сендер двум независимым пайплайнам. Найдите ошибку:",
           "answerLine": 3,
           "explanation": "Обычный сендер (`just(42)`) **не является копируемым многократно используемым объектом** — он предназначен для подключения к одному ресиверу. Использование `source` в двух разных `| ex::then(...)` — это либо ошибка компиляции (если сендер некопируем), либо неопределённое поведение (операция запущена дважды). Исправление: обернуть `source` в `ex::split(source)` до строк 5–6. Тогда обе копии разделяют одно базовое вычисление и `42` вычисляется ровно один раз."
         },
