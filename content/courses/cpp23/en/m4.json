@@ -1,0 +1,31 @@
+{
+  "id": "m4",
+  "moduleNumber": 4,
+  "title": "Ranges C++23",
+  "significance": "important",
+  "prerequisites": [
+    "m3"
+  ],
+  "lessons": [
+    {
+      "id": "m4-l1",
+      "title": "Ranges C++23 - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m4-l2",
+      "title": "Ranges C++23 - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m4-l3",
+      "title": "Ranges C++23 - Lesson 3",
+      "stub": true
+    },
+    {
+      "id": "m4-l4",
+      "title": "Ranges C++23 - Lesson 4",
+      "stub": true
+    }
+  ]
+}

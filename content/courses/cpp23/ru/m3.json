@@ -1,0 +1,21 @@
+{
+  "id": "m3",
+  "moduleNumber": 3,
+  "title": "std::expected",
+  "significance": "flagship",
+  "prerequisites": [
+    "m2"
+  ],
+  "lessons": [
+    {
+      "id": "m3-l1",
+      "title": "std::expected - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m3-l2",
+      "title": "std::expected - Lesson 2",
+      "stub": true
+    }
+  ]
+}

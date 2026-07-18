@@ -1,0 +1,26 @@
+{
+  "id": "m9",
+  "moduleNumber": 9,
+  "title": "Числа и низкоуровневое",
+  "significance": "special",
+  "prerequisites": [
+    "m8"
+  ],
+  "lessons": [
+    {
+      "id": "m9-l1",
+      "title": "Числа и низкоуровневое - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m9-l2",
+      "title": "Числа и низкоуровневое - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m9-l3",
+      "title": "Числа и низкоуровневое - Lesson 3",
+      "stub": true
+    }
+  ]
+}

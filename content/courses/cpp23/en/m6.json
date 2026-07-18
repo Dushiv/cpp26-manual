@@ -1,0 +1,21 @@
+{
+  "id": "m6",
+  "moduleNumber": 6,
+  "title": "Formatting and output",
+  "significance": "basic",
+  "prerequisites": [
+    "m5"
+  ],
+  "lessons": [
+    {
+      "id": "m6-l1",
+      "title": "Formatting and output - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m6-l2",
+      "title": "Formatting and output - Lesson 2",
+      "stub": true
+    }
+  ]
+}

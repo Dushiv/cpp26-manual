@@ -1,0 +1,26 @@
+{
+  "id": "m2",
+  "moduleNumber": 2,
+  "title": "Deducing this",
+  "significance": "flagship",
+  "prerequisites": [
+    "m1"
+  ],
+  "lessons": [
+    {
+      "id": "m2-l1",
+      "title": "Deducing this - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m2-l2",
+      "title": "Deducing this - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m2-l3",
+      "title": "Deducing this - Lesson 3",
+      "stub": true
+    }
+  ]
+}

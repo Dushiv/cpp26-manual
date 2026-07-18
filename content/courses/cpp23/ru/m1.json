@@ -1,0 +1,36 @@
+{
+  "id": "m1",
+  "moduleNumber": 1,
+  "title": "Языковые улучшения",
+  "significance": "basic",
+  "prerequisites": [
+    "m0"
+  ],
+  "lessons": [
+    {
+      "id": "m1-l1",
+      "title": "Языковые улучшения - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m1-l2",
+      "title": "Языковые улучшения - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m1-l3",
+      "title": "Языковые улучшения - Lesson 3",
+      "stub": true
+    },
+    {
+      "id": "m1-l4",
+      "title": "Языковые улучшения - Lesson 4",
+      "stub": true
+    },
+    {
+      "id": "m1-l5",
+      "title": "Языковые улучшения - Lesson 5",
+      "stub": true
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "id": "m5",
+  "moduleNumber": 5,
+  "title": "std::mdspan",
+  "significance": "important",
+  "prerequisites": [
+    "m4"
+  ],
+  "lessons": [
+    {
+      "id": "m5-l1",
+      "title": "std::mdspan - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m5-l2",
+      "title": "std::mdspan - Lesson 2",
+      "stub": true
+    }
+  ]
+}

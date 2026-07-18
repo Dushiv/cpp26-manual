@@ -1,0 +1,36 @@
+{
+  "id": "m1",
+  "moduleNumber": 1,
+  "title": "Language improvements",
+  "significance": "basic",
+  "prerequisites": [
+    "m0"
+  ],
+  "lessons": [
+    {
+      "id": "m1-l1",
+      "title": "Language improvements - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m1-l2",
+      "title": "Language improvements - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m1-l3",
+      "title": "Language improvements - Lesson 3",
+      "stub": true
+    },
+    {
+      "id": "m1-l4",
+      "title": "Language improvements - Lesson 4",
+      "stub": true
+    },
+    {
+      "id": "m1-l5",
+      "title": "Language improvements - Lesson 5",
+      "stub": true
+    }
+  ]
+}

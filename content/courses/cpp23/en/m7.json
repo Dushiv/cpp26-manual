@@ -1,0 +1,31 @@
+{
+  "id": "m7",
+  "moduleNumber": 7,
+  "title": "Containers and utilities",
+  "significance": "important",
+  "prerequisites": [
+    "m6"
+  ],
+  "lessons": [
+    {
+      "id": "m7-l1",
+      "title": "Containers and utilities - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m7-l2",
+      "title": "Containers and utilities - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m7-l3",
+      "title": "Containers and utilities - Lesson 3",
+      "stub": true
+    },
+    {
+      "id": "m7-l4",
+      "title": "Containers and utilities - Lesson 4",
+      "stub": true
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "id": "m7",
+  "moduleNumber": 7,
+  "title": "Контейнеры и утилиты",
+  "significance": "important",
+  "prerequisites": [
+    "m6"
+  ],
+  "lessons": [
+    {
+      "id": "m7-l1",
+      "title": "Контейнеры и утилиты - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m7-l2",
+      "title": "Контейнеры и утилиты - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m7-l3",
+      "title": "Контейнеры и утилиты - Lesson 3",
+      "stub": true
+    },
+    {
+      "id": "m7-l4",
+      "title": "Контейнеры и утилиты - Lesson 4",
+      "stub": true
+    }
+  ]
+}

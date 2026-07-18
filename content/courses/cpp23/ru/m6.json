@@ -1,0 +1,21 @@
+{
+  "id": "m6",
+  "moduleNumber": 6,
+  "title": "Форматирование и вывод",
+  "significance": "basic",
+  "prerequisites": [
+    "m5"
+  ],
+  "lessons": [
+    {
+      "id": "m6-l1",
+      "title": "Форматирование и вывод - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m6-l2",
+      "title": "Форматирование и вывод - Lesson 2",
+      "stub": true
+    }
+  ]
+}

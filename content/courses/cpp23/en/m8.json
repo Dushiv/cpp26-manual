@@ -1,0 +1,21 @@
+{
+  "id": "m8",
+  "moduleNumber": 8,
+  "title": "std::generator",
+  "significance": "flagship",
+  "prerequisites": [
+    "m7"
+  ],
+  "lessons": [
+    {
+      "id": "m8-l1",
+      "title": "std::generator - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m8-l2",
+      "title": "std::generator - Lesson 2",
+      "stub": true
+    }
+  ]
+}

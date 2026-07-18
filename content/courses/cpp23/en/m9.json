@@ -1,0 +1,26 @@
+{
+  "id": "m9",
+  "moduleNumber": 9,
+  "title": "Numbers and low-level",
+  "significance": "special",
+  "prerequisites": [
+    "m8"
+  ],
+  "lessons": [
+    {
+      "id": "m9-l1",
+      "title": "Numbers and low-level - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m9-l2",
+      "title": "Numbers and low-level - Lesson 2",
+      "stub": true
+    },
+    {
+      "id": "m9-l3",
+      "title": "Numbers and low-level - Lesson 3",
+      "stub": true
+    }
+  ]
+}

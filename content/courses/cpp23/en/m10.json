@@ -1,0 +1,21 @@
+{
+  "id": "m10",
+  "moduleNumber": 10,
+  "title": "Removed and deprecated",
+  "significance": "closing",
+  "prerequisites": [
+    "m9"
+  ],
+  "lessons": [
+    {
+      "id": "m10-l1",
+      "title": "Removed and deprecated - Lesson 1",
+      "stub": true
+    },
+    {
+      "id": "m10-l2",
+      "title": "Removed and deprecated - Lesson 2",
+      "stub": true
+    }
+  ]
+}
