@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Verifies that content/modules/ru/*.json and content/modules/en/*.json
+// Verifies that content/courses/cpp26/ru/*.json and content/courses/cpp26/en/*.json
 // stay structurally in sync: same modules, same lessons, same exercise/
 // mastery-check shapes. Prose strings are intentionally NOT compared (that's
 // the part that's supposed to differ between locales).
