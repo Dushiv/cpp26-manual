@@ -18,6 +18,11 @@ async function loadCourseData(courseId, locale) {
   return { modules };
 }
 
+const COURSE_TITLES = {
+  cpp26: { ru: "C++26 — от нуля до полного понимания", en: "C++26 — from zero to full understanding" },
+  cpp23: { ru: "C++23 — для разработчиков на C++17/20", en: "C++23 — for C++17/20 developers" },
+};
+
 const UI_STRINGS = {
   ru: {
     courseTitle: "C++26 — от нуля до полного понимания",
@@ -247,9 +252,10 @@ function getSupabaseClient() {
   return supabaseClient;
 }
 
-async function pullProgress(client, userId) {
+async function pullProgress(client, userId, courseId) {
   try {
-    const { data, error } = await client.from("progress").select("blob").eq("user_id", userId).maybeSingle();
+    const { data, error } = await client.from("progress").select("blob")
+      .eq("user_id", userId).eq("course_id", courseId).maybeSingle();
     if (error) return { ok: false };
     return { ok: true, blob: data ? data.blob : null };
   } catch (e) {
@@ -257,9 +263,12 @@ async function pullProgress(client, userId) {
   }
 }
 
-async function pushProgress(client, userId, blob) {
+async function pushProgress(client, userId, courseId, blob) {
   try {
-    await client.from("progress").upsert({ user_id: userId, blob, updated_at: new Date().toISOString() });
+    await client.from("progress").upsert(
+      { user_id: userId, course_id: courseId, blob, updated_at: new Date().toISOString() },
+      { onConflict: "user_id,course_id" }
+    );
   } catch (e) {
     // network/Supabase unavailable — caller retries on the next sync tick
   }
@@ -649,8 +658,52 @@ function LocaleSwitcher({ locale, setLocale }) {
   );
 }
 
-function App() {
-  const [saved] = useState(() => loadProgress("cpp26"));
+function CoursePicker({ onSelect }) {
+  const [locale, setLocale] = useState("ru");
+  const t = (key) => {
+    const dict = {
+      ru: { selectCourse: "Выбери курс", selectCourseDesc: "Кликни на любой ниже" },
+      en: { selectCourse: "Select a course", selectCourseDesc: "Click any below" },
+    };
+    return dict[locale][key] || "";
+  };
+  return (
+    <LocaleContext.Provider value={locale}>
+    <div className="app">
+      <style>{CSS}</style>
+      <header className="topbar">
+        <div className="brand"><BookOpen size={18} /><span>C++26 & C++23</span></div>
+        <div />
+        <LocaleSwitcher locale={locale} setLocale={setLocale} />
+        <div />
+      </header>
+      <div className="body">
+        <main className="main" style={{ maxWidth: "600px" }}>
+          <div className="lhead">
+            <h1>{t("selectCourse")}</h1>
+            <p style={{ color: "var(--mut)", fontSize: "14px" }}>{t("selectCourseDesc")}</p>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            {Object.entries(COURSE_TITLES).map(([id, titles]) => (
+              <button
+                key={id}
+                className="btn"
+                onClick={() => onSelect(id)}
+                style={{ width: "100%", textAlign: "left", padding: "16px" }}
+              >
+                {titles[locale]}
+              </button>
+            ))}
+          </div>
+        </main>
+      </div>
+    </div>
+    </LocaleContext.Provider>
+  );
+}
+
+function CourseView({ courseId, onBackToPicker }) {
+  const [saved] = useState(() => loadProgress(courseId));
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const tr = (key, ...args) => t(locale, key, ...args);
   const [courseData, setCourseData] = useState(null);
@@ -660,11 +713,11 @@ function App() {
     let cancelled = false;
     setCourseData(null);
     setLoadError(null);
-    loadCourseData("cpp26", locale)
+    loadCourseData(courseId, locale)
       .then((data) => { if (!cancelled) setCourseData(data); })
       .catch((err) => { if (!cancelled) { console.error(err); setLoadError(err); } });
     return () => { cancelled = true; };
-  }, [locale]);
+  }, [courseId, locale]);
   const [cur, setCur] = useState(saved && saved.cur ? saved.cur : "m1-l1");
   const [view, setView] = useState(saved && saved.view ? saved.view : "lesson");
   const [exStatus, setExStatus] = useState(saved && saved.exStatus ? saved.exStatus : {});
@@ -675,8 +728,8 @@ function App() {
   const pulledForUserId = useRef(null);
 
   useEffect(() => {
-    saveProgress("cpp26", { cur, view, exStatus, mastery, strict, locale });
-  }, [cur, view, exStatus, mastery, strict, locale]);
+    saveProgress(courseId, { cur, view, exStatus, mastery, strict, locale });
+  }, [courseId, cur, view, exStatus, mastery, strict, locale]);
 
   useEffect(() => {
     document.documentElement.lang = locale;
@@ -699,7 +752,7 @@ function App() {
   }
 
   function currentLocalBlob() {
-    return loadProgress("cpp26") || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
+    return loadProgress(courseId) || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
   }
 
   // lastSyncedBlob.current is null until syncOnLogin establishes a baseline;
@@ -711,7 +764,7 @@ function App() {
     const blob = currentLocalBlob();
     if (JSON.stringify(blob) === JSON.stringify(lastSyncedBlob.current)) return Promise.resolve();
     lastSyncedBlob.current = blob;
-    return pushProgress(client, userId, blob);
+    return pushProgress(client, userId, courseId, blob);
   }
 
   function applyProgress(blob) {
@@ -721,7 +774,7 @@ function App() {
     setMastery(blob.mastery || {});
     setStrict(!!blob.strict);
     if (blob.locale) setLocale(blob.locale);
-    saveProgress("cpp26", blob);
+    saveProgress(courseId, blob);
   }
 
   // On sign-out, wipe the signed-in user's progress from this browser so the
@@ -735,14 +788,14 @@ function App() {
     setMastery({});
     setStrict(false);
     lastSyncedBlob.current = null;
-    const prev = loadProgress("cpp26");
-    saveProgress("cpp26", { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: (prev && prev.locale) || locale });
+    const prev = loadProgress(courseId);
+    saveProgress(courseId, { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: (prev && prev.locale) || locale });
   }
 
   async function syncOnLogin(userId) {
     const client = getSupabaseClient();
     if (!client) return;
-    const result = await pullProgress(client, userId);
+    const result = await pullProgress(client, userId, courseId);
     if (!result.ok) {
       lastSyncedBlob.current = currentLocalBlob();
       return;
@@ -752,11 +805,11 @@ function App() {
       // earned progress locally that the debounced push hasn't sent up yet.
       const merged = mergeProgress(currentLocalBlob(), result.blob);
       applyProgress(merged);
-      pushProgress(client, userId, merged);
+      pushProgress(client, userId, courseId, merged);
       lastSyncedBlob.current = merged;
     } else {
       const localBlob = currentLocalBlob();
-      pushProgress(client, userId, localBlob);
+      pushProgress(client, userId, courseId, localBlob);
       lastSyncedBlob.current = localBlob;
     }
   }
@@ -859,7 +912,7 @@ function App() {
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
-        <div className="brand"><BookOpen size={18} /><span>{tr("courseTitle")}</span></div>
+        <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLES[courseId][locale]}</span></div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{tr("lessonsProgress", doneCount, real.length)}</span>
@@ -1157,5 +1210,30 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .repl { font-family:'IBM Plex Serif',serif; }
 .empty-big { color:var(--mut); font-style:italic; padding:30px 0; }
 `;
+
+function App() {
+  const [courseId, setCourseId] = useState(() => {
+    const active = localStorage.getItem("active-course");
+    if (active) return active;
+    if (localStorage.getItem("cpp26-progress")) {
+      localStorage.setItem("active-course", "cpp26");
+      return "cpp26";
+    }
+    return null;
+  });
+
+  function selectCourse(id) {
+    localStorage.setItem("active-course", id);
+    setCourseId(id);
+  }
+
+  function backToPicker() {
+    localStorage.removeItem("active-course");
+    setCourseId(null);
+  }
+
+  if (!courseId) return <CoursePicker onSelect={selectCourse} />;
+  return <CourseView key={courseId} courseId={courseId} onBackToPicker={backToPicker} />;
+}
 
 window.CPP26Engine = App;
