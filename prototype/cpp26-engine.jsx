@@ -915,7 +915,10 @@ function CourseView({ courseId, onBackToPicker }) {
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
-        <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLES[courseId][locale]}</span></div>
+        <div className="topbar-left">
+          <button className="back-btn" onClick={onBackToPicker}>← {locale === "ru" ? "Все курсы" : "All courses"}</button>
+          <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLES[courseId][locale]}</span></div>
+        </div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{tr("lessonsProgress", doneCount, real.length)}</span>
@@ -1232,6 +1235,11 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .picker-soon { font-size:11px; color:var(--mut); background:var(--panel2);
   border:1px solid var(--line); border-radius:6px; padding:2px 8px; }
 .picker-card-started { font-size:11px; color:var(--green); margin-top:6px; }
+
+.topbar-left { display:flex; align-items:center; gap:14px; }
+.back-btn { background:none; border:none; color:var(--mut); cursor:pointer; font-size:13px;
+  padding:0; white-space:nowrap; }
+.back-btn:hover { color:var(--ink); }
 `;
 
 function App() {

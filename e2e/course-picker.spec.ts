@@ -36,3 +36,17 @@ test("existing C++26 user skips picker", async ({ page }) => {
   await expect(page.locator(".topbar")).toBeVisible({ timeout: 15000 });
   await expect(page.locator(".picker")).toHaveCount(0);
 });
+
+test("← Все курсы link returns to picker and clears active-course", async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("active-course", "cpp26");
+  });
+  await page.goto("/prototype/index.html");
+  await expect(page.locator(".topbar")).toBeVisible({ timeout: 15000 });
+
+  await page.locator(".back-btn").click();
+  await expect(page.locator(".picker")).toBeVisible();
+
+  const storedCourse = await page.evaluate(() => localStorage.getItem("active-course"));
+  expect(storedCourse).toBeNull();
+});
