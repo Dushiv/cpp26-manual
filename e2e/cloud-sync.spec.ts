@@ -11,6 +11,7 @@ import { test, expect } from "@playwright/test";
 async function installMockSupabase(page, cloudBlob: any) {
   await page.route("**/@supabase/**", (r) => r.abort());
   await page.addInitScript((blob) => {
+    localStorage.setItem("active-course", "cpp26");
     (window as any).__cloudSynced = false;
     const session = { user: { id: "test-user" } };
     Object.defineProperty(window, "supabase", {

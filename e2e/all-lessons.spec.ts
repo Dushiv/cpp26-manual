@@ -7,6 +7,7 @@ import { test, expect } from "@playwright/test";
 test("every lesson opens without a runtime error", async ({ page }) => {
   const errs: string[] = [];
   page.on("pageerror", (e) => errs.push(e.message));
+  await page.addInitScript(() => { localStorage.setItem("active-course", "cpp26"); });
   await page.goto("/prototype/index.html");
   await expect(page.locator("main h1")).toBeVisible();
 

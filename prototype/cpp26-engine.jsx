@@ -1,15 +1,18 @@
 const { useState, useEffect, useRef } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
-const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"];
+const MODULE_IDS = {
+  cpp26: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
+  cpp23: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
+};
 
-async function loadCourseData(locale) {
-  const modules = await Promise.all(MODULE_IDS.map(async (id) => {
+async function loadCourseData(courseId, locale) {
+  const modules = await Promise.all(MODULE_IDS[courseId].map(async (id) => {
     // no-cache: always revalidate against the server (conditional GET → 304 if
     // unchanged) so freshly-deployed lesson content shows up without waiting for
     // the GitHub Pages max-age=600 window to expire.
-    const res = await fetch(`../content/courses/cpp26/${locale}/${id}.json`, { cache: "no-cache" });
-    if (!res.ok) throw new Error(`failed to load ${locale}/${id}.json: ${res.status}`);
+    const res = await fetch(`../content/courses/${courseId}/${locale}/${id}.json`, { cache: "no-cache" });
+    if (!res.ok) throw new Error(`failed to load ${courseId}/${locale}/${id}.json: ${res.status}`);
     return res.json();
   }));
   return { modules };
@@ -183,12 +186,12 @@ function optionClass(resolved, idx, answerIndex, selected) {
   return selected === idx ? "no" : "";
 }
 
-const PROGRESS_KEY = "cpp26-progress";
+const progressKey = (courseId) => `${courseId}-progress`;
 const PROGRESS_VERSION = 1;
 
-function loadProgress() {
+function loadProgress(courseId) {
   try {
-    const raw = localStorage.getItem(PROGRESS_KEY);
+    const raw = localStorage.getItem(progressKey(courseId));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     if (!parsed || parsed.version !== PROGRESS_VERSION) return null;
@@ -198,9 +201,9 @@ function loadProgress() {
   }
 }
 
-function saveProgress(data) {
+function saveProgress(courseId, data) {
   try {
-    localStorage.setItem(PROGRESS_KEY, JSON.stringify({ version: PROGRESS_VERSION, data }));
+    localStorage.setItem(progressKey(courseId), JSON.stringify({ version: PROGRESS_VERSION, data }));
   } catch (e) {
     // localStorage unavailable (private browsing, full quota) — keep running in-memory only
   }
@@ -647,7 +650,7 @@ function LocaleSwitcher({ locale, setLocale }) {
 }
 
 function App() {
-  const [saved] = useState(loadProgress);
+  const [saved] = useState(() => loadProgress("cpp26"));
   const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const tr = (key, ...args) => t(locale, key, ...args);
   const [courseData, setCourseData] = useState(null);
@@ -657,7 +660,7 @@ function App() {
     let cancelled = false;
     setCourseData(null);
     setLoadError(null);
-    loadCourseData(locale)
+    loadCourseData("cpp26", locale)
       .then((data) => { if (!cancelled) setCourseData(data); })
       .catch((err) => { if (!cancelled) { console.error(err); setLoadError(err); } });
     return () => { cancelled = true; };
@@ -672,7 +675,7 @@ function App() {
   const pulledForUserId = useRef(null);
 
   useEffect(() => {
-    saveProgress({ cur, view, exStatus, mastery, strict, locale });
+    saveProgress("cpp26", { cur, view, exStatus, mastery, strict, locale });
   }, [cur, view, exStatus, mastery, strict, locale]);
 
   useEffect(() => {
@@ -696,7 +699,7 @@ function App() {
   }
 
   function currentLocalBlob() {
-    return loadProgress() || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
+    return loadProgress("cpp26") || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
   }
 
   // lastSyncedBlob.current is null until syncOnLogin establishes a baseline;
@@ -718,7 +721,7 @@ function App() {
     setMastery(blob.mastery || {});
     setStrict(!!blob.strict);
     if (blob.locale) setLocale(blob.locale);
-    saveProgress(blob);
+    saveProgress("cpp26", blob);
   }
 
   // On sign-out, wipe the signed-in user's progress from this browser so the
@@ -732,8 +735,8 @@ function App() {
     setMastery({});
     setStrict(false);
     lastSyncedBlob.current = null;
-    const prev = loadProgress();
-    saveProgress({ cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: (prev && prev.locale) || locale });
+    const prev = loadProgress("cpp26");
+    saveProgress("cpp26", { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: (prev && prev.locale) || locale });
   }
 
   async function syncOnLogin(userId) {

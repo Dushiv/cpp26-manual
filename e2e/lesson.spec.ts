@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => { localStorage.setItem("active-course", "cpp26"); });
   await page.goto("/prototype/index.html");
   await expect(page.locator(".card.ex").first()).toBeVisible();
 });

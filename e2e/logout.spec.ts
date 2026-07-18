@@ -6,6 +6,7 @@ import { test, expect } from "@playwright/test";
 async function installSignedInMock(page) {
   await page.route("**/@supabase/**", (r) => r.abort());
   await page.addInitScript(() => {
+    localStorage.setItem("active-course", "cpp26");
     (window as any).__cloudSynced = false;
     let authCb: any = null;
     let currentSession: any = { user: { id: "test-user" } };
