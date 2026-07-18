@@ -233,10 +233,14 @@ function mergeProgress(local, cloud) {
   const exStatus = {};
   for (const k of new Set([...Object.keys(le), ...Object.keys(ce)]))
     exStatus[k] = (rank[le[k]] || 0) >= (rank[ce[k]] || 0) ? le[k] : ce[k];
+  const lv = local.viewed || {}, cv = cloud.viewed || {};
+  const viewed = {};
+  for (const k of new Set([...Object.keys(lv), ...Object.keys(cv)]))
+    viewed[k] = lv[k] || cv[k];
   return {
     cur: local.cur || cloud.cur || "m1-l1",
     view: local.view || cloud.view || "lesson",
-    exStatus, mastery,
+    exStatus, mastery, viewed,
     strict: local.strict ?? cloud.strict ?? false,
     locale: local.locale || cloud.locale || "ru",
   };
@@ -725,13 +729,14 @@ function CourseView({ courseId, onBackToPicker }) {
   const [view, setView] = useState(saved && saved.view ? saved.view : "lesson");
   const [exStatus, setExStatus] = useState(saved && saved.exStatus ? saved.exStatus : {});
   const [mastery, setMastery] = useState(saved && saved.mastery ? saved.mastery : {});
+  const [viewed, setViewed] = useState(saved && saved.viewed ? saved.viewed : {});
   const [strict, setStrict] = useState(saved ? !!saved.strict : false);
   const [session, setSession] = useState(null);
   const lastSyncedBlob = useRef(null);
   const pulledForUserId = useRef(null);
 
   useEffect(() => {
-    saveProgress(courseId, { cur, view, exStatus, mastery, strict, locale });
+    saveProgress(courseId, { cur, view, exStatus, mastery, viewed, strict, locale });
   }, [courseId, cur, view, exStatus, mastery, strict, locale]);
 
   useEffect(() => {
@@ -775,6 +780,7 @@ function CourseView({ courseId, onBackToPicker }) {
     setView(blob.view || "lesson");
     setExStatus(blob.exStatus || {});
     setMastery(blob.mastery || {});
+    setViewed(blob.viewed || {});
     setStrict(!!blob.strict);
     if (blob.locale) setLocale(blob.locale);
     saveProgress(courseId, blob);
@@ -789,6 +795,7 @@ function CourseView({ courseId, onBackToPicker }) {
     setView("lesson");
     setExStatus({});
     setMastery({});
+    setViewed({});
     setStrict(false);
     lastSyncedBlob.current = null;
     const prev = loadProgress(courseId);
@@ -883,9 +890,14 @@ function CourseView({ courseId, onBackToPicker }) {
     if (!l || l.stub) return { kind: STATUS.NOT_STARTED, skipped: 0 };
     const exs = l.exercises || [];
     const skipped = exs.filter((e) => exStatus[e.id] === "skipped").length;
-    const touched = exs.some((e) => exStatus[e.id]) || mastery[l.id] !== undefined;
+    const touched = exs.some((e) => exStatus[e.id]) || mastery[l.id] !== undefined || !!viewed[l.id];
     const ms = mastery[l.id];
-    const passed = ms !== undefined && ms >= l.masteryCheck.passThreshold;
+    const hasMastery = !!l.masteryCheck;
+    const passed = hasMastery
+      ? ms !== undefined && ms >= l.masteryCheck.passThreshold
+      : exs.length > 0
+        ? exs.every((e) => exStatus[e.id] === "correct" || exStatus[e.id] === "skipped")
+        : !!viewed[l.id];
     if (passed && (!strict || skipped === 0)) return { kind: STATUS.DONE, skipped };
     if (touched) return { kind: skipped > 0 ? STATUS.SKIPPED : STATUS.PROGRESS, skipped };
     return { kind: STATUS.NOT_STARTED, skipped: 0 };
@@ -1015,6 +1027,7 @@ function CourseView({ courseId, onBackToPicker }) {
                       </section>
                     )}
 
+                    {lesson.exercises && lesson.exercises.length > 0 && (
                     <section>
                       <h2>{tr("exercises")}</h2>
                       {lesson.exercises.map((ex, i) => (
@@ -1025,13 +1038,27 @@ function CourseView({ courseId, onBackToPicker }) {
                           onUnskip={() => unskipEx(ex.id)} />
                       ))}
                     </section>
+                    )}
 
                     {lesson.challenge && <section><h2>{tr("challengeOptional").split(" ·")[0]}</h2><Challenge ch={lesson.challenge} verifiedWith={lesson.verifiedWith} /></section>}
 
+                    {lesson.masteryCheck && (
                     <section>
                       <h2>{tr("masteryCheckTitle")} <span className="thr">{tr("threshold", Math.round(lesson.masteryCheck.passThreshold * 100))}</span></h2>
                       <Mastery lesson={lesson} onPass={(sc) => passMastery(lesson.id, sc)} />
                     </section>
+                    )}
+
+                    {!lesson.masteryCheck && (!lesson.exercises || lesson.exercises.length === 0) && (
+                      <div className="mark-read-bar">
+                        {viewed[lesson.id]
+                          ? <span className="mark-read-done">✓ {locale === "ru" ? "Прочитано" : "Done"}</span>
+                          : <button className="mark-read-btn" onClick={() => setViewed((s) => ({ ...s, [lesson.id]: true }))}>
+                              {locale === "ru" ? "Отметить как прочитанное" : "Mark as read"}
+                            </button>
+                        }
+                      </div>
+                    )}
                   </div>}
         </main>
       </div>
@@ -1240,6 +1267,11 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .back-btn { background:none; border:none; color:var(--mut); cursor:pointer; font-size:13px;
   padding:0; white-space:nowrap; }
 .back-btn:hover { color:var(--ink); }
+.mark-read-bar { margin-top:32px; padding-top:24px; border-top:1px solid var(--line); }
+.mark-read-btn { background:var(--amber); color:#14110f; border:none; border-radius:8px;
+  padding:10px 20px; font-size:14px; font-weight:600; cursor:pointer; }
+.mark-read-btn:hover { opacity:0.85; }
+.mark-read-done { color:var(--green); font-size:14px; font-weight:600; }
 `;
 
 function App() {
