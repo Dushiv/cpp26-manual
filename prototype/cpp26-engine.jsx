@@ -658,9 +658,51 @@ function LocaleSwitcher({ locale, setLocale }) {
   );
 }
 
-// CoursePicker will be added in Task 4
 function CoursePicker({ onSelect }) {
-  return <div>Loading course picker...</div>;
+  const COURSES = [
+    { id: "cpp20", label: "C++20", disabled: true,
+      tagline: "концепты · ranges · coroutines", lessons: null },
+    { id: "cpp23", label: "C++23",
+      tagline: "deducing this · expected · generator", lessons: 30 },
+    { id: "cpp26", label: "C++26",
+      tagline: "reflection · contracts · execution", lessons: 33 },
+  ];
+
+  function hasStarted(cid) {
+    try {
+      return !!localStorage.getItem(progressKey(cid));
+    } catch (e) { return false; }
+  }
+
+  return (
+    <div className="app">
+      <style>{CSS}</style>
+      <div className="picker">
+        <div className="picker-hero">
+          <h1 className="picker-title">C++ Learning Path</h1>
+          <p className="picker-sub">Выбери стандарт для изучения</p>
+        </div>
+        <div className="picker-cards">
+          {COURSES.map((c) => (
+            <div
+              key={c.id}
+              className={"picker-card" + (c.disabled ? " picker-card-disabled" : "")}
+              onClick={() => !c.disabled && onSelect(c.id)}
+            >
+              <div className="picker-card-label">{c.label}</div>
+              <div className="picker-card-tagline">{c.tagline}</div>
+              {c.disabled
+                ? <span className="picker-soon">скоро</span>
+                : <div className="picker-card-lessons">{c.lessons} уроков</div>}
+              {!c.disabled && hasStarted(c.id) && (
+                <div className="picker-card-started">● начато</div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function CourseView({ courseId, onBackToPicker }) {
@@ -1170,6 +1212,26 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .repitem:hover { border-color:var(--amber); }
 .repl { font-family:'IBM Plex Serif',serif; }
 .empty-big { color:var(--mut); font-style:italic; padding:30px 0; }
+
+/* CoursePicker */
+.picker { display:flex; flex-direction:column; align-items:center; justify-content:center;
+  min-height:100vh; padding:40px 20px; }
+.picker-hero { text-align:center; margin-bottom:40px; }
+.picker-title { font-family:'IBM Plex Serif',Georgia,serif; font-size:28px; color:var(--ink); margin:0 0 8px; }
+.picker-sub { color:var(--mut); margin:0; }
+.picker-cards { display:flex; gap:20px; flex-wrap:wrap; justify-content:center; }
+.picker-card { background:var(--panel); border:2px solid var(--line); border-radius:14px;
+  padding:28px 24px; min-width:180px; max-width:220px; flex:1; cursor:pointer;
+  transition:border-color .2s, transform .15s; }
+.picker-card:hover:not(.picker-card-disabled) { border-color:var(--amber); transform:translateY(-3px); }
+.picker-card-disabled { opacity:0.45; cursor:not-allowed; }
+.picker-card-label { font-family:'IBM Plex Serif',Georgia,serif; font-size:24px;
+  font-weight:700; color:var(--amber); margin-bottom:8px; }
+.picker-card-tagline { font-size:12px; color:var(--mut); margin-bottom:14px; line-height:1.5; }
+.picker-card-lessons { font-size:11px; color:var(--mut); }
+.picker-soon { font-size:11px; color:var(--mut); background:var(--panel2);
+  border:1px solid var(--line); border-radius:6px; padding:2px 8px; }
+.picker-card-started { font-size:11px; color:var(--green); margin-top:6px; }
 `;
 
 function App() {
