@@ -8,7 +8,7 @@ async function loadCourseData(locale) {
     // no-cache: always revalidate against the server (conditional GET → 304 if
     // unchanged) so freshly-deployed lesson content shows up without waiting for
     // the GitHub Pages max-age=600 window to expire.
-    const res = await fetch(`../content/modules/${locale}/${id}.json`, { cache: "no-cache" });
+    const res = await fetch(`../content/courses/cpp26/${locale}/${id}.json`, { cache: "no-cache" });
     if (!res.ok) throw new Error(`failed to load ${locale}/${id}.json: ${res.status}`);
     return res.json();
   }));

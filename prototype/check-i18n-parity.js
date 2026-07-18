@@ -8,7 +8,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const CONTENT_DIR = path.join(__dirname, "..", "content", "modules");
+const CONTENT_DIR = path.join(__dirname, "..", "content", "courses", "cpp26");
 const MODULE_IDS = ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"];
 
 let errors = [];
