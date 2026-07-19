@@ -57,7 +57,7 @@ function describeLesson(l) {
     exercises: (l.exercises || []).map(describeExercise),
     hasChallenge: !!l.challenge,
     challengeHasStarter: !!(l.challenge && l.challenge.starterCode),
-    masteryQuestions: l.masteryCheck.questions.map(describeQuestion),
+    masteryQuestions: l.masteryCheck ? l.masteryCheck.questions.map(describeQuestion) : null,
   };
 }
 
