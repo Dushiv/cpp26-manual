@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m2-l1",
-      "title": "Deducing this - Lesson 1",
-      "stub": true
+      "title": "Explicit Object Parameter: Syntax and Basic Patterns",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "In C++17, writing a getter that works correctly across all combinations of const-ness and value category required duplicating the method body into two or even four overloads. A simple field accessor needs T& get() &, const T& get() const&, T&& get() && and const T&& get() const&&. All four carry identical logic — only the qualifiers differ. Any change to the logic must be applied in multiple places, leading to bugs and bloated code. C++23 solves this with the explicit object parameter (also called \"deducing this\"): the object qualifier becomes an ordinary template parameter, and the compiler deduces its type automatically at each call site.",
+      "theory": "An explicit object parameter is declared as the first parameter of a non-static method with the keyword this before the name: auto& get(this auto& self). The parameter is conventionally named self, though any name is valid. The type of self is deduced by the compiler using template argument deduction rules based on the value category of the object the method is called on: if the object is an lvalue of type Widget, Self = Widget; if it is a const lvalue, Self = const Widget; if it is an rvalue, Self = Widget (no ampersand, but the reference binding on self is an rvalue reference). The compiler instantiates a concrete type at every call site, exactly as with a function template.\n\nThe call syntax is unchanged: w.get() works exactly as before. The compiler handles passing the object into self. An explicit object parameter cannot be combined with virtual or static — the method must be an ordinary non-static member.\n\nThe main practical benefit is eliminating const/non-const overload duplication. Instead of four variants of get(), one suffices: auto&& get(this auto&& self). Here self is deduced to the appropriate reference category automatically. To return a member while preserving the value category of the object, use std::forward_like<decltype(self)>(self.member): this C++23 utility applies the same const-ness and reference kind to the member as self carries.\n\nFor method chaining (fluent interfaces, builder pattern) the explicit object parameter is equally useful: auto& set_x(this auto& self, X val) returns self, and the next method can be called immediately on that reference. The return type adapts automatically to the actual type of the object, which matters in inheritance — a derived class gets a reference to itself, not to the base.\n\nValue categories of self: when the parameter is declared as this auto& self, self is always an lvalue reference, and passing an rvalue object is a compile error. To handle rvalues, declare this auto&& self — a forwarding reference that binds to any value category. Inside the method, use std::forward<Self>(self) to perfectly forward self itself, where Self is the deduced type.\n\nRestrictions: a method with an explicit object parameter cannot be declared virtual — virtual dispatch is incompatible with template type deduction. You also cannot add &, &&, or const qualifiers to the method itself — all of that is now expressed through the type of self.",
+      "examples": [
+        {
+          "id": "m2-l1-ex1",
+          "title": "Basic syntax: one method instead of two overloads",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Box {\n    std::string value;\n    auto& get(this auto& self) { return self.value; }\n};\n\nint main() {\n    Box b{\"hello\"};\n    const Box cb{\"world\"};\n    b.get() = \"hi\";\n    std::cout << b.get() << \"\\n\";\n    std::cout << cb.get() << \"\\n\";\n}",
+          "expectedOutput": "hi\nworld",
+          "explanation": "The method get accepts self as a reference to auto. For b (Box&), Self is deduced as Box, and the method returns std::string&, allowing assignment. For cb (const Box&), Self is deduced as const Box, and the method returns const std::string& — writing through it would be a compile error. One method covers both cases without duplicating the body."
+        },
+        {
+          "id": "m2-l1-ex2",
+          "title": "Eliminating four overloads: std::forward_like",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <utility>\n\nstruct Buffer {\n    int data = 42;\n    // C++23: one method handles all value categories\n    auto&& get(this auto&& self) {\n        return std::forward_like<decltype(self)>(self.data);\n    }\n};\n\nint main() {\n    Buffer b;\n    const Buffer cb;\n    std::cout << b.get() << \"\\n\";        // lvalue\n    std::cout << cb.get() << \"\\n\";       // const lvalue\n    std::cout << Buffer{}.get() << \"\\n\"; // rvalue\n}",
+          "expectedOutput": "42\n42\n42",
+          "explanation": "The this auto&& self parameter is a forwarding reference, deduced as int& for b, const int& for cb, and int&& for the temporary Buffer{}. std::forward_like<decltype(self)>(self.data) propagates to the member data the same const-ness and value category that self carries: for an rvalue object, data is returned as int&&, enabling a move rather than a copy. In C++17 this required four separate overloads."
+        },
+        {
+          "id": "m2-l1-ex3",
+          "title": "Fluent builder: method chaining via explicit object parameter",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Config {\n    std::string host = \"localhost\";\n    int port = 8080;\n\n    auto& set_host(this auto& self, std::string h) {\n        self.host = std::move(h);\n        return self;\n    }\n    auto& set_port(this auto& self, int p) {\n        self.port = p;\n        return self;\n    }\n    void print() const {\n        std::cout << host << \":\" << port << \"\\n\";\n    }\n};\n\nint main() {\n    Config c;\n    c.set_host(\"example.com\").set_port(443).print();\n}",
+          "expectedOutput": "example.com:443",
+          "explanation": "The methods set_host and set_port accept self by lvalue reference and return it. The return type auto& is deduced as Config&, exactly what is needed to continue the chain. In an inheritance scenario the same technique automatically returns a reference to the derived class rather than the base, something that in C++17 required CRTP or separate implementations in every subclass."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m2-l2",

@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m2-l1",
-      "title": "Deducing this - Lesson 1",
-      "stub": true
+      "title": "Explicit Object Parameter: синтаксис и базовые паттерны",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "В C++17 написать метод-геттер, корректно работающий для всех комбинаций константности и категорий значений объекта, означало дублировать тело метода в двух, а то и четырёх перегрузках. Для простого поля нужны T& get() &, const T& get() const&, T&& get() && и const T&& get() const&&. Все четыре содержат одинаковую логику — отличаются лишь квалификаторы. Любое изменение логики надо вносить сразу в несколько мест, что ведёт к ошибкам и раздуванию кода. C++23 решает эту проблему через явный параметр объекта (explicit object parameter, «deducing this»): квалификатор объекта превращается в обычный параметр шаблона, и компилятор выводит его тип автоматически при каждом вызове.",
+      "theory": "Явный параметр объекта объявляется как первый параметр нестатического метода с ключевым словом this перед именем: auto& get(this auto& self). Такой параметр принято называть self, хотя имя произвольное. Тип self выводится компилятором по правилам вывода шаблонных аргументов в зависимости от того, на каком объекте вызван метод: если объект — lvalue типа Widget, Self = Widget; если const lvalue — Self = const Widget; если rvalue — Self = Widget (без амперсанда, но ссылка на self будет rvalue-ссылкой). Компилятор подставляет конкретный тип при каждом вызове, как при вызове шаблонной функции.\n\nСинтаксис вызова не меняется: w.get() работает так же, как и раньше. Компилятор сам передаёт объект в параметр self. Явный параметр объекта нельзя сочетать с virtual и static — метод должен быть обычным нестатическим.\n\nГлавный практический эффект — устранение дублирования const/non-const перегрузок. Вместо четырёх вариантов get() достаточно одного: auto&& get(this auto&& self). Здесь self выводится в нужную ссылочную категорию автоматически. Чтобы правильно вернуть член с сохранением категории значения объекта, используется std::forward_like<decltype(self)>(self.member): эта утилита C++23 применяет к члену те же константность и ссылочность, что и у self.\n\nДля цепочных вызовов (fluent interface, builder-паттерн) явный параметр объекта также удобен: auto& set_x(this auto& self, X val) возвращает self, и на возвращённой ссылке можно сразу вызвать следующий метод. Тип возврата автоматически подстраивается под фактический тип объекта, что важно при наследовании — производный класс получает ссылку на себя, а не на базовый.\n\nКатегории значений self: когда параметр объявлен как this auto& self, self всегда lvalue-ссылка, и передача rvalue-объектов запрещена. Если нужно обрабатывать rvalue, используют this auto&& self — универсальная ссылка, которая связывается с любой категорией. Внутри метода для идеального проброса самого self используют std::forward<Self>(self), где Self — выведенный тип.\n\nОграничения: метод с явным параметром объекта нельзя объявить виртуальным — виртуальная диспетчеризация несовместима с шаблонным выводом типа. Также нельзя применять квалификаторы &, && или const к самому методу — все они теперь выражены через тип self.",
+      "examples": [
+        {
+          "id": "m2-l1-ex1",
+          "title": "Базовый синтаксис: один метод вместо двух перегрузок",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Box {\n    std::string value;\n    auto& get(this auto& self) { return self.value; }\n};\n\nint main() {\n    Box b{\"hello\"};\n    const Box cb{\"world\"};\n    b.get() = \"hi\";\n    std::cout << b.get() << \"\\n\";\n    std::cout << cb.get() << \"\\n\";\n}",
+          "expectedOutput": "hi\nworld",
+          "explanation": "Метод get принимает self по ссылке на auto. Для b (Widget&) Self выводится как Box, и метод возвращает std::string&, что позволяет присвоить значение. Для cb (const Box&) Self выводится как const Box, и метод возвращает const std::string& — запись через него была бы ошибкой компиляции. Один метод покрывает оба случая без дублирования тела."
+        },
+        {
+          "id": "m2-l1-ex2",
+          "title": "Устранение четырёх перегрузок: std::forward_like",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <utility>\n\nstruct Buffer {\n    int data = 42;\n    // C++23: один метод обрабатывает все категории значений\n    auto&& get(this auto&& self) {\n        return std::forward_like<decltype(self)>(self.data);\n    }\n};\n\nint main() {\n    Buffer b;\n    const Buffer cb;\n    std::cout << b.get() << \"\\n\";        // lvalue\n    std::cout << cb.get() << \"\\n\";       // const lvalue\n    std::cout << Buffer{}.get() << \"\\n\"; // rvalue\n}",
+          "expectedOutput": "42\n42\n42",
+          "explanation": "Параметр this auto&& self — универсальная ссылка, выводится в int& для b, const int& для cb и int&& для временного Buffer{}. std::forward_like<decltype(self)>(self.data) переносит на член data те же константность и категорию значения, что у self: для rvalue-объекта data возвращается как int&&, что позволяет переместить его, а не копировать. В C++17 этот эффект достигался четырьмя отдельными перегрузками."
+        },
+        {
+          "id": "m2-l1-ex3",
+          "title": "Fluent builder: цепочка методов через явный параметр объекта",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Config {\n    std::string host = \"localhost\";\n    int port = 8080;\n\n    auto& set_host(this auto& self, std::string h) {\n        self.host = std::move(h);\n        return self;\n    }\n    auto& set_port(this auto& self, int p) {\n        self.port = p;\n        return self;\n    }\n    void print() const {\n        std::cout << host << \":\" << port << \"\\n\";\n    }\n};\n\nint main() {\n    Config c;\n    c.set_host(\"example.com\").set_port(443).print();\n}",
+          "expectedOutput": "example.com:443",
+          "explanation": "Методы set_host и set_port принимают self по lvalue-ссылке и возвращают её же. Тип возврата auto& выводится как Config& — ровно тот тип, что нужен для продолжения цепочки. При наследовании этот же приём автоматически возвращает ссылку на производный класс, а не на базовый, что в C++17 требовало CRTP или отдельных реализаций в каждом наследнике."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m2-l2",
