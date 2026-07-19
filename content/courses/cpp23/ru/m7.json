@@ -44,8 +44,38 @@
     },
     {
       "id": "m7-l2",
-      "title": "Контейнеры и утилиты - Lesson 2",
-      "stub": true
+      "title": "std::move_only_function и std::spanstream",
+      "prerequisites": ["m7-l1"],
+      "background": null,
+      "motivation": "std::function<Sig> — удобная обёртка для хранения любого вызываемого объекта, но у неё есть скрытое ограничение: хранимый callable обязан быть копируемым. Это блокирует захват unique_ptr, std::promise или любого другого move-only ресурса в лямбду, которую нужно положить в std::function. C++23 решает проблему через std::move_only_function<Sig> — она снимает требование копируемости и принимает любой перемещаемый callable. Второй утилитой в этом уроке является std::spanstream: std::stringstream выделяет буфер в куче при каждом создании, что неприемлемо в embedded-коде с запретом на аллокации или в real-time-обработчиках. std::ospanstream и std::ispanstream работают поверх фиксированного внешнего буфера без единого обращения к куче.",
+      "theory": "std::move_only_function<Sig> объявлена в заголовке <functional> и ведёт себя как std::function, но является move-only типом: её можно переместить, но не скопировать. Это позволяет хранить лямбды, захватывающие std::unique_ptr, std::promise, файловые дескрипторы или любой другой ресурс, для которого копирование не определено. Синтаксис вызова остаётся прежним: f(args...). Два метода, специфичных для std::function — .target() и .target_type() — в move_only_function отсутствуют, что несколько упрощает реализацию и даёт чуть лучшую производительность.\n\nПрактические сценарии: очереди задач (каждая задача владеет уникальным ресурсом), цепочки обратных вызовов (promise/future), конвейеры обработки, где каждый шаг несёт эксклюзивное владение данными. Попытка скопировать move_only_function вызывает ошибку компиляции — это явный, статически проверяемый контракт вместо молчаливого UB или runtime-исключения.\n\nstd::spanstream — семейство потоков ввода-вывода из заголовка <spanstream>, работающих поверх внешней памяти. std::ospanstream принимает std::span<char> и записывает данные в этот буфер операторами <<, не выделяя кучную память. После записи метод .span() возвращает span, ограниченный фактически записанными байтами. std::ispanstream принимает std::span<const char> и разбирает его операторами >> в точности как std::istringstream. Оба класса унаследованы от std::basic_spanstream, который при необходимости поддерживает и чтение, и запись.\n\nГлавная ценность spanstream — предсказуемое использование памяти: буфер живёт ровно столько, сколько нужно вызывающей стороне, и никакого скрытого heap-трафика нет. Это важно в системах реального времени, embedded-платформах с ограниченной кучей или в высоконагруженных серверах, где аллокатор становится точкой конкуренции. Ограничение: ospanstream не умеет расти — если данных больше, чем размер буфера, запись молча усекается и поток переходит в состояние ошибки, которое нужно проверять через os.good() или os.tellp().",
+      "examples": [
+        {
+          "id": "m7-l2-ex1",
+          "title": "move_only_function: хранение лямбды с unique_ptr",
+          "level": "basic",
+          "code": "#include <functional>\n#include <memory>\n#include <print>\n#include <vector>\nint main() {\n    std::vector<std::move_only_function<void()>> tasks;\n    for (int i = 0; i < 3; ++i) {\n        auto data = std::make_unique<int>(i * 10);\n        tasks.push_back([p = std::move(data)]() {\n            std::println(\"value: {}\", *p);\n        });\n    }\n    for (auto& t : tasks) t();\n}",
+          "expectedOutput": "value: 0\nvalue: 10\nvalue: 20",
+          "explanation": "Лямбда захватывает unique_ptr через std::move — она сама становится move-only. std::function отказала бы при попытке скопировать такой callable в вектор. std::move_only_function принимает перемещение без возражений: каждая задача в векторе владеет своим ресурсом эксклюзивно."
+        },
+        {
+          "id": "m7-l2-ex2",
+          "title": "move_only_function как параметр функции и перемещение владения",
+          "level": "intermediate",
+          "code": "#include <functional>\n#include <memory>\n#include <print>\n#include <string>\nvoid run(std::move_only_function<std::string()> producer) {\n    std::println(\"produced: {}\", producer());\n}\nint main() {\n    auto counter = std::make_unique<int>(0);\n    run([c = std::move(counter)]() mutable -> std::string {\n        return \"count=\" + std::to_string(++(*c));\n    });\n    // move_only_function can be moved\n    auto f = std::move_only_function<int(int)>([](int x){ return x * 2; });\n    auto g = std::move(f);\n    std::println(\"g(21) = {}\", g(21));\n}",
+          "expectedOutput": "produced: count=1\ng(21) = 42",
+          "explanation": "Параметр run() принимает move_only_function по значению — это передача владения callable'ом вместе со всеми его захваченными ресурсами. Второй блок демонстрирует явное перемещение: после std::move(f) переменная f находится в valid-but-unspecified состоянии, а g полностью владеет хранимой функцией. Попытка скопировать f вместо перемещения дала бы ошибку компиляции."
+        },
+        {
+          "id": "m7-l2-ex3",
+          "title": "ospanstream и ispanstream: потоковый I/O без выделения памяти",
+          "level": "advanced",
+          "code": "#include <spanstream>\n#include <print>\n#include <span>\n#include <string_view>\nint main() {\n    // ospanstream: write into stack buffer\n    char buf[64]{};\n    {\n        std::ospanstream os(std::span<char>{buf, sizeof(buf)});\n        os << \"x=\" << 42 << \" y=\" << 3.14;\n        auto written = os.span();\n        std::println(\"written: {}\", std::string_view(written.data(), written.size()));\n    }\n    // ispanstream: parse from existing buffer\n    const char input[] = \"100 200 300\";\n    std::ispanstream is(std::span<const char>{input, sizeof(input) - 1});\n    int a, b, c;\n    is >> a >> b >> c;\n    std::println(\"parsed: {} {} {}\", a, b, c);\n}",
+          "expectedOutput": "written: x=42 y=3.14\nparsed: 100 200 300",
+          "explanation": "ospanstream записывает текстовое представление значений прямо в стековый массив buf. После записи os.span() возвращает span только по фактически записанным байтам — не весь буфер целиком. ispanstream разбирает буфер ровно так, как istringstream разбирал бы строку, но без аллокации. Обратите внимание на явный std::span<const char>: конструктор испанстрима принимает span, а не указатель, и неявного преобразования из braced-init нет."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m7-l3",
