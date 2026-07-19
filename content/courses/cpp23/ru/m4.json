@@ -47,8 +47,38 @@
     },
     {
       "id": "m4-l2",
-      "title": "Ranges C++23 - Lesson 2",
-      "stub": true
+      "title": "Разбивающие адаптеры: chunk, slide, stride, chunk_by",
+      "prerequisites": ["m4-l1"],
+      "background": null,
+      "motivation": "После того как мы научились материализовывать ranges в контейнеры, встаёт следующий вопрос: как разбивать диапазоны на части? Батчевая обработка данных, скользящие окна для статистики, прореживание сигналов, группировка последовательных элементов — всё это распространённые задачи, которые в C++20 требовали ручных циклов с индексами или громоздких алгоритмов. C++23 добавил четыре специализированных адаптера: views::chunk, views::slide, views::stride и views::chunk_by — каждый решает свой класс задач разбиения одной строкой.",
+      "theory": "views::chunk(n) разбивает диапазон на последовательные неперекрывающиеся блоки по n элементов. Каждый блок сам является view. Если размер диапазона не делится на n нацело, последний блок содержит оставшиеся элементы — меньше n. Это прямая замена ручного цикла с шагом n: batch-отправка запросов к API, постраничная обработка записей, разбиение потока байт на пакеты фиксированного размера.\n\nviews::slide(n) тоже производит окна размером n, но соседние окна перекрываются: каждое следующее смещено на один элемент относительно предыдущего. Для диапазона [1, 2, 3, 4, 5] slide(3) даёт [1,2,3], [2,3,4], [3,4,5]. Количество окон равно max(0, size - n + 1). Это стандартный инструмент для скользящего среднего, скользящего максимума и любой другой оконной статистики.\n\nviews::stride(n) не создаёт окна — он выбирает каждый n-й элемент: первый, затем n+1-й, 2n+1-й и так далее. Для [1, 2, 3, 4, 5, 6] stride(2) даёт [1, 3, 5]. Применяется для прореживания (downsampling) сигналов, обращения к перемежённым данным (interleaved), выборки каждого k-го кадра из видео.\n\nviews::chunk_by(pred) разбивает диапазон на группы переменного размера по предикату: пока pred(prev, cur) возвращает true, элементы остаются в одной группе; как только он возвращает false — начинается новая группа. В отличие от chunk и slide, размер групп не фиксирован. Это удобно для кодирования серий (run-length encoding), группировки последовательных равных элементов, разбиения уже частично отсортированного диапазона. Краткое сравнение: chunk — фиксированный размер, без перекрытия; slide — фиксированный размер, с перекрытием (шаг 1); stride — выбирает одиночные элементы через равный интервал; chunk_by — переменный размер, управляется предикатом по соседним парам.",
+      "examples": [
+        {
+          "id": "m4-l2-ex1",
+          "title": "chunk и stride рядом",
+          "description": "chunk(3) нарезает вектор на тройки (последняя может быть короче). stride(3) берёт каждый третий элемент. Оба адаптера — ленивые view, результат материализуется через ranges::to.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5, 6, 7, 8, 9};\n\n    std::print(\"chunk(3): \");\n    for (auto ch : v | std::views::chunk(3)) {\n        auto cv = ch | std::ranges::to<std::vector>();\n        std::print(\"{} \", cv);\n    }\n    std::println(\"\");\n\n    std::print(\"stride(3): \");\n    auto strided = v | std::views::stride(3) | std::ranges::to<std::vector>();\n    std::println(\"{}\", strided);\n}",
+          "expectedOutput": "chunk(3): [1, 2, 3] [4, 5, 6] [7, 8, 9] \nstride(3): [1, 4, 7]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l2-ex2",
+          "title": "slide для скользящего среднего и chunk_by для группировки",
+          "description": "slide(3) даёт перекрывающиеся окна, по которым считается среднее. chunk_by(<=) объединяет соседние элементы, пока последующий не меньше предыдущего — выделяя возрастающие серии.",
+          "code": "#include <ranges>\n#include <vector>\n#include <numeric>\n#include <print>\nint main() {\n    std::vector<int> data = {1, 3, 5, 7, 9};\n\n    // sliding window averages\n    std::print(\"slide(3) averages: \");\n    for (auto window : data | std::views::slide(3)) {\n        auto v = window | std::ranges::to<std::vector>();\n        double avg = std::accumulate(v.begin(), v.end(), 0.0) / v.size();\n        std::print(\"{:.1f} \", avg);\n    }\n    std::println(\"\");\n\n    // chunk_by: group consecutive elements where next >= prev\n    std::vector<int> seq = {1, 2, 3, 1, 2, 4, 5, 1};\n    std::print(\"chunk_by(<=): \");\n    for (auto group : seq | std::views::chunk_by(std::less_equal<>{})) {\n        std::print(\"{} \", group | std::ranges::to<std::vector>());\n    }\n    std::println(\"\");\n}",
+          "expectedOutput": "slide(3) averages: 3.0 5.0 7.0 \nchunk_by(<=): [1, 2, 3] [1, 2, 4, 5] [1]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l2-ex3",
+          "title": "Практика: батчевая обработка и прореживание",
+          "description": "chunk(3) имитирует батчевую отправку ID в API — последний батч неполный. stride(2) прореживает вдвое массив показаний сенсора, оставляя каждое второе значение.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    // Simulate IDs to process in batches\n    std::vector<int> ids = {101, 102, 103, 104, 105, 106, 107};\n\n    int batch_num = 0;\n    for (auto batch : ids | std::views::chunk(3)) {\n        std::print(\"Batch {}: \", ++batch_num);\n        std::println(\"{}\", batch | std::ranges::to<std::vector>());\n    }\n\n    // Downsampling: take every 2nd sensor reading\n    std::vector<double> readings = {1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8};\n    auto downsampled = readings | std::views::stride(2) | std::ranges::to<std::vector>();\n    std::println(\"downsampled: {}\", downsampled);\n}",
+          "expectedOutput": "Batch 1: [101, 102, 103]\nBatch 2: [104, 105, 106]\nBatch 3: [107]\ndownsampled: [1.1, 3.3, 5.5, 7.7]",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l3",

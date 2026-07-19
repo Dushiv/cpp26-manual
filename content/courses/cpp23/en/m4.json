@@ -47,8 +47,38 @@
     },
     {
       "id": "m4-l2",
-      "title": "Ranges C++23 - Lesson 2",
-      "stub": true
+      "title": "Splitting Adapters: chunk, slide, stride, chunk_by",
+      "prerequisites": ["m4-l1"],
+      "background": null,
+      "motivation": "After learning to materialize ranges into containers, the next question is how to split ranges into parts. Batch processing, sliding windows for statistics, signal downsampling, grouping consecutive elements — these are common tasks that in C++20 required manual index loops or awkward algorithms. C++23 adds four specialized adapters: views::chunk, views::slide, views::stride, and views::chunk_by — each solving its own class of splitting problem in a single line.",
+      "theory": "views::chunk(n) splits a range into consecutive, non-overlapping blocks of n elements. Each block is itself a view. If the range size is not divisible by n, the last block contains the remaining elements — fewer than n. This directly replaces a manual loop with step n: batch API requests, paginated record processing, splitting a byte stream into fixed-size packets.\n\nviews::slide(n) also produces windows of size n, but adjacent windows overlap: each window is offset by one element from the previous. For the range [1, 2, 3, 4, 5], slide(3) yields [1,2,3], [2,3,4], [3,4,5]. The number of windows equals max(0, size - n + 1). This is the standard tool for moving averages, rolling maxima, and any other windowed statistic.\n\nviews::stride(n) does not create windows — it picks every nth element: the first, then the (n+1)th, the (2n+1)th, and so on. For [1, 2, 3, 4, 5, 6], stride(2) gives [1, 3, 5]. Use cases include downsampling signals, accessing interleaved data, and selecting every kth frame from a video stream.\n\nviews::chunk_by(pred) splits a range into variable-size groups via a predicate: while pred(prev, cur) returns true, elements stay in the same group; when it returns false, a new group begins. Unlike chunk and slide, group sizes are not fixed. This is well suited for run-length encoding, grouping consecutive equal elements, and splitting a partially sorted range. A brief comparison: chunk — fixed size, no overlap; slide — fixed size, overlapping (step 1); stride — picks single elements at a regular interval; chunk_by — variable size, controlled by a predicate on adjacent pairs.",
+      "examples": [
+        {
+          "id": "m4-l2-ex1",
+          "title": "chunk and stride side by side",
+          "description": "chunk(3) slices a vector into triples (the last may be shorter). stride(3) picks every third element. Both adapters are lazy views; results are materialized via ranges::to.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5, 6, 7, 8, 9};\n\n    std::print(\"chunk(3): \");\n    for (auto ch : v | std::views::chunk(3)) {\n        auto cv = ch | std::ranges::to<std::vector>();\n        std::print(\"{} \", cv);\n    }\n    std::println(\"\");\n\n    std::print(\"stride(3): \");\n    auto strided = v | std::views::stride(3) | std::ranges::to<std::vector>();\n    std::println(\"{}\", strided);\n}",
+          "expectedOutput": "chunk(3): [1, 2, 3] [4, 5, 6] [7, 8, 9] \nstride(3): [1, 4, 7]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l2-ex2",
+          "title": "slide for moving average and chunk_by for grouping",
+          "description": "slide(3) produces overlapping windows over which an average is computed. chunk_by(<=) groups adjacent elements while each successor is not less than its predecessor, isolating non-decreasing runs.",
+          "code": "#include <ranges>\n#include <vector>\n#include <numeric>\n#include <print>\nint main() {\n    std::vector<int> data = {1, 3, 5, 7, 9};\n\n    // sliding window averages\n    std::print(\"slide(3) averages: \");\n    for (auto window : data | std::views::slide(3)) {\n        auto v = window | std::ranges::to<std::vector>();\n        double avg = std::accumulate(v.begin(), v.end(), 0.0) / v.size();\n        std::print(\"{:.1f} \", avg);\n    }\n    std::println(\"\");\n\n    // chunk_by: group consecutive elements where next >= prev\n    std::vector<int> seq = {1, 2, 3, 1, 2, 4, 5, 1};\n    std::print(\"chunk_by(<=): \");\n    for (auto group : seq | std::views::chunk_by(std::less_equal<>{})) {\n        std::print(\"{} \", group | std::ranges::to<std::vector>());\n    }\n    std::println(\"\");\n}",
+          "expectedOutput": "slide(3) averages: 3.0 5.0 7.0 \nchunk_by(<=): [1, 2, 3] [1, 2, 4, 5] [1]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l2-ex3",
+          "title": "Practical: batch processing and downsampling",
+          "description": "chunk(3) simulates batched API calls — the last batch is partial. stride(2) downsamples a sensor reading array by half, keeping every other value.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    // Simulate IDs to process in batches\n    std::vector<int> ids = {101, 102, 103, 104, 105, 106, 107};\n\n    int batch_num = 0;\n    for (auto batch : ids | std::views::chunk(3)) {\n        std::print(\"Batch {}: \", ++batch_num);\n        std::println(\"{}\", batch | std::ranges::to<std::vector>());\n    }\n\n    // Downsampling: take every 2nd sensor reading\n    std::vector<double> readings = {1.1, 2.2, 3.3, 4.4, 5.5, 6.6, 7.7, 8.8};\n    auto downsampled = readings | std::views::stride(2) | std::ranges::to<std::vector>();\n    std::println(\"downsampled: {}\", downsampled);\n}",
+          "expectedOutput": "Batch 1: [101, 102, 103]\nBatch 2: [104, 105, 106]\nBatch 3: [107]\ndownsampled: [1.1, 3.3, 5.5, 7.7]",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l3",
