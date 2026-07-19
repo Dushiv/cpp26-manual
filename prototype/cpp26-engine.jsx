@@ -43,7 +43,6 @@ const UI_STRINGS = {
     example: "Пример",
     predictThenReveal: "Сначала предскажи вывод — потом раскрой",
     output: "Вывод",
-    pendingRun: "ждёт прогона",
     exercises: "Упражнения",
     check: "Проверить",
     checkLine: (n) => (n ? `Проверить строку #${n}` : "Проверить"),
@@ -113,7 +112,6 @@ const UI_STRINGS = {
     example: "Example",
     predictThenReveal: "Predict the output first — then reveal",
     output: "Output",
-    pendingRun: "awaiting run",
     exercises: "Exercises",
     check: "Check",
     checkLine: (n) => (n ? `Check line #${n}` : "Check"),
@@ -386,7 +384,7 @@ function ExampleCard({ ex, idx }) {
       {!show
         ? <button className="btn ghost" onClick={() => setShow(true)}>{t("predictThenReveal")}</button>
         : <>
-            <div className="out"><span className="out-l">{t("output")}</span><code className="out-v">{ex.expectedOutput}</code><span className="pend">{t("pendingRun")}</span></div>
+            <div className="out"><span className="out-l">{t("output")}</span><code className="out-v">{ex.expectedOutput}</code></div>
             <div className="exp"><Markdown text={ex.explanation} /></div>
           </>}
     </div>
@@ -1201,7 +1199,6 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .out { display:flex; align-items:center; gap:9px; margin-top:4px; }
 .out-l { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); }
 .out-v { background:var(--codebg); border:1px solid var(--green); color:var(--green); border-radius:6px; padding:2px 9px; font-size:13px; }
-.pend { font-size:11px; color:var(--amber); font-style:italic; }
 
 .challenge { border-style:dashed; }
 .ref-label { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--amber); margin:8px 0 6px; }
