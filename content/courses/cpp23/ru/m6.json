@@ -35,8 +35,37 @@
     },
     {
       "id": "m6-l2",
-      "title": "Форматирование и вывод - Lesson 2",
-      "stub": true
+      "title": "std::format для диапазонов и пользовательских типов",
+      "prerequisites": ["m6-l1"],
+      "background": null,
+      "motivation": "std::format появился в C++20 и сразу стал удобнее printf и std::cout. Но одна досадная дыра оставалась: попытка отформатировать std::vector<int> или std::map<std::string, int> приводила к ошибке компиляции — стандартные контейнеры не поддерживались из коробки. Точно так же ваши собственные типы Point, Color, Matrix нужно было сначала вручную конвертировать в строку, прежде чем передать в std::format. C++23 закрывает обе дыры: встроенная поддержка форматирования любых диапазонов и официальный механизм подключения пользовательских типов через специализацию std::formatter<T>.",
+      "theory": "В C++23 все диапазоны, чьи элементы форматируемы, автоматически становятся форматируемыми. std::println(\"{}\", vec) — где vec это std::vector<int> — выводит [1, 2, 3]. Это работает для любого типа, удовлетворяющего концепту std::ranges::range, включая массивы, списки, множества и span. Формат по умолчанию: открывающая квадратная скобка, элементы через запятую, закрывающая скобка.\n\nДля тонкой настройки у диапазонов есть специальные модификаторы в спецификаторе формата. Флаг n убирает скобки: {:n} даёт 1, 2, 3 вместо [1, 2, 3]. Флаг m включает «словарный» стиль для диапазонов пар: {\"a\": 1, \"b\": 2} — именно такой вывод вы получите при форматировании std::map. Флаг s интерпретирует диапазон символов как строку. После двойного двоеточия (::) указывается спецификатор для каждого элемента: {::>4} выравнивает каждый элемент по правому краю в поле шириной 4.\n\nЧтобы сделать свой тип формируемым, нужно специализировать шаблон struct std::formatter<T>. Специализация должна содержать два метода. Метод parse принимает std::format_parse_context и читает спецификатор формата — часть строки между символом : и закрывающей скобкой }. Если пользовательских спецификаторов нет, достаточно вернуть ctx.begin() без какого-либо разбора. Метод format принимает константную ссылку на форматируемый объект и std::format_context, а пишет результат через вспомогательную функцию std::format_to(ctx.out(), ...). После того как специализация определена, тип работает во всех контекстах форматирования: std::format, std::print, std::println и как аргумент в составе более сложных форматных строк.\n\nЕсли формат нужен не только простой, но и настраиваемый, parse можно реализовать так, чтобы он читал символы спецификатора и устанавливал флаги в полях самого объекта-форматтера. Например, флаг x может переключать вывод цвета с rgb(255,0,0) на #FF0000. Поля форматтера инициализируются при каждом вызове parse и доступны в format через this.\n\nПомимо std::format_to, существует std::format_to_n(out, n, fmt, args...) — он записывает не более n символов в выходной итератор и возвращает структуру с полем out (итератор за последним записанным символом) и полем size (полная длина, которая получилась бы без ограничения). Это удобно для записи в заранее выделенные буферы фиксированного размера без промежуточных аллокаций.",
+      "examples": [
+        {
+          "id": "m6-l2-ex1",
+          "title": "Форматирование диапазонов: вектор и словарь",
+          "description": "C++23 позволяет форматировать std::vector и std::map напрямую через std::println. Флаг n убирает скобки, двойное двоеточие задаёт формат для каждого элемента, а std::map выводится в «словарном» стиле автоматически.",
+          "code": "#include <print>\n#include <vector>\n#include <map>\n#include <string>\nint main() {\n    std::vector<int> nums = {1, 2, 3, 4, 5};\n    std::println(\"{}\", nums);     // со скобками\n    std::println(\"{:n}\", nums);   // без скобок\n    std::println(\"{::>4}\", nums); // каждый элемент выровнен вправо\n\n    std::map<std::string, int> m = {{\"a\", 1}, {\"b\", 2}};\n    std::println(\"{}\", m);        // словарный стиль\n}",
+          "expectedOutput": "[1, 2, 3, 4, 5]\n1, 2, 3, 4, 5\n[   1,    2,    3,    4,    5]\n{\"a\": 1, \"b\": 2}",
+          "outputsVerified": true
+        },
+        {
+          "id": "m6-l2-ex2",
+          "title": "Специализация std::formatter для пользовательского типа",
+          "description": "Специализация std::formatter<Point> делает тип Point форматируемым везде — в std::print, std::format и в составе более сложных строк. Метод parse читает спецификатор, format пишет результат через std::format_to.",
+          "code": "#include <print>\n#include <format>\n#include <string>\n\nstruct Point {\n    double x, y;\n};\n\ntemplate<>\nstruct std::formatter<Point> {\n    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }\n    auto format(const Point& p, std::format_context& ctx) const {\n        return std::format_to(ctx.out(), \"({:.1f}, {:.1f})\", p.x, p.y);\n    }\n};\n\nint main() {\n    Point origin{0.0, 0.0};\n    Point p{3.14, 2.72};\n\n    std::println(\"{}\", origin);\n    std::println(\"{}\", p);\n\n    // Работает и внутри сложных форматных строк\n    std::string result = std::format(\"A={}, B={}\", Point{1.0, 2.0}, Point{3.0, 4.0});\n    std::println(\"{}\", result);\n}",
+          "expectedOutput": "(0.0, 0.0)\n(3.1, 2.7)\nA=(1.0, 2.0), B=(3.0, 4.0)",
+          "outputsVerified": true
+        },
+        {
+          "id": "m6-l2-ex3",
+          "title": "Пользовательский спецификатор и std::format_to_n",
+          "description": "Метод parse у std::formatter может читать флаги из спецификатора и менять поведение format. std::format_to_n записывает не более N символов в буфер без промежуточного std::string.",
+          "code": "#include <print>\n#include <format>\n#include <array>\n#include <string_view>\n#include <cstdint>\n\nstruct Color {\n    uint8_t r, g, b;\n};\n\ntemplate<>\nstruct std::formatter<Color> {\n    bool hex = false;\n    constexpr auto parse(std::format_parse_context& ctx) {\n        auto it = ctx.begin();\n        if (it != ctx.end() && *it == 'x') { hex = true; ++it; }\n        return it;\n    }\n    auto format(const Color& c, std::format_context& ctx) const {\n        if (hex)\n            return std::format_to(ctx.out(), \"#{:02X}{:02X}{:02X}\", c.r, c.g, c.b);\n        return std::format_to(ctx.out(), \"rgb({},{},{})\", c.r, c.g, c.b);\n    }\n};\n\nint main() {\n    Color red{255, 0, 0};\n    std::println(\"{}\", red);    // формат по умолчанию\n    std::println(\"{:x}\", red);  // флаг x — шестнадцатеричный\n\n    // format_to_n — запись в буфер без аллокации\n    std::array<char, 32> buf{};\n    auto result = std::format_to_n(buf.data(), buf.size() - 1, \"{:x}\", red);\n    *result.out = '\\0';\n    std::println(\"buffered: {}\", std::string_view(buf.data()));\n}",
+          "expectedOutput": "rgb(255,0,0)\n#FF0000\nbuffered: #FF0000",
+          "outputsVerified": true
+        }
+      ]
     }
   ]
 }

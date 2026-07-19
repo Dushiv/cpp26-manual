@@ -35,8 +35,37 @@
     },
     {
       "id": "m6-l2",
-      "title": "Formatting and output - Lesson 2",
-      "stub": true
+      "title": "std::format for Ranges and Custom Types",
+      "prerequisites": ["m6-l1"],
+      "background": null,
+      "motivation": "std::format arrived in C++20 and was immediately more ergonomic than printf and std::cout. But one frustrating gap remained: trying to format a std::vector<int> or a std::map<std::string, int> produced a compile error — standard containers were not supported out of the box. Similarly, your own types such as Point, Color, or Matrix had to be manually converted to a string before being passed to std::format. C++23 closes both gaps: built-in formatting support for any range, and an official hook for custom types through std::formatter<T> specialization.",
+      "theory": "In C++23 any range whose elements are formattable automatically becomes formattable itself. std::println(\"{}\", vec) — where vec is std::vector<int> — prints [1, 2, 3]. This works for any type that satisfies the std::ranges::range concept, including arrays, lists, sets, and spans. The default format uses an opening bracket, elements separated by commas, and a closing bracket.\n\nFor finer control, ranges support special modifiers inside the format specifier. The n flag removes the brackets: {:n} produces 1, 2, 3 instead of [1, 2, 3]. The m flag enables \"map style\" for ranges of pairs: {\"a\": 1, \"b\": 2} — exactly the output you get when formatting a std::map. The s flag interprets a range of characters as a string. After a double colon (::) you can specify a per-element format: {::>4} right-aligns each element in a field of width 4.\n\nTo make your own type formattable, specialize the template struct std::formatter<T>. The specialization must provide two methods. The parse method receives a std::format_parse_context and reads the format specifier — the part of the format string between the : character and the closing }. If you need no custom specifiers, simply return ctx.begin() without any parsing. The format method receives a const reference to the object being formatted and a std::format_context, and writes its output through the helper function std::format_to(ctx.out(), ...). Once the specialization is defined, the type works in every formatting context: std::format, std::print, std::println, and as an argument inside more complex format strings.\n\nWhen you need a configurable format rather than a fixed one, parse can read characters from the specifier and set flags on the formatter object itself. For example, an x flag could switch a color type's output from rgb(255,0,0) to #FF0000. The formatter's fields are initialized during each parse call and are accessible in format through this.\n\nBeyond std::format_to, there is std::format_to_n(out, n, fmt, args...) — it writes at most n characters to the output iterator and returns a struct with an out field (an iterator past the last written character) and a size field (the full length that would have been produced without the limit). This is useful for writing into pre-allocated fixed-size buffers without intermediate allocations.",
+      "examples": [
+        {
+          "id": "m6-l2-ex1",
+          "title": "Formatting ranges: vector and map",
+          "description": "C++23 lets you format std::vector and std::map directly via std::println. The n flag removes brackets, the double-colon syntax sets a per-element format, and std::map is printed in map style automatically.",
+          "code": "#include <print>\n#include <vector>\n#include <map>\n#include <string>\nint main() {\n    std::vector<int> nums = {1, 2, 3, 4, 5};\n    std::println(\"{}\", nums);     // with brackets\n    std::println(\"{:n}\", nums);   // no brackets\n    std::println(\"{::>4}\", nums); // each element right-aligned\n\n    std::map<std::string, int> m = {{\"a\", 1}, {\"b\", 2}};\n    std::println(\"{}\", m);        // map style\n}",
+          "expectedOutput": "[1, 2, 3, 4, 5]\n1, 2, 3, 4, 5\n[   1,    2,    3,    4,    5]\n{\"a\": 1, \"b\": 2}",
+          "outputsVerified": true
+        },
+        {
+          "id": "m6-l2-ex2",
+          "title": "Specializing std::formatter for a custom type",
+          "description": "A std::formatter<Point> specialization makes Point formattable everywhere — in std::print, std::format, and inside larger format strings. The parse method reads the specifier; format writes via std::format_to.",
+          "code": "#include <print>\n#include <format>\n#include <string>\n\nstruct Point {\n    double x, y;\n};\n\ntemplate<>\nstruct std::formatter<Point> {\n    constexpr auto parse(std::format_parse_context& ctx) { return ctx.begin(); }\n    auto format(const Point& p, std::format_context& ctx) const {\n        return std::format_to(ctx.out(), \"({:.1f}, {:.1f})\", p.x, p.y);\n    }\n};\n\nint main() {\n    Point origin{0.0, 0.0};\n    Point p{3.14, 2.72};\n\n    std::println(\"{}\", origin);\n    std::println(\"{}\", p);\n\n    // Also works inside compound format strings\n    std::string result = std::format(\"A={}, B={}\", Point{1.0, 2.0}, Point{3.0, 4.0});\n    std::println(\"{}\", result);\n}",
+          "expectedOutput": "(0.0, 0.0)\n(3.1, 2.7)\nA=(1.0, 2.0), B=(3.0, 4.0)",
+          "outputsVerified": true
+        },
+        {
+          "id": "m6-l2-ex3",
+          "title": "Custom format specifier and std::format_to_n",
+          "description": "The parse method can read flags from the specifier and change the behavior of format. std::format_to_n writes at most N characters into a buffer without an intermediate std::string.",
+          "code": "#include <print>\n#include <format>\n#include <array>\n#include <string_view>\n#include <cstdint>\n\nstruct Color {\n    uint8_t r, g, b;\n};\n\ntemplate<>\nstruct std::formatter<Color> {\n    bool hex = false;\n    constexpr auto parse(std::format_parse_context& ctx) {\n        auto it = ctx.begin();\n        if (it != ctx.end() && *it == 'x') { hex = true; ++it; }\n        return it;\n    }\n    auto format(const Color& c, std::format_context& ctx) const {\n        if (hex)\n            return std::format_to(ctx.out(), \"#{:02X}{:02X}{:02X}\", c.r, c.g, c.b);\n        return std::format_to(ctx.out(), \"rgb({},{},{})\", c.r, c.g, c.b);\n    }\n};\n\nint main() {\n    Color red{255, 0, 0};\n    std::println(\"{}\", red);    // default format\n    std::println(\"{:x}\", red);  // x flag — hexadecimal\n\n    // format_to_n — write into a buffer without allocation\n    std::array<char, 32> buf{};\n    auto result = std::format_to_n(buf.data(), buf.size() - 1, \"{:x}\", red);\n    *result.out = '\\0';\n    std::println(\"buffered: {}\", std::string_view(buf.data()));\n}",
+          "expectedOutput": "rgb(255,0,0)\n#FF0000\nbuffered: #FF0000",
+          "outputsVerified": true
+        }
+      ]
     }
   ]
 }
