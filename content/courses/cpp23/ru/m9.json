@@ -9,8 +9,34 @@
   "lessons": [
     {
       "id": "m9-l1",
-      "title": "Числа и низкоуровневое - Lesson 1",
-      "stub": true
+      "title": "<stdfloat>: фиксированные типы с плавающей точкой",
+      "prerequisites": ["m8-l2"],
+      "background": null,
+      "motivation": "Типы `float`, `double` и `long double` существуют в C++ со времён C, но у них есть фундаментальный изъян: стандарт никогда не гарантировал их точный размер в байтах. На большинстве x86-платформ `float` — это 32-битный IEEE 754, а `double` — 64-битный, но это лишь де-факто норма, а не требование языка. На некоторых встраиваемых и DSP-платформах картина иная. Для кода, которому важна точная семантика IEEE 754 — сетевые протоколы, форматы файлов, библиотеки машинного обучения — такая неопределённость создаёт проблемы переносимости. C++23 вводит заголовок `<stdfloat>` с пятью новыми типами с плавающей точкой фиксированного размера.",
+      "theory": "До C++23 программисты, которым нужна была гарантированная точность, писали `typedef float float32_t;` — но это лишь псевдоним, не новый тип. Два псевдонима для одного и того же типа не могут служить основой для перегрузки функций, и компилятор не может отличить `float32_t` от `float`. C++23 решает эту проблему, вводя по-настоящему отдельные типы в систему типов языка.\n\nЗаголовок `<stdfloat>` определяет до пяти типов: `std::float16_t` (IEEE 754 binary16, «половинная точность»), `std::float32_t` (IEEE 754 binary32, «одинарная точность», совпадает с `float` на большинстве платформ), `std::float64_t` (IEEE 754 binary64, «двойная точность»), `std::float128_t` (IEEE 754 binary128, «четверная точность», требует аппаратной поддержки) и `std::bfloat16_t` (Brain Float 16, формат разработанный Google/Intel). Стандарт предоставляет тип только если платформа его поддерживает — на x86-64 с GCC/Clang обычно доступны все четыре, кроме `float128_t`.\n\nОсобого внимания заслуживает `bfloat16_t`. В отличие от `float16_t`, у которого 5 бит экспоненты и 10 бит мантиссы, `bfloat16_t` имеет те же 8 бит экспоненты, что и `float32_t`, но только 7 бит мантиссы. Это означает тот же диапазон значений, что у `float32_t`, при вдвое меньшем объёме памяти. Именно поэтому Google TPU, Intel AMX, TensorFlow и PyTorch используют bfloat16 для весов нейронных сетей: при обучении важна стабильность диапазона (чтобы избежать переполнения/потери значимости), а не максимальная точность мантиссы.\n\nНа практике все новые типы поддерживают арифметические операторы и работают с `std::numeric_limits<T>`. `std::format` и `std::print` форматируют их корректно. Для инициализации из `float`-литералов необходимо явное приведение типа (`static_cast`) — неявное сужение в скобочной инициализации запрещено. Ключевое преимущество перед старым подходом с `typedef`: эти типы отдельны в системе типов, что позволяет писать перегруженные функции, принимающие `float16_t` и `float32_t` как разные аргументы.",
+      "examples": [
+        {
+          "id": "m9-l1-ex1",
+          "title": "Размеры и точность новых типов",
+          "description": "Проверяем размеры всех доступных типов из `<stdfloat>` и их точность через `std::numeric_limits`.",
+          "code": "#include <stdfloat>\n#include <limits>\n#include <print>\n\nint main() {\n    std::println(\"sizeof float16_t:  {}\", sizeof(std::float16_t));\n    std::println(\"sizeof float32_t:  {}\", sizeof(std::float32_t));\n    std::println(\"sizeof float64_t:  {}\", sizeof(std::float64_t));\n    std::println(\"sizeof bfloat16_t: {}\", sizeof(std::bfloat16_t));\n\n    std::println(\"float32_t max digits10: {}\", std::numeric_limits<std::float32_t>::max_digits10);\n    std::println(\"float64_t max digits10: {}\", std::numeric_limits<std::float64_t>::max_digits10);\n    std::println(\"float16_t max digits10: {}\", std::numeric_limits<std::float16_t>::max_digits10);\n}",
+          "expectedOutput": "sizeof float16_t:  2\nsizeof float32_t:  4\nsizeof float64_t:  8\nsizeof bfloat16_t: 2\nfloat32_t max digits10: 9\nfloat64_t max digits10: 17\nfloat16_t max digits10: 5",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m9-l1-ex2",
+          "title": "bfloat16 для хранения весов нейронной сети",
+          "description": "Практический сценарий из ML: хранение весов в `bfloat16_t` вместо `float32_t` вдвое сокращает память. Арифметика выполняется через явное приведение к `float`.",
+          "code": "#include <stdfloat>\n#include <vector>\n#include <print>\n\nint main() {\n    // Simulate storing ML weights in bfloat16 vs float32\n    std::vector<std::bfloat16_t> bf16_weights = {\n        static_cast<std::bfloat16_t>(0.5f),\n        static_cast<std::bfloat16_t>(-0.25f),\n        static_cast<std::bfloat16_t>(1.0f),\n        static_cast<std::bfloat16_t>(0.125f)\n    };\n\n    std::vector<std::float32_t> f32_weights = {0.5f, -0.25f, 1.0f, 0.125f};\n\n    std::println(\"bfloat16 storage: {} bytes for 4 weights\",\n        bf16_weights.size() * sizeof(std::bfloat16_t));\n    std::println(\"float32 storage:  {} bytes for 4 weights\",\n        f32_weights.size() * sizeof(std::float32_t));\n\n    // Arithmetic works — convert to float32 for computation\n    float sum = 0.0f;\n    for (auto w : bf16_weights)\n        sum += static_cast<float>(w);\n    std::println(\"sum of bf16 weights: {}\", sum);\n\n    // Type system: float16_t and float32_t are distinct types\n    auto f16 = static_cast<std::float16_t>(1.5f);\n    std::float32_t f32 = 1.5f;\n    std::println(\"float16_t == float32_t value: {}\", static_cast<float>(f16) == f32);\n}",
+          "expectedOutput": "bfloat16 storage: 8 bytes for 4 weights\nfloat32 storage:  16 bytes for 4 weights\nsum of bf16 weights: 1.375\nfloat16_t == float32_t value: true",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m9-l2",
