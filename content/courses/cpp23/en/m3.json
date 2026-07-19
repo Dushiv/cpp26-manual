@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m3-l1",
-      "title": "std::expected - Lesson 1",
-      "stub": true
+      "title": "std::expected: Syntax and Core Patterns",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "C++17 gave us std::optional<T>, which lets a function return \"a value or nothing\". But \"nothing\" doesn't explain why there's nothing. If a function returns nullopt, the caller has no idea whether the input was invalid, a timeout occurred, or memory ran out.\n\nExceptions carry error information, but come with stack-unwinding overhead and are unavailable in -fno-exceptions builds. Error codes (int, enum) are easy to ignore silently — the compiler won't force you to check the return value.\n\nstd::expected<T, E> is C++23's answer to this problem. The type encodes two facts directly in the function signature: \"either a result of type T, or an error of type E\". Both outcomes are explicit and hard to overlook — accidentally losing an error the way you can with a return code is much more difficult.",
+      "theory": "std::expected<T, E> holds exactly one of two things: a value of type T (the \"expected\" state) or an error of type E (the \"unexpected\" state). E can be anything — std::string, std::error_code, a custom enum, a struct. Both types appear explicitly in the function signature, making the contract self-documenting.\n\nTo construct the error state, use the wrapper std::unexpected<E>. A value is constructed implicitly from T — no extra syntax needed. For example: return std::unexpected(Error::not_found) returns the error state; return 42 returns success.\n\nYou can check the current state with has_value() or operator bool. To access the value, use operator* and operator-> (unchecked — UB in the error state), value() (throws std::bad_expected_access<E> if in the error state), or value_or(default) (returns T or default, no exceptions). Read the error via error() — only call it after confirming has_value() returned false.\n\nCompared with alternatives: std::optional<T> carries no information about why the value is absent — use expected when you need to distinguish \"absent due to error X\" from \"absent because there's nothing\". Unlike exceptions, expected is visible in the signature and requires no stack unwinding; it works in -fno-exceptions environments. Unlike error codes, the error cannot be accidentally ignored: to reach the value, you must explicitly go through a check.\n\nThe primary usage pattern is early return: check has_value(), and if there's an error, immediately return it up the call stack. This lets you chain operations without deep if-else nesting. Another convenient pattern is checking directly in a condition: if (auto res = parse(s); res) { /* use *res */ } else { /* handle res.error() */ }.",
+      "examples": [
+        {
+          "id": "m3-l1-ex1",
+          "title": "Basic example: parsing an integer",
+          "level": "basic",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n#include <string_view>\n\nstd::expected<int, std::string> parse_int(std::string_view s) {\n    if (s.empty()) return std::unexpected(std::string(\"empty input\"));\n    for (char c : s)\n        if (c < '0' || c > '9') return std::unexpected(std::string(\"not a number: \") + c);\n    int result = 0;\n    for (char c : s) result = result * 10 + (c - '0');\n    return result;\n}\n\nint main() {\n    auto r1 = parse_int(\"123\");\n    auto r2 = parse_int(\"\");\n    auto r3 = parse_int(\"12x\");\n\n    if (r1) std::cout << \"ok: \" << *r1 << \"\\n\";\n    if (!r2) std::cout << \"err: \" << r2.error() << \"\\n\";\n    if (!r3) std::cout << \"err: \" << r3.error() << \"\\n\";\n}",
+          "expectedOutput": "ok: 123\nerr: empty input\nerr: not a number: x",
+          "explanation": "parse_int returns std::expected<int, std::string>. On an empty string or a non-digit character it returns std::unexpected with a description. On success it returns an int — implicitly converted to expected. In main we check the state via operator bool: r1 holds a value, r2 and r3 hold errors."
+        },
+        {
+          "id": "m3-l1-ex2",
+          "title": "Chained operations with early error propagation",
+          "level": "intermediate",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n#include <string_view>\n\nenum class Error { empty, not_number, out_of_range };\n\nstd::expected<int, Error> parse(std::string_view s) {\n    if (s.empty()) return std::unexpected(Error::empty);\n    for (char c : s)\n        if (c < '0' || c > '9') return std::unexpected(Error::not_number);\n    long long v = 0;\n    for (char c : s) v = v * 10 + (c - '0');\n    if (v > 100) return std::unexpected(Error::out_of_range);\n    return static_cast<int>(v);\n}\n\nstd::expected<int, Error> double_it(std::string_view s) {\n    auto r = parse(s);\n    if (!r) return r; // propagate error\n    return *r * 2;\n}\n\nstd::string describe(Error e) {\n    switch (e) {\n        case Error::empty:        return \"empty\";\n        case Error::not_number:   return \"not a number\";\n        case Error::out_of_range: return \"out of range\";\n    }\n    return \"unknown\";\n}\n\nint main() {\n    for (auto s : {\"42\", \"abc\", \"200\", \"\"}) {\n        auto r = double_it(s);\n        if (r) std::cout << s << \" -> \" << *r << \"\\n\";\n        else   std::cout << s << \" -> error: \" << describe(r.error()) << \"\\n\";\n    }\n}",
+          "expectedOutput": "42 -> 84\nabc -> error: not a number\n200 -> error: out of range\n -> error: empty",
+          "explanation": "double_it calls parse and on failure immediately returns the error via if (!r) return r — the early-return pattern. Using a custom enum class Error, all possible failure modes are listed explicitly in the type and handled exhaustively in describe."
+        },
+        {
+          "id": "m3-l1-ex3",
+          "title": "value_or and std::bad_expected_access",
+          "level": "advanced",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n\nstd::expected<double, std::string> safe_divide(double a, double b) {\n    if (b == 0.0) return std::unexpected(std::string(\"division by zero\"));\n    return a / b;\n}\n\nint main() {\n    // value_or for a safe default\n    auto r1 = safe_divide(10.0, 2.0);\n    auto r2 = safe_divide(10.0, 0.0);\n    std::cout << r1.value_or(-1.0) << \"\\n\";\n    std::cout << r2.value_or(-1.0) << \"\\n\";\n\n    // exception from .value() on error state\n    try {\n        r2.value();\n    } catch (const std::bad_expected_access<std::string>& e) {\n        std::cout << \"caught: \" << e.error() << \"\\n\";\n    }\n}",
+          "expectedOutput": "5\n-1\ncaught: division by zero",
+          "explanation": "value_or(-1.0) returns the value if present, or -1.0 if not — no exceptions involved. Calling .value() on an error state throws std::bad_expected_access<E>, where E is the error type. The e.error() method on the caught exception returns the error itself."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m3-l2",

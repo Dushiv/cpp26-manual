@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m3-l1",
-      "title": "std::expected - Lesson 1",
-      "stub": true
+      "title": "std::expected: синтаксис и основные паттерны",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "В C++17 появился std::optional<T>, который позволяет вернуть «значение или ничего». Но «ничего» не объясняет, что именно пошло не так. Если функция возвращает nullopt, вызывающий код не знает: входные данные были неверны, случился таймаут или исчерпалась память?\n\nИсключения несут информацию об ошибке, но имеют накладные расходы на разматывание стека и вовсе недоступны в сборках с -fno-exceptions. Коды ошибок (int, enum) легко проигнорировать: компилятор не заставит вас проверить возвращаемое значение.\n\nstd::expected<T, E> — ответ C++23 на эту проблему. Тип кодирует в сигнатуре функции два факта: «либо результат типа T, либо ошибка типа E». Оба варианта явны и обязательны к рассмотрению — просто «потерять» ошибку, как это бывает с кодами возврата, значительно сложнее.",
+      "theory": "std::expected<T, E> хранит ровно одно из двух: значение типа T («ожидаемое» состояние) или ошибку типа E («неожиданное» состояние). Тип E может быть чем угодно — std::string, std::error_code, пользовательским enum, структурой. Оба типа явно присутствуют в сигнатуре функции, что делает контракт самодокументируемым.\n\nДля конструирования ошибки используется обёртка std::unexpected<E>. Значение конструируется неявно из T — никакого дополнительного синтаксиса не требуется. Пример: return std::unexpected(Error::not_found) возвращает ошибочное состояние; return 42 возвращает успешное.\n\nПроверить состояние можно через has_value() или operator bool. Для доступа к значению служат operator* и operator-> (без проверки, UB при ошибочном состоянии), value() (бросает std::bad_expected_access<E> при ошибке) и value_or(default) (возвращает T или default без исключений). Ошибку читают через error() — вызывать его следует только убедившись, что has_value() вернул false.\n\nВ сравнении с альтернативами: std::optional<T> не несёт информации о причине отсутствия значения — используйте expected, когда важно различать «пусто из-за ошибки X» и «пусто, потому что ничего нет». В отличие от исключений, expected виден в сигнатуре и не требует разматывания стека; работает в -fno-exceptions окружении. В отличие от кодов ошибок, ошибку нельзя случайно проигнорировать: чтобы добраться до значения, нужно явно пройти через проверку.\n\nОсновной паттерн использования — ранний возврат: проверяем has_value(), и если ошибка, немедленно возвращаем её выше по стеку. Это позволяет выстраивать цепочки операций без глубокой вложенности if-else. Ещё один удобный паттерн — проверка прямо в условии: if (auto res = parse(s); res) { /* используем *res */ } else { /* обрабатываем res.error() */ }.",
+      "examples": [
+        {
+          "id": "m3-l1-ex1",
+          "title": "Базовый пример: парсинг числа",
+          "level": "basic",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n#include <string_view>\n\nstd::expected<int, std::string> parse_int(std::string_view s) {\n    if (s.empty()) return std::unexpected(std::string(\"empty input\"));\n    for (char c : s)\n        if (c < '0' || c > '9') return std::unexpected(std::string(\"not a number: \") + c);\n    int result = 0;\n    for (char c : s) result = result * 10 + (c - '0');\n    return result;\n}\n\nint main() {\n    auto r1 = parse_int(\"123\");\n    auto r2 = parse_int(\"\");\n    auto r3 = parse_int(\"12x\");\n\n    if (r1) std::cout << \"ok: \" << *r1 << \"\\n\";\n    if (!r2) std::cout << \"err: \" << r2.error() << \"\\n\";\n    if (!r3) std::cout << \"err: \" << r3.error() << \"\\n\";\n}",
+          "expectedOutput": "ok: 123\nerr: empty input\nerr: not a number: x",
+          "explanation": "Функция parse_int возвращает std::expected<int, std::string>. При пустой строке или нецифровом символе возвращается std::unexpected с описанием ошибки. При успехе возвращается int — неявное преобразование в expected. В main мы проверяем состояние через operator bool: r1 содержит значение, r2 и r3 — ошибки."
+        },
+        {
+          "id": "m3-l1-ex2",
+          "title": "Цепочка операций с ранним возвратом ошибки",
+          "level": "intermediate",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n#include <string_view>\n\nenum class Error { empty, not_number, out_of_range };\n\nstd::expected<int, Error> parse(std::string_view s) {\n    if (s.empty()) return std::unexpected(Error::empty);\n    for (char c : s)\n        if (c < '0' || c > '9') return std::unexpected(Error::not_number);\n    long long v = 0;\n    for (char c : s) v = v * 10 + (c - '0');\n    if (v > 100) return std::unexpected(Error::out_of_range);\n    return static_cast<int>(v);\n}\n\nstd::expected<int, Error> double_it(std::string_view s) {\n    auto r = parse(s);\n    if (!r) return r; // propagate error\n    return *r * 2;\n}\n\nstd::string describe(Error e) {\n    switch (e) {\n        case Error::empty:        return \"empty\";\n        case Error::not_number:   return \"not a number\";\n        case Error::out_of_range: return \"out of range\";\n    }\n    return \"unknown\";\n}\n\nint main() {\n    for (auto s : {\"42\", \"abc\", \"200\", \"\"}) {\n        auto r = double_it(s);\n        if (r) std::cout << s << \" -> \" << *r << \"\\n\";\n        else   std::cout << s << \" -> error: \" << describe(r.error()) << \"\\n\";\n    }\n}",
+          "expectedOutput": "42 -> 84\nabc -> error: not a number\n200 -> error: out of range\n -> error: empty",
+          "explanation": "Функция double_it вызывает parse и при ошибке немедленно возвращает её через if (!r) return r — паттерн раннего возврата. Благодаря пользовательскому enum class Error, все возможные ошибки перечислены явно в типе и обрабатываются исчерпывающим образом в describe."
+        },
+        {
+          "id": "m3-l1-ex3",
+          "title": "value_or, исключение std::bad_expected_access",
+          "level": "advanced",
+          "code": "#include <expected>\n#include <iostream>\n#include <string>\n\nstd::expected<double, std::string> safe_divide(double a, double b) {\n    if (b == 0.0) return std::unexpected(std::string(\"division by zero\"));\n    return a / b;\n}\n\nint main() {\n    // value_or для безопасного значения по умолчанию\n    auto r1 = safe_divide(10.0, 2.0);\n    auto r2 = safe_divide(10.0, 0.0);\n    std::cout << r1.value_or(-1.0) << \"\\n\";\n    std::cout << r2.value_or(-1.0) << \"\\n\";\n\n    // исключение из .value() при ошибочном состоянии\n    try {\n        r2.value();\n    } catch (const std::bad_expected_access<std::string>& e) {\n        std::cout << \"caught: \" << e.error() << \"\\n\";\n    }\n}",
+          "expectedOutput": "5\n-1\ncaught: division by zero",
+          "explanation": "value_or(-1.0) возвращает значение если оно есть, и -1.0 если нет — никаких исключений. Вызов .value() на ошибочном состоянии бросает std::bad_expected_access<E>, где E — тип ошибки. Метод e.error() на пойманном исключении возвращает саму ошибку."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m3-l2",
