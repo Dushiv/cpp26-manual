@@ -117,8 +117,38 @@
     },
     {
       "id": "m4-l4",
-      "title": "Ranges C++23 - Lesson 4",
-      "stub": true
+      "title": "Числовые алгоритмы: fold_left, fold_right, repeat, ranges::contains",
+      "prerequisites": ["m4-l3"],
+      "background": null,
+      "motivation": "Предыдущие уроки дали нам мощные инструменты для разбиения и соединения диапазонов. Теперь переходим к алгоритмам, которые сворачивают диапазон в одно значение или проверяют его содержимое. До C++23 для суммирования коллекции использовался std::accumulate из <numeric> — он не работал с view напрямую и требовал явных итераторов. ranges::contains требовал неудобного сравнения с ranges::find. Бесконечные повторяющиеся последовательности нужно было создавать вручную. C++23 закрывает все эти пробелы: fold_left и fold_right заменяют accumulate и работают с любыми ranges, views::repeat генерирует повторяющиеся последовательности, а ranges::contains делает проверку вхождения одной строкой.",
+      "theory": "std::ranges::fold_left(range, init, f) выполняет левую свёртку: применяет бинарную функцию f последовательно слева направо, накапливая результат. Для range {e1, e2, e3} и начального значения init вычисляется f(f(f(init, e1), e2), e3). В отличие от std::accumulate, fold_left работает с любым диапазоном, включая ленивые view — без явных итераторов. Функция находится в заголовке <algorithm>. Вариант fold_left_first(range, f) использует первый элемент диапазона как начальное значение и возвращает std::optional<T> — пустой, если диапазон пуст. Это удобно, когда нет разумного нейтрального элемента: например, при поиске максимума через лямбду. Дополнительные варианты fold_left_with_iter и fold_left_first_with_iter возвращают также итератор конца диапазона — полезно, если нужно знать, до какого элемента дошла свёртка.\n\nstd::ranges::fold_right(range, init, f) выполняет правую свёртку — обходит диапазон справа налево. Для {e1, e2, e3} вычисляется f(e1, f(e2, f(e3, init))). Это требует двунаправленного диапазона (bidirectional range). Для ассоциативных операций (сложение, умножение) результат совпадает с fold_left, но порядок аргументов функции f меняется: в fold_left f принимает (аккумулятор, элемент), в fold_right — (элемент, аккумулятор). Правая свёртка используется там, где важен порядок вычислений: например, конкатенация строк со строительством справа налево.\n\nstd::views::repeat(val) создаёт бесконечный диапазон, состоящий из одного и того же значения val. Используется в комбинации с take или zip, поскольку бесконечный view нельзя материализовать напрямую. Ограниченный вариант std::views::repeat(val, n) генерирует ровно n копий val — его можно сразу передать в ranges::to. std::views::iota(start, end) генерирует арифметическую последовательность от start до end (не включая end) в виде ленивого view — это прямая замена ручного счётчика для диапазонных алгоритмов. Бесконечный вариант iota(start) используется с take.\n\nstd::ranges::contains(range, value) возвращает bool — true если value встречается в range. Это читаемая замена сравнению ranges::find(range, value) != ranges::end(range). Родственные алгоритмы: std::ranges::starts_with(range, prefix) проверяет, начинается ли range с подпоследовательности prefix; std::ranges::ends_with(range, suffix) проверяет суффикс. Все три алгоритма находятся в <algorithm> и работают с любыми диапазонами, поддерживающими forward iteration.",
+      "examples": [
+        {
+          "id": "m4-l4-ex1",
+          "title": "fold_left и fold_left_first: замена accumulate",
+          "description": "fold_left суммирует числа и склеивает строки, используя std::plus. fold_left_first берёт первый элемент как начальное значение и возвращает optional — удобно для поиска максимума без нейтрального элемента.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <functional>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5};\n\n    // fold_left: sum\n    auto sum = std::ranges::fold_left(v, 0, std::plus{});\n    std::println(\"sum: {}\", sum);\n\n    // fold_left: string concatenation\n    std::vector<std::string> words = {\"hello\", \" \", \"world\"};\n    auto sentence = std::ranges::fold_left(words, std::string{}, std::plus{});\n    std::println(\"sentence: {}\", sentence);\n\n    // fold_left_first: max without explicit init\n    auto max = std::ranges::fold_left_first(v, [](int a, int b){ return a > b ? a : b; });\n    if (max) std::println(\"max: {}\", *max);\n}",
+          "expectedOutput": "sum: 15\nsentence: hello world\nmax: 5",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l4-ex2",
+          "title": "fold_right, views::repeat и views::iota",
+          "description": "fold_right собирает строку справа налево — аргументы функции переставлены относительно fold_left. views::repeat(5, 4) создаёт 4 копии числа 5. views::iota(1, 6) генерирует последовательность для transform.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    // fold_right: build string right-to-left\n    std::vector<std::string> parts = {\"a\", \"b\", \"c\"};\n    auto right = std::ranges::fold_right(parts, std::string{}, std::plus{});\n    std::println(\"fold_right: {}\", right);\n\n    // views::repeat bounded: fill with value\n    auto fives = std::views::repeat(5, 4) | std::ranges::to<std::vector>();\n    std::println(\"repeat: {}\", fives);\n\n    // views::iota as a range\n    auto squares = std::views::iota(1, 6)\n        | std::views::transform([](int x){ return x * x; })\n        | std::ranges::to<std::vector>();\n    std::println(\"squares: {}\", squares);\n}",
+          "expectedOutput": "fold_right: abc\nrepeat: [5, 5, 5, 5]\nsquares: [1, 4, 9, 16, 25]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l4-ex3",
+          "title": "ranges::contains, starts_with, ends_with и zip",
+          "description": "ranges::contains проверяет вхождение элемента без сравнения с end(). starts_with и ends_with проверяют префикс и суффикс подпоследовательности. В конце — zip для попарного обхода меток и значений.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5};\n\n    std::println(\"contains 3: {}\", std::ranges::contains(v, 3));\n    std::println(\"contains 9: {}\", std::ranges::contains(v, 9));\n\n    std::vector<int> prefix = {1, 2};\n    std::println(\"starts_with [1,2]: {}\", std::ranges::starts_with(v, prefix));\n\n    std::vector<int> suffix = {4, 5};\n    std::println(\"ends_with [4,5]: {}\", std::ranges::ends_with(v, suffix));\n\n    // zip: pair labels with values\n    std::vector<std::string> labels = {\"a\", \"b\", \"c\"};\n    std::vector<int> values = {10, 20, 30};\n    for (auto [label, val] : std::views::zip(labels, values)) {\n        std::println(\"{}: {}\", label, val);\n    }\n}",
+          "expectedOutput": "contains 3: true\ncontains 9: false\nstarts_with [1,2]: true\nends_with [4,5]: true\na: 10\nb: 20\nc: 30",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }

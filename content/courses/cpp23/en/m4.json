@@ -117,8 +117,38 @@
     },
     {
       "id": "m4-l4",
-      "title": "Ranges C++23 - Lesson 4",
-      "stub": true
+      "title": "Numeric Algorithms: fold_left, fold_right, repeat, ranges::contains",
+      "prerequisites": ["m4-l3"],
+      "background": null,
+      "motivation": "The previous lessons equipped us with powerful tools for splitting and combining ranges. Now we turn to algorithms that reduce a range to a single value or inspect its contents. Before C++23, summing a collection meant std::accumulate from <numeric> — which did not work directly with views and required explicit iterators. Checking for membership required an awkward comparison with ranges::find. Repeating sequences had to be constructed by hand. C++23 closes all these gaps: fold_left and fold_right replace accumulate and work with any range, views::repeat generates repeated sequences, and ranges::contains makes membership testing a one-liner.",
+      "theory": "std::ranges::fold_left(range, init, f) performs a left fold: it applies a binary function f left-to-right, accumulating the result. For a range {e1, e2, e3} with initial value init it computes f(f(f(init, e1), e2), e3). Unlike std::accumulate, fold_left works with any range including lazy views — no explicit iterators required. The function lives in <algorithm>. The variant fold_left_first(range, f) uses the first element as the initial value and returns std::optional<T> — empty if the range is empty. This is convenient when no sensible neutral element exists, such as when searching for a maximum via a lambda. Additional variants fold_left_with_iter and fold_left_first_with_iter also return the past-the-end iterator — useful when you need to know where the fold stopped.\n\nstd::ranges::fold_right(range, init, f) performs a right fold — it traverses the range from right to left. For {e1, e2, e3} it computes f(e1, f(e2, f(e3, init))). This requires a bidirectional range. For associative operations (addition, multiplication) the result matches fold_left, but note that the argument order of f is reversed: in fold_left f receives (accumulator, element), in fold_right it receives (element, accumulator). Right fold is used where evaluation order matters, such as building a string from right to left.\n\nstd::views::repeat(val) creates an infinite range of the constant value val. It must be combined with take or zip, since an infinite view cannot be materialized directly. The bounded form std::views::repeat(val, n) generates exactly n copies of val and can be piped straight into ranges::to. std::views::iota(start, end) lazily generates the arithmetic sequence [start, end) — a direct replacement for a manual counter when working with range algorithms. The unbounded iota(start) is used together with take.\n\nstd::ranges::contains(range, value) returns bool — true if value appears in range. This is a readable replacement for ranges::find(range, value) != ranges::end(range). Related algorithms: std::ranges::starts_with(range, prefix) checks whether range begins with the sub-sequence prefix; std::ranges::ends_with(range, suffix) checks the suffix. All three are in <algorithm> and work with any forward range.",
+      "examples": [
+        {
+          "id": "m4-l4-ex1",
+          "title": "fold_left and fold_left_first: replacing accumulate",
+          "description": "fold_left sums integers and concatenates strings via std::plus. fold_left_first takes the first element as its initial value and returns optional — convenient for finding the maximum without a neutral element.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <functional>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5};\n\n    // fold_left: sum\n    auto sum = std::ranges::fold_left(v, 0, std::plus{});\n    std::println(\"sum: {}\", sum);\n\n    // fold_left: string concatenation\n    std::vector<std::string> words = {\"hello\", \" \", \"world\"};\n    auto sentence = std::ranges::fold_left(words, std::string{}, std::plus{});\n    std::println(\"sentence: {}\", sentence);\n\n    // fold_left_first: max without explicit init\n    auto max = std::ranges::fold_left_first(v, [](int a, int b){ return a > b ? a : b; });\n    if (max) std::println(\"max: {}\", *max);\n}",
+          "expectedOutput": "sum: 15\nsentence: hello world\nmax: 5",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l4-ex2",
+          "title": "fold_right, views::repeat, and views::iota",
+          "description": "fold_right assembles a string from right to left — notice that f's argument order is swapped compared to fold_left. views::repeat(5, 4) produces 4 copies of 5. views::iota(1, 6) generates a sequence for transform.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    // fold_right: build string right-to-left\n    std::vector<std::string> parts = {\"a\", \"b\", \"c\"};\n    auto right = std::ranges::fold_right(parts, std::string{}, std::plus{});\n    std::println(\"fold_right: {}\", right);\n\n    // views::repeat bounded: fill with value\n    auto fives = std::views::repeat(5, 4) | std::ranges::to<std::vector>();\n    std::println(\"repeat: {}\", fives);\n\n    // views::iota as a range\n    auto squares = std::views::iota(1, 6)\n        | std::views::transform([](int x){ return x * x; })\n        | std::ranges::to<std::vector>();\n    std::println(\"squares: {}\", squares);\n}",
+          "expectedOutput": "fold_right: abc\nrepeat: [5, 5, 5, 5]\nsquares: [1, 4, 9, 16, 25]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l4-ex3",
+          "title": "ranges::contains, starts_with, ends_with, and zip",
+          "description": "ranges::contains checks membership without comparing against end(). starts_with and ends_with test prefix and suffix sub-sequences. The final example uses zip to pair labels with values.",
+          "code": "#include <algorithm>\n#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<int> v = {1, 2, 3, 4, 5};\n\n    std::println(\"contains 3: {}\", std::ranges::contains(v, 3));\n    std::println(\"contains 9: {}\", std::ranges::contains(v, 9));\n\n    std::vector<int> prefix = {1, 2};\n    std::println(\"starts_with [1,2]: {}\", std::ranges::starts_with(v, prefix));\n\n    std::vector<int> suffix = {4, 5};\n    std::println(\"ends_with [4,5]: {}\", std::ranges::ends_with(v, suffix));\n\n    // zip: pair labels with values\n    std::vector<std::string> labels = {\"a\", \"b\", \"c\"};\n    std::vector<int> values = {10, 20, 30};\n    for (auto [label, val] : std::views::zip(labels, values)) {\n        std::println(\"{}: {}\", label, val);\n    }\n}",
+          "expectedOutput": "contains 3: true\ncontains 9: false\nstarts_with [1,2]: true\nends_with [4,5]: true\na: 10\nb: 20\nc: 30",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }
