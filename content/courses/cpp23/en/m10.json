@@ -9,8 +9,28 @@
   "lessons": [
     {
       "id": "m10-l1",
-      "title": "Removed and deprecated - Lesson 1",
-      "stub": true
+      "title": "Deprecated and Removed Features in C++23",
+      "prerequisites": ["m9-l3"],
+      "background": null,
+      "motivation": "Every new C++ standard not only adds features but also removes old baggage: things that turned out to be dangerous, poorly designed, or simply misleading. C++23 continues this work — some things are deprecated (compilers now warn), others are outright ill-formed (compile errors). Knowing what changed matters for two reasons: first, the compiler will start flagging old code; second, each change tells an instructive story about why a particular idiom was wrong from the start.",
+      "theory": "C++ evolves by the principle of \"deprecate first, remove later\": a feature is first marked deprecated (compiler warns), then removed one or two standards later. This gives developers time to migrate without emergency rewrites. C++23 takes several such steps, some of which close long-standing sources of undefined behavior.\n\n`std::aligned_storage` and `std::aligned_union` (P1413) were deprecated in C++23. These templates were used to create aligned buffers for placement new — the standard technique for implementing `optional`, `variant`, and object pools. The problem: the standard never guaranteed that a `reinterpret_cast` from `aligned_storage_t` to a real type would yield a valid pointer. It was conditionally-supported behavior with subtle traps. The replacement is the straightforward idiom `alignas(T) std::byte[sizeof(T)]`, which reads as intent (\"an aligned buffer sized for T\") rather than a magic template. Similarly, `std::allocator<void>` (P2177) never made sense — you can't allocate \"untyped\" memory, and the allocator was only used as a placeholder type. The recommended replacement is `std::allocator<std::byte>`.\n\n`std::basic_string::reserve()` without an argument (P2296) was supposed to \"shrink capacity\", but the standard never required implementations to do anything — in practice, different compilers behaved differently. In C++23 this no-argument overload is deprecated; use `shrink_to_fit()` instead, which is explicit about its intent. More importantly, concatenating narrow and wide string literals (`\"hello\" L\"world\"`) is now explicitly ill-formed (P2201). Previously the behavior was undefined; now the compiler is required to issue an error. This is a textbook example of C++23 turning silent UB into a diagnosable problem.\n\n`volatile` continues its path toward isolation in specialized low-level code. C++20 already deprecated volatile compound assignments (`x += y` where x is volatile), volatile function parameters, and volatile return types. C++23 (P1831) extends the list: volatile variables in range-based for loops and volatile structured bindings are now deprecated. The point is not to forbid volatile — it is essential when working with memory-mapped hardware registers. The point is that such use should be deliberate and explicit, not accidentally introduced into generic code through templates. Finally, narrowing conversions in braced enum initialization (P2593) are now ill-formed: `E e{1}` where `1` is not an enumerator value is a compile error, not merely \"conditionally-supported\" behavior.",
+      "examples": [
+        {
+          "id": "m10-l1-ex1",
+          "title": "Replacing deprecated idioms: aligned storage and reserve()",
+          "level": "basic",
+          "code": "#include <memory>\n#include <string>\n#include <new>\n#include <cstddef>\n#include <print>\n\nint main() {\n    // Replacement for std::aligned_storage — use alignas + std::byte:\n    alignas(int) std::byte storage[sizeof(int)];\n    new (storage) int{42};\n    int* p = std::launder(reinterpret_cast<int*>(storage));\n    std::println(\"value from aligned storage: {}\", *p);\n    // int is trivially destructible — no explicit destructor call needed\n\n    // Replacement for reserve() without args:\n    std::string s = \"Hello, this is a string that was previously longer\";\n    s = \"short\";\n    s.shrink_to_fit(); // not s.reserve() — the deprecated form\n    std::println(\"after shrink_to_fit, size: {}, capacity >= size: {}\",\n        s.size(), s.capacity() >= s.size());\n\n    // Consistent string literals — only same-kind concatenation:\n    const char* combined = \"hello\" \" \" \"world\"; // OK — all narrow\n    std::println(\"combined: {}\", combined);\n}",
+          "expectedOutput": "value from aligned storage: 42\nafter shrink_to_fit, size: 5, capacity >= size: true\ncombined: hello world"
+        },
+        {
+          "id": "m10-l1-ex2",
+          "title": "volatile and enums: correct C++23 patterns",
+          "level": "intermediate",
+          "code": "#include <cstdint>\n#include <print>\n\n// Scoped enum with explicit underlying type — no narrowing ambiguity:\nenum class Register : uint8_t {\n    STATUS  = 0x00,\n    CONTROL = 0x01,\n    DATA    = 0x02\n};\n\n// Correct use of volatile: hardware register simulation\nvolatile uint8_t hw_register = 0;\n\nvoid write_register(Register reg, uint8_t value) {\n    // In real code, this would write to a memory-mapped hardware register\n    hw_register = value;\n    std::println(\"wrote {:02x} to register {:02x}\",\n        value, static_cast<uint8_t>(reg));\n}\n\nint main() {\n    // Enum initialization — only valid enumerator values:\n    Register r = Register::CONTROL;\n    std::println(\"register value: {}\", static_cast<int>(r));\n\n    write_register(Register::DATA, 0xFF);\n    // volatile cannot be passed directly to std::format — cast required:\n    std::println(\"hw_register: {}\", static_cast<uint8_t>(hw_register));\n\n    // String concatenation — consistently narrow:\n    const char* greeting = \"C++\" \"23\"; // OK\n    std::println(\"standard: {}\", greeting);\n}",
+          "expectedOutput": "register value: 1\nwrote ff to register 02\nhw_register: 255\nstandard: C++23"
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m10-l2",
