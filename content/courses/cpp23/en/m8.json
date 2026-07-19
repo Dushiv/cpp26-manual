@@ -9,8 +9,37 @@
   "lessons": [
     {
       "id": "m8-l1",
-      "title": "std::generator - Lesson 1",
-      "stub": true
+      "title": "std::generator: Lazy Sequences with Coroutines",
+      "prerequisites": ["m7-l4"],
+      "background": {
+        "label": "C++20: coroutines",
+        "body": "std::generator builds on the C++20 coroutine mechanism: functions with co_yield, co_return, co_await. A coroutine is a function that can be suspended and resumed. std::generator encapsulates the canonical 'generator' pattern on top of this mechanism."
+      },
+      "motivation": "Before C++23, writing a lazy generator with coroutines meant implementing your own `promise_type` with `yield_value`, `return_void`, `initial_suspend`, `final_suspend`, and iterator adapters — 50+ lines of boilerplate for trivial cases. Libraries like cppcoro and range-v3 filled the gap, but nothing was standard. C++23 introduces `std::generator<T>`: a standard adapter that reduces a lazy sequence to a function with `co_yield`, with the result immediately compatible with all range algorithms and views.",
+      "theory": "Before C++23, creating a lazy generator required writing your own coroutine promise type: a nested `promise_type` with `yield_value`, `return_void`, `initial_suspend`, `final_suspend`, and iterator adapters to make values iterable in a `for` loop. For trivial cases this meant 50+ lines of boilerplate with no business logic whatsoever.\n\nC++23 standardizes the `std::generator<T>` template in the `<generator>` header. A generator function is an ordinary function returning `std::generator<T>` that contains `co_yield`. When `co_yield value` is executed, the coroutine hands the value to the consumer and suspends; it resumes when the consumer requests the next element. Generators are lazy: computation happens only on demand. A `std::generator<T>` object is move-only — the coroutine frame cannot be copied, only moved — and can be iterated exactly once.\n\nThe return type is parameterized on the value type: `std::generator<int>` yields `int` values, `std::generator<int&>` yields references (useful for expensive objects to avoid copies), and `std::generator<const int&>` yields const references. For nested generators, C++23 introduces `std::ranges::elements_of(range)`: passing it to `co_yield` flattens an entire range or nested generator into the current generator's value stream without intermediate buffering.\n\n`std::generator<T>` satisfies `std::ranges::input_range`, so it composes naturally with view pipelines: `gen | std::views::take(10)`, `gen | std::views::filter(pred) | std::views::transform(fn)`, and so on. This enables a clean pattern: the generator describes a potentially infinite or expensive-to-compute sequence, while views control how many elements are actually materialized.",
+      "examples": [
+        {
+          "id": "m8-l1-ex1",
+          "title": "Infinite Fibonacci Sequence",
+          "description": "A generator for the infinite Fibonacci sequence. `co_yield a` hands the current value to the caller and suspends; `std::views::take(10)` materializes only the first ten elements.",
+          "code": "#include <generator>\n#include <ranges>\n#include <print>\n\nstd::generator<long long> fibonacci() {\n    long long a = 0, b = 1;\n    while (true) {\n        co_yield a;\n        a = std::exchange(b, a + b);\n    }\n}\n\nint main() {\n    for (long long n : fibonacci() | std::views::take(10))\n        std::println(\"{}\", n);\n}",
+          "expectedOutput": "0\n1\n1\n2\n3\n5\n8\n13\n21\n34",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m8-l1-ex2",
+          "title": "View Pipelines and Nested Generators via elements_of",
+          "description": "Two uses of `std::generator` with ranges: (1) a `range` generator is combined with `std::views::transform` to produce squares; (2) a `concat` generator uses `co_yield std::ranges::elements_of(...)` to splice a nested generator's elements into its own stream without intermediate buffering.",
+          "code": "#include <generator>\n#include <ranges>\n#include <vector>\n#include <print>\n\nstd::generator<int> range(int from, int to) {\n    for (int i = from; i < to; ++i)\n        co_yield i;\n}\n\nstd::generator<int> concat(std::vector<std::pair<int,int>> ranges_spec) {\n    for (auto [from, to] : ranges_spec)\n        co_yield std::ranges::elements_of(range(from, to));\n}\n\nint main() {\n    // Compose generator with views\n    auto squares = range(1, 6)\n        | std::views::transform([](int x){ return x * x; });\n\n    std::print(\"Squares 1-5: \");\n    for (int s : squares) std::print(\"{} \", s);\n    std::println(\"\");\n\n    // Nested generators via elements_of\n    std::vector<std::pair<int,int>> spec = {{1,4}, {10,13}};\n    std::print(\"Concat: \");\n    for (int x : concat(spec)) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "Squares 1-5: 1 4 9 16 25 \nConcat: 1 2 3 10 11 12 ",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m8-l2",
