@@ -74,8 +74,30 @@
     },
     {
       "id": "m1-l3",
-      "title": "Language improvements - Lesson 3",
-      "stub": true
+      "title": "auto(x) / auto{x} and Lambda Improvements in C++23",
+      "prerequisites": ["m1-l2"],
+      "background": null,
+      "motivation": "In generic code you often need to make an explicit copy of a value whose type is not known in advance. Before C++23, the idiom for this was std::decay_t<decltype(x)>(x) — verbose, easy to get wrong, and hard to read at a glance. Separately, lambdas required an empty parameter list () even when there were no parameters but a specifier such as mutable, noexcept, or a trailing return type was present. C++23 addresses both problems: auto(x) / auto{x} is a new language construct for explicit decay-copy, and P1102 allows the () to be omitted from lambdas that carry specifiers but take no parameters.",
+      "theory": "The expression auto(x) produces a copy of x with its decayed type: references and cv-qualifiers are stripped, arrays decay to pointers, and function types decay to function pointers. This is exactly what happens when a value is passed to a template function by value, which is why the operation is called decay-copy. The brace form auto{x} is equivalent; the only difference is that it uses list-initialization. The primary use cases are lambda captures — [copy = auto(ref)] stores an owned copy instead of a dangling reference — and passing values to algorithms that may move from them. Before C++23 the only alternative was std::decay_t<decltype(x)>(x): equally correct, but substantially more verbose and harder to read.\n\nThe second C++23 change concerns lambdas: before C++23, an empty parameter list () was mandatory whenever a specifier appeared after the capture list — mutable, constexpr, noexcept, [[nodiscard]], or a trailing return type ->. C++23 (P1102) lifted this restriction: all of those specifiers are now valid immediately after [...] with no (). The result is cleaner syntax: auto f = [] mutable { ... } instead of auto f = []() mutable { ... }. Note that a plain []{ } with no parameters and no specifiers was already legal since C++11; the C++23 novelty is specifically the combination of \"no parameters + specifiers present\".\n\nAlso worth clarifying is the difference between [this] and [*this] in lambda captures. [this] captures the this pointer — the lambda accesses class members through that pointer, and if the object is destroyed before the lambda is called, the result is undefined behaviour. [*this] (C++17) captures a copy of the entire object, so the lambda holds its own instance and is independent of the original object's lifetime. C++23 introduced a third option — deducing this — which lets a lambda explicitly name a self parameter and deduce the object type at the call site; that technique is covered in detail in the next lesson.\n\nAll three topics share a common theme: C++23 removes boilerplate that was purely syntactic. auto(x) replaces a long decay_t trick, dropped () on lambdas eliminate noise, and [*this] capture has long provided a safe alternative to [this] without extra wrappers.",
+      "examples": [
+        {
+          "id": "m1-l3-ex1",
+          "title": "auto(x) and auto{x}: decay-copy in practice",
+          "code": "#include <print>\n#include <string>\n#include <vector>\n\nint main() {\n    // 1. Basic decay-copy: strip reference and cv-qualifiers\n    std::string original = \"hello\";\n    const std::string& ref = original;\n    auto copy = auto(ref);  // copy is std::string, not const std::string&\n    std::println(\"copy: {}\", copy);\n\n    // 2. In a lambda capture — safe copy of a reference\n    std::string msg = \"world\";\n    auto printer = [captured = auto(msg)] {\n        std::println(\"captured: {}\", captured);\n    };\n    msg = \"changed\";\n    printer();  // prints \"world\", not \"changed\"\n\n    // 3. auto{x} — equivalent brace form\n    int arr[3] = {1, 2, 3};\n    auto* ptr = auto(arr);  // array decays to pointer\n    std::println(\"ptr[0]: {}\", ptr[0]);\n}",
+          "expectedOutput": "copy: hello\ncaptured: world\nptr[0]: 1",
+          "outputsVerified": true,
+          "explanation": "In the first case, auto(ref) produces a std::string even though ref has type const std::string&: decay removes both the reference and the const. In the second case, [captured = auto(msg)] copies the string at the moment the lambda is created — subsequent changes to msg do not affect the captured value. In the third case, auto(arr) applies array-to-pointer decay and returns int*, which is exactly what happens when an array is passed by value to a template."
+        },
+        {
+          "id": "m1-l3-ex2",
+          "title": "Lambda specifiers without (): the C++23 change",
+          "code": "#include <print>\n\nint main() {\n    int value = 10;\n\n    // C++23: mutable lambda without () — captures by value, modifies the copy\n    auto increment = [value] mutable {\n        ++value;\n        std::println(\"inside: {}\", value);\n    };\n    increment();  // inside: 11\n    increment();  // inside: 12\n    std::println(\"outside: {}\", value);  // unchanged: 10\n\n    // C++23: trailing return type without ()\n    auto to_long = [] -> long long { return 1'000'000'000LL * 3; };\n    std::println(\"to_long: {}\", to_long());\n\n    // C++23: noexcept without ()\n    auto safe_neg = [](int n) noexcept { return -n; };\n    std::println(\"safe_neg(7): {}\", safe_neg(7));\n\n    // C++23: constexpr without ()\n    auto pi_approx = [] constexpr { return 3.14159; };\n    std::println(\"pi: {}\", pi_approx());\n}",
+          "expectedOutput": "inside: 11\ninside: 12\noutside: 10\nto_long: 3000000000\nsafe_neg(7): -7\npi: 3.14159",
+          "outputsVerified": true,
+          "explanation": "Before C++23, [value] mutable { ... } would not compile: the compiler required [value]() mutable { ... }. The same applied to [] -> long long { ... } and [] constexpr { ... } — each needed an empty () before the specifier. C++23 dropped that requirement: parentheses are no longer needed when there are no parameters. Note that mutable only affects by-value captures: the lambda's own copy of value is incremented independently of the outer variable, which is why outside remains 10."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m1-l4",
