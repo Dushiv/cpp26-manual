@@ -82,8 +82,38 @@
     },
     {
       "id": "m4-l3",
-      "title": "Ranges C++23 - Lesson 3",
-      "stub": true
+      "title": "Combining Adapters: zip, enumerate, cartesian_product, join_with",
+      "prerequisites": ["m4-l2"],
+      "background": null,
+      "motivation": "The previous lessons showed how to split ranges into parts. An equally important question is the reverse: how do you iterate multiple ranges together, or combine them in various ways? Iterating two vectors in parallel used to require a manual index loop. Indexed traversal meant a counter variable next to a range-for. All combinations of two sets meant nested loops. Inserting a delimiter between substrings meant accumulation with a conditional. C++23 adds a set of adapters that handle all these tasks declaratively: views::zip, views::enumerate, views::cartesian_product, views::join_with, and views::adjacent.",
+      "theory": "views::zip(r1, r2, ...) traverses multiple ranges in lockstep, yielding a tuple of corresponding elements on each step. Iteration stops when the shortest range is exhausted. Structured bindings work naturally: auto [a, b] = *it. Before C++23 this required a manual index loop or Boost.Range. The related adapter views::zip_transform(f, r1, r2) does the same but immediately applies a function f to each tuple — convenient for element-wise arithmetic.\n\nviews::enumerate(r) numbers the elements of a range: each iteration yields a pair (index, element), where the index starts at 0 and has a signed integer type (ptrdiff_t). Structured bindings auto [i, val] replace the classic counter next to a range-for. This is the C++ equivalent of Python's enumerate(), absent from the language until C++23.\n\nviews::cartesian_product(r1, r2, ...) generates all combinations of elements from multiple ranges — like nested for-loops. The rightmost range varies fastest (inner loop), the leftmost slowest (outer loop). The total number of elements equals the product of all range sizes. Common uses include enumerating grid coordinates, parameter sweeps, and combinatorics problems.\n\nviews::join_with(delim) concatenates a range-of-ranges, inserting a delimiter between the inner ranges. Unlike views::join from C++20, which simply concatenates, join_with lets you specify delim — a single element or a range of elements. This allows joining strings with a separator without creating intermediate buffers. When the delimiter is a string, pass it as a view (via std::views::all or string_view) because join_with expects a range of characters, not a std::string by value.\n\nviews::adjacent<N> yields overlapping tuples of N consecutive elements. views::adjacent<2> (also known as views::pairwise) gives pairs: for [1, 2, 3, 4] those are (1,2), (2,3), (3,4). Unlike slide(N), which produces subranges, adjacent yields fixed-size structured tuples of size N — making them convenient with structured bindings. Typical uses: computing differences between consecutive elements, detecting monotonic runs, processing sliding pairs.",
+      "examples": [
+        {
+          "id": "m4-l3-ex1",
+          "title": "zip and enumerate",
+          "description": "views::zip iterates two vectors in lockstep — names and scores. views::enumerate adds a sequential index to each element. Structured bindings keep the code readable.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<std::string> names = {\"Alice\", \"Bob\", \"Carol\"};\n    std::vector<int> scores = {95, 87, 92};\n\n    // zip: iterate both together\n    std::println(\"Scores:\");\n    for (auto [name, score] : std::views::zip(names, scores)) {\n        std::println(\"  {}: {}\", name, score);\n    }\n\n    // enumerate: indexed iteration\n    std::println(\"Ranked:\");\n    for (auto [i, name] : std::views::enumerate(names)) {\n        std::println(\"  {}. {}\", i + 1, name);\n    }\n}",
+          "expectedOutput": "Scores:\n  Alice: 95\n  Bob: 87\n  Carol: 92\nRanked:\n  1. Alice\n  2. Bob\n  3. Carol",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l3-ex2",
+          "title": "cartesian_product and zip_transform",
+          "description": "views::cartesian_product enumerates all (row, col) pairs — the right range varies fastest. views::zip_transform applies std::plus element-wise to two vectors.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    // cartesian product: all (row, col) pairs\n    auto rows = std::views::iota(0, 3);\n    auto cols = std::views::iota(0, 3);\n\n    for (auto [r, c] : std::views::cartesian_product(rows, cols)) {\n        std::print(\"({},{}) \", r, c);\n    }\n    std::println(\"\");\n\n    // zip_transform: element-wise addition\n    std::vector<int> a = {1, 2, 3};\n    std::vector<int> b = {10, 20, 30};\n    auto sums = std::views::zip_transform(std::plus{}, a, b)\n              | std::ranges::to<std::vector>();\n    std::println(\"sums: {}\", sums);\n}",
+          "expectedOutput": "(0,0) (0,1) (0,2) (1,0) (1,1) (1,2) (2,0) (2,1) (2,2) \nsums: [11, 22, 33]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l3-ex3",
+          "title": "join_with for string joining and adjacent<2> for differences",
+          "description": "views::join_with inserts the separator \", \" between words — the delimiter is passed as a view via std::views::all. views::adjacent<2> yields overlapping pairs for computing differences between consecutive elements.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    // join_with: join words with separator\n    std::vector<std::string> words = {\"one\", \"two\", \"three\"};\n    std::string sep = \", \";\n    auto joined = words | std::views::join_with(std::views::all(sep))\n                        | std::ranges::to<std::string>();\n    std::println(\"{}\", joined);\n\n    // adjacent<2>: consecutive differences\n    std::vector<int> v = {1, 4, 9, 16, 25};\n    std::print(\"differences: \");\n    for (auto [a, b] : std::views::adjacent<2>(v)) {\n        std::print(\"{} \", b - a);\n    }\n    std::println(\"\");\n}",
+          "expectedOutput": "one, two, three\ndifferences: 3 5 7 9",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l4",

@@ -82,8 +82,38 @@
     },
     {
       "id": "m4-l3",
-      "title": "Ranges C++23 - Lesson 3",
-      "stub": true
+      "title": "Соединяющие адаптеры: zip, enumerate, cartesian_product, join_with",
+      "prerequisites": ["m4-l2"],
+      "background": null,
+      "motivation": "Предыдущие уроки показали, как разбивать диапазоны на части. Но не менее важна обратная задача: как соединять несколько диапазонов или обходить их совместно? Итерация двух векторов в параллель раньше требовала ручного индексного цикла. Индексированный обход — счётчика рядом с range-for. Все комбинации двух множеств — вложенных циклов. Вставка разделителя между подстроками — накопления с условием. C++23 добавил набор адаптеров, которые решают все эти задачи декларативно: views::zip, views::enumerate, views::cartesian_product, views::join_with и views::adjacent.",
+      "theory": "views::zip(r1, r2, ...) обходит несколько диапазонов синхронно, выдавая на каждом шаге кортеж из соответствующих элементов. Итерация останавливается, когда заканчивается самый короткий диапазон. Структурные привязки работают естественно: auto [a, b] = *it. До C++23 для этого нужен был ручной цикл с индексом или Boost.Range. Родственный адаптер views::zip_transform(f, r1, r2) делает то же самое, но сразу применяет функцию f к каждому кортежу — это удобно для поэлементных арифметических операций.\n\nviews::enumerate(r) нумерует элементы диапазона: на каждой итерации выдаётся пара (индекс, элемент), где индекс начинается с 0 и имеет знаковый целочисленный тип (ptrdiff_t). Структурные привязки auto [i, val] заменяют классический счётчик рядом с range-for. Это аналог enumerate() из Python, которого в C++ не было до C++23.\n\nviews::cartesian_product(r1, r2, ...) перебирает все комбинации элементов из нескольких диапазонов — как вложенные for-циклы. Правый диапазон меняется быстрее (inner loop), левый — медленнее (outer loop). Общее число элементов равно произведению размеров всех диапазонов. Применяется для перебора координат сетки, параметрических экспериментов, комбинаторных задач.\n\nviews::join_with(delim) объединяет диапазон диапазонов, вставляя разделитель между внутренними диапазонами. В отличие от views::join из C++20, который просто конкатенирует, join_with позволяет указать delim — одиночный элемент или диапазон элементов. Это позволяет склеивать строки с разделителем без создания промежуточных буферов. Если разделитель — строка, её нужно передавать как view (через std::views::all или string_view), поскольку join_with принимает диапазон символов, а не std::string по значению.\n\nviews::adjacent<N> выдаёт перекрывающиеся кортежи из N соседних элементов. views::adjacent<2> (он же views::pairwise) даёт пары: для [1, 2, 3, 4] — это (1,2), (2,3), (3,4). В отличие от slide(N), который производит subrange, adjacent выдаёт структурированные кортежи фиксированного размера N — поэтому с ними удобно использовать структурные привязки. Типичное применение: вычисление разностей между соседними элементами, поиск монотонных участков, обработка скользящих пар.",
+      "examples": [
+        {
+          "id": "m4-l3-ex1",
+          "title": "zip и enumerate",
+          "description": "views::zip обходит два вектора синхронно — имена и оценки. views::enumerate добавляет порядковый номер к каждому элементу. Структурные привязки делают код читаемым.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<std::string> names = {\"Alice\", \"Bob\", \"Carol\"};\n    std::vector<int> scores = {95, 87, 92};\n\n    // zip: iterate both together\n    std::println(\"Scores:\");\n    for (auto [name, score] : std::views::zip(names, scores)) {\n        std::println(\"  {}: {}\", name, score);\n    }\n\n    // enumerate: indexed iteration\n    std::println(\"Ranked:\");\n    for (auto [i, name] : std::views::enumerate(names)) {\n        std::println(\"  {}. {}\", i + 1, name);\n    }\n}",
+          "expectedOutput": "Scores:\n  Alice: 95\n  Bob: 87\n  Carol: 92\nRanked:\n  1. Alice\n  2. Bob\n  3. Carol",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l3-ex2",
+          "title": "cartesian_product и zip_transform",
+          "description": "views::cartesian_product перебирает все пары (row, col) — правый диапазон меняется быстрее. views::zip_transform применяет std::plus к двум векторам поэлементно.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    // cartesian product: all (row, col) pairs\n    auto rows = std::views::iota(0, 3);\n    auto cols = std::views::iota(0, 3);\n\n    for (auto [r, c] : std::views::cartesian_product(rows, cols)) {\n        std::print(\"({},{}) \", r, c);\n    }\n    std::println(\"\");\n\n    // zip_transform: element-wise addition\n    std::vector<int> a = {1, 2, 3};\n    std::vector<int> b = {10, 20, 30};\n    auto sums = std::views::zip_transform(std::plus{}, a, b)\n              | std::ranges::to<std::vector>();\n    std::println(\"sums: {}\", sums);\n}",
+          "expectedOutput": "(0,0) (0,1) (0,2) (1,0) (1,1) (1,2) (2,0) (2,1) (2,2) \nsums: [11, 22, 33]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l3-ex3",
+          "title": "join_with для склейки строк и adjacent<2> для разностей",
+          "description": "views::join_with вставляет разделитель \", \" между словами — разделитель передаётся как view через std::views::all. views::adjacent<2> даёт перекрывающиеся пары для вычисления разностей между соседними элементами.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    // join_with: join words with separator\n    std::vector<std::string> words = {\"one\", \"two\", \"three\"};\n    std::string sep = \", \";\n    auto joined = words | std::views::join_with(std::views::all(sep))\n                        | std::ranges::to<std::string>();\n    std::println(\"{}\", joined);\n\n    // adjacent<2>: consecutive differences\n    std::vector<int> v = {1, 4, 9, 16, 25};\n    std::print(\"differences: \");\n    for (auto [a, b] : std::views::adjacent<2>(v)) {\n        std::print(\"{} \", b - a);\n    }\n    std::println(\"\");\n}",
+          "expectedOutput": "one, two, three\ndifferences: 3 5 7 9",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l4",
