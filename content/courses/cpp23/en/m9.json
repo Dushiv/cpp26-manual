@@ -40,8 +40,34 @@
     },
     {
       "id": "m9-l2",
-      "title": "Numbers and low-level - Lesson 2",
-      "stub": true
+      "title": "`std::byteswap`, `std::to_underlying`, `std::unreachable`: Low-Level Utilities",
+      "prerequisites": ["m9-l1"],
+      "background": null,
+      "motivation": "Before C++23, reversing the bytes of an integer meant writing `__builtin_bswap32(x)` on GCC/Clang or `_byteswap_ulong(x)` on MSVC. Marking a code path as unreachable required `__builtin_unreachable()` or `__assume(false)`. Extracting the underlying value from an `enum class` demanded the verbose `static_cast<std::underlying_type_t<Color>>(value)`. Each of these patterns solved a real problem, but with non-standard syntax: the code was non-portable and littered the codebase with platform-specific details. C++23 standardizes all three operations as clean, `constexpr`-ready functions.",
+      "theory": "Historically C++ inherited from C a large number of useful low-level operations that remained outside the standard — each compiler supplied its own extensions. C++20 began the cleanup: `<bit>` gained `std::popcount`, `std::rotl`, `std::rotr`. C++23 adds three more utilities, closing the most common pain points.\n\n`std::byteswap` (header `<bit>`, P1272) reverses the byte order of any integral type. It accepts any `integral` type — `uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`, `int`, and so on — and returns the same type with its bytes swapped. The function is `constexpr`, so the computation can happen at compile time. Typical use cases: converting between network byte order (big-endian protocol) and host byte order (little-endian), reading binary file formats, and certain hashing algorithms. Before C++23 the alternatives were `__builtin_bswap32` / `__builtin_bswap64` (GCC/Clang) or `_byteswap_ulong` (MSVC), or manual bitwise arithmetic.\n\n`std::unreachable` (header `<utility>`, P0627) marks a point in the code as unreachable. If execution actually reaches that point, the behavior is undefined. The compiler uses this promise for optimization: it can eliminate checks in `switch` defaults, shrink the control-flow graph, and remove dead branches. The function is especially useful after an exhaustive `switch` over an `enum` — it eliminates the \"not all paths return a value\" warning and gives the optimizer complete information. **Important:** unlike `assert()`, `std::unreachable` performs no runtime check in either debug or release builds. If the unreachability assumption is wrong, the program has silent undefined behavior. Use it only where you are absolutely certain about the invariant.\n\n`std::to_underlying` (header `<utility>`, P1682) returns an enumeration value cast to its underlying type. It works with both `enum class` and plain `enum`, and returns `std::underlying_type_t<E>` — always the exact type declared as the enum's base. This function was covered in detail in lesson m1-l5; it is worth noting here that it rounds out the set alongside `byteswap` and `unreachable` as the third low-level C++23 utility, replacing the verbose `static_cast<std::underlying_type_t<E>>(e)` with a concise call.",
+      "examples": [
+        {
+          "id": "m9-l2-ex1",
+          "title": "std::byteswap: byte-order conversion",
+          "description": "Converting between host byte order and network byte order with `std::byteswap`. The function works in a `constexpr` context — a port number can be converted at compile time. `to_underlying` lets you print a numeric HTTP status code without a verbose `static_cast`.",
+          "code": "#include <bit>\n#include <cstdint>\n#include <print>\n#include <utility>\n\nint main() {\n    // Network byte order conversion (big-endian)\n    uint32_t host_value = 0x12345678;\n    uint32_t network_value = std::byteswap(host_value);\n\n    std::println(\"host:    {:#010x}\", host_value);\n    std::println(\"network: {:#010x}\", network_value);\n    std::println(\"round-trip: {:#010x}\", std::byteswap(network_value));\n\n    // Works at compile time\n    constexpr uint16_t port = std::byteswap(uint16_t{8080});\n    std::println(\"port 8080 in network order: {:#06x}\", port);\n\n    // to_underlying\n    enum class Status { OK = 200, NotFound = 404, Error = 500 };\n    auto code = std::to_underlying(Status::NotFound);\n    std::println(\"HTTP code: {}\", code);\n}",
+          "expectedOutput": "host:    0x12345678\nnetwork: 0x78563412\nround-trip: 0x12345678\nport 8080 in network order: 0x901f\nHTTP code: 404",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m9-l2-ex2",
+          "title": "std::unreachable: exhaustive switch and the optimizer",
+          "description": "`std::unreachable()` after the last `case` tells the optimizer that the default branch can never execute. This eliminates the compiler warning about \"not all paths returning a value\" and helps the code generator produce tighter output.",
+          "code": "#include <utility>\n#include <print>\n#include <string_view>\n\nenum class Direction { North, South, East, West };\n\nstd::string_view direction_name(Direction d) {\n    switch (d) {\n        case Direction::North: return \"North\";\n        case Direction::South: return \"South\";\n        case Direction::East:  return \"East\";\n        case Direction::West:  return \"West\";\n    }\n    std::unreachable(); // all cases handled — helps optimizer skip default\n}\n\nint opposite_sign(int x) {\n    if (x > 0) return 1;\n    if (x < 0) return -1;\n    return 0;\n    // Note: no unreachable here — 0 is a valid path\n}\n\nint main() {\n    for (auto d : {Direction::North, Direction::South, Direction::East, Direction::West})\n        std::println(\"direction: {}\", direction_name(d));\n\n    std::println(\"sign(42): {}\", opposite_sign(42));\n    std::println(\"sign(-7): {}\", opposite_sign(-7));\n    std::println(\"sign(0): {}\", opposite_sign(0));\n}",
+          "expectedOutput": "direction: North\ndirection: South\ndirection: East\ndirection: West\nsign(42): 1\nsign(-7): -1\nsign(0): 0",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m9-l3",
