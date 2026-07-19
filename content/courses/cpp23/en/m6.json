@@ -9,8 +9,29 @@
   "lessons": [
     {
       "id": "m6-l1",
-      "title": "Formatting and output - Lesson 1",
-      "stub": true
+      "title": "std::print and std::println: Type-Safe Output",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "Before C++23, programmers faced two uncomfortable extremes: fast and concise printf — but unsafe (a mismatched format specifier causes undefined behavior), or verbose std::cout with chained << operators — type-safe but slow to compile and incompatible with format strings. C++20 brought std::format, combining type safety with a convenient format-string syntax, but it returned an intermediate std::string that still had to be passed to std::cout. std::print in C++23 closes that gap: it is std::format plus direct output, with no unnecessary allocations.",
+      "theory": "std::print and std::println are declared in the <print> header and share the same format-string syntax as std::format: {}, {:>10}, {:.2f}, and other specifiers work unchanged. std::print(fmt, args...) writes the formatted string to stdout without a trailing newline; std::println(fmt, args...) appends \\n at the end. Both functions have an overload whose first parameter is FILE*: std::println(stderr, \"err: {}\", msg) directs output to the standard error stream or any other open FILE*.\n\nWhy did std::print not arrive alongside std::format in C++20? The reason is encoding on Windows. printf on that platform does not transcode UTF-8 to the UTF-16 expected by the console API, so non-ASCII characters — Cyrillic, emoji, accented letters — come out garbled without additional code-page gymnastics. The committee chose to wait for a standardized solution: std::print is required to correctly transcode Unicode when writing to a console on all platforms.\n\nUnder the hood, std::print relies on two low-level helpers: std::vprint_unicode — for streams where Unicode correctness matters (consoles, terminals) — and std::vprint_nonunicode — for binary or plain-text streams where transcoding is unnecessary. Most users never need them directly: std::print and std::println select the right variant automatically.\n\nThe practical migration rule is straightforward: replace printf(\"x = %d\\n\", x) with std::println(\"x = {}\", x), and fprintf(stderr, \"err: %s\\n\", msg) with std::println(stderr, \"err: {}\", msg). No manual type-based format control, no unsafe specifiers — the compiler checks argument types at compile time.",
+      "examples": [
+        {
+          "id": "m6-l1-ex1",
+          "title": "Basic std::print and std::println usage",
+          "description": "Printing a string, an integer, and a floating-point value using various format specifiers.",
+          "code": "#include <print>\n#include <string>\nint main() {\n    std::string name = \"Alice\";\n    int age = 30;\n    double score = 98.5;\n\n    std::println(\"Name: {}\", name);\n    std::println(\"Age: {:>5}\", age);\n    std::println(\"Score: {:.1f}\", score);\n    std::print(\"No newline here\");\n    std::print(\" — same line\\n\");\n}",
+          "expectedOutput": "Name: Alice\nAge:    30\nScore: 98.5\nNo newline here — same line",
+          "outputsVerified": true
+        },
+        {
+          "id": "m6-l1-ex2",
+          "title": "Alignment, zero-padding, and alternate bases",
+          "description": "Aligning text into columns, printing numbers with leading zeros, and displaying values in hexadecimal and octal — all through the unified format-string syntax.",
+          "code": "#include <print>\n\nint main() {\n    // Text alignment\n    std::println(\"{:<10} {:>10} {:^10}\", \"left\", \"right\", \"center\");\n\n    // Leading zeros and fixed precision\n    for (int i = 1; i <= 3; ++i) {\n        std::println(\"Item {:02d}: {:>8.2f}\", i, i * 3.14);\n    }\n\n    // Hexadecimal and octal\n    int value = 255;\n    std::println(\"Dec: {}  Hex: {:X}  Oct: {:o}\", value, value, value);\n}",
+          "expectedOutput": "left            right   center  \nItem 01:     3.14\nItem 02:     6.28\nItem 03:     9.42\nDec: 255  Hex: FF  Oct: 377",
+          "outputsVerified": true
+        }
+      ]
     },
     {
       "id": "m6-l2",
