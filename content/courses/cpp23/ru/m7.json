@@ -106,8 +106,30 @@
     },
     {
       "id": "m7-l4",
-      "title": "Контейнеры и утилиты - Lesson 4",
-      "stub": true
+      "title": "Языковые утилиты C++23: contains, resize_and_overwrite, invoke_r, is_scoped_enum",
+      "prerequisites": ["m7-l3"],
+      "background": null,
+      "motivation": "Некоторые из самых полезных нововведений C++23 — небольшие, точечные улучшения, которые устраняют давно известные неудобства. std::string::contains() избавляет от громоздкого s.find(sub) != std::string::npos. resize_and_overwrite() позволяет заполнить строку через C-API без лишней инициализации памяти. std::invoke_r<R> добавляет явный контроль типа возврата там, где std::invoke оставлял его на усмотрение вывода типов. А std::is_scoped_enum заменяет нечитаемую комбинацию is_enum_v && !is_convertible_v одним говорящим именем. Вместе они делают повседневный код чище и безопаснее.",
+      "theory": "std::string::contains() (P1679) — логическое дополнение к starts_with() и ends_with(), появившимся в C++20. Метод принимает три перегрузки: std::string_view, char и const char*. Он доступен на std::string и std::string_view. До C++23 проверка подстроки требовала s.find(sub) != std::string::npos — многословная запись, в которой легко ошибиться (пропустить != npos или перепутать с ::size_type). contains() читается как естественный английский, а его семантика — чистая булева функция без побочных эффектов.\n\nstd::string::resize_and_overwrite() (P1072) решает задачу эффективного заполнения строки через внешний API. Обычный resize(N) инициализирует все N символов нулями перед тем, как в них запишет вызывающий код — это бесполезная работа. resize_and_overwrite(N, op) выделяет буфер на N символов, передаёт указатель на него и ёмкость в лямбду op(char* p, size_t n), которая записывает данные и возвращает фактическое число записанных символов. Именно это число становится новой длиной строки. Нулевая инициализация не производится. Типичный use-case — обёртка вокруг snprintf или любого C-API, пишущего в буфер.\n\nstd::invoke_r<R>(f, args...) (P2136) — расширение std::invoke с явным указанием типа возврата. Возвращаемое значение callable приводится к R. Если R == void, возвращаемое значение молча отбрасывается. Это полезно в generic-коде, где тип результата должен определяться сигнатурой интерфейса, а не типом конкретного callable: например, в таблице виртуальных обработчиков или при передаче лямбды в шаблонный адаптер. Без invoke_r приходилось писать static_cast<R>(std::invoke(f, args...)), что не работает при R == void.\n\nstd::is_scoped_enum<T> и std::is_scoped_enum_v<T> (P1048) — трейт, отличающий scoped enum (enum class / enum struct) от unscoped enum. До C++23 проверка выглядела как std::is_enum_v<T> && !std::is_convertible_v<T, std::underlying_type_t<T>> — выражение, требующее понимания тонкостей системы типов и практически нечитаемое с первого взгляда. Новый трейт — это одно имя с очевидной семантикой. Он возвращает false для не-enum-типов (в том числе int), true только для enum class.",
+      "examples": [
+        {
+          "id": "m7-l4-ex1",
+          "title": "contains и is_scoped_enum",
+          "level": "basic",
+          "code": "#include <string>\n#include <type_traits>\n#include <print>\n\nenum class Color { Red, Green, Blue };\nenum Direction { Up, Down };\n\nint main() {\n    std::string s = \"C++23 is great\";\n    std::println(\"contains \\\"C++23\\\": {}\", s.contains(\"C++23\"));\n    std::println(\"contains \\\"C++26\\\": {}\", s.contains(\"C++26\"));\n    std::println(\"contains '2': {}\", s.contains('2'));\n\n    std::println(\"Color is scoped enum: {}\", std::is_scoped_enum_v<Color>);\n    std::println(\"Direction is scoped enum: {}\", std::is_scoped_enum_v<Direction>);\n    std::println(\"int is scoped enum: {}\", std::is_scoped_enum_v<int>);\n}",
+          "expectedOutput": "contains \"C++23\": true\ncontains \"C++26\": false\ncontains '2': true\nColor is scoped enum: true\nDirection is scoped enum: false\nint is scoped enum: false",
+          "explanation": "contains() принимает std::string_view (покрывает строковые литералы и std::string) или char — три перегрузки, ни одна не требует npos. std::is_scoped_enum_v<Color> возвращает true, потому что Color объявлен как enum class и не имеет неявного преобразования в целое. Direction — обычный unscoped enum, он неявно конвертируется в int, поэтому трейт возвращает false. Для int трейт также false: is_scoped_enum работает только с enum-типами."
+        },
+        {
+          "id": "m7-l4-ex2",
+          "title": "resize_and_overwrite и invoke_r",
+          "level": "intermediate",
+          "code": "#include <string>\n#include <functional>\n#include <cstdio>\n#include <print>\n\nint main() {\n    // resize_and_overwrite: заполнение строки через snprintf\n    std::string msg;\n    msg.resize_and_overwrite(64, [](char* p, std::size_t n) {\n        int written = std::snprintf(p, n, \"Value: %d, Pi: %.2f\", 42, 3.14);\n        return static_cast<std::size_t>(written < 0 ? 0 : written);\n    });\n    std::println(\"msg: {}\", msg);\n    std::println(\"msg.size(): {}\", msg.size());\n\n    // invoke_r: явное указание типа возврата\n    auto add = [](int a, int b) { return a + b; };\n    double result = std::invoke_r<double>(add, 10, 3);\n    std::println(\"invoke_r<double>(add, 10, 3): {}\", result);\n\n    // invoke_r<void>: возвращаемое значение отбрасывается\n    std::invoke_r<void>(add, 1, 2);\n    std::println(\"invoke_r<void> works: true\");\n}",
+          "expectedOutput": "msg: Value: 42, Pi: 3.14\nmsg.size(): 19\ninvoke_r<double>(add, 10, 3): 13\ninvoke_r<void> works: true",
+          "explanation": "resize_and_overwrite выделяет буфер на 64 символа без нулевой инициализации и передаёт его в лямбду. snprintf записывает строку и возвращает число символов, которое было бы записано без обрезки (здесь — 19). Строка получает именно эту длину, и msg.size() == 19. invoke_r<double> вызывает лямбду add(10, 3) == 13 и приводит результат к double — поэтому result == 13.0. invoke_r<void> вызывает callable ради побочного эффекта и полностью игнорирует возвращаемое значение, что невозможно выразить через обычный static_cast при R == void."
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }

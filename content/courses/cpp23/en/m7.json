@@ -106,8 +106,30 @@
     },
     {
       "id": "m7-l4",
-      "title": "Containers and utilities - Lesson 4",
-      "stub": true
+      "title": "C++23 Language Utilities: contains, resize_and_overwrite, invoke_r, is_scoped_enum",
+      "prerequisites": ["m7-l3"],
+      "background": null,
+      "motivation": "Some of the most useful C++23 additions are small, targeted improvements that fix long-standing inconveniences. std::string::contains() eliminates the awkward s.find(sub) != std::string::npos idiom. resize_and_overwrite() lets you fill a string via a C API without zero-initializing memory you are about to overwrite anyway. std::invoke_r<R> adds explicit return-type control where std::invoke left it to type deduction. And std::is_scoped_enum replaces an unreadable combination of is_enum_v && !is_convertible_v with a single, self-documenting name. Together they make everyday code cleaner and safer.",
+      "theory": "std::string::contains() (P1679) is the logical companion to starts_with() and ends_with() introduced in C++20. The method has three overloads: std::string_view, char, and const char*. It is available on both std::string and std::string_view. Before C++23, checking for a substring required s.find(sub) != std::string::npos — a verbose expression that is easy to get wrong (forget the != npos part, or confuse npos with size_type). contains() reads like natural English and has pure boolean semantics with no side effects.\n\nstd::string::resize_and_overwrite() (P1072) solves the problem of efficiently filling a string via an external API. The ordinary resize(N) zero-initializes all N characters before the caller writes into them — wasted work. resize_and_overwrite(N, op) allocates a buffer of N characters, then calls op(char* p, size_t n), which writes data into the buffer and returns the actual number of characters written. That count becomes the new string length. No zero-initialization takes place. The canonical use case is wrapping snprintf or any C API that writes into a caller-provided buffer.\n\nstd::invoke_r<R>(f, args...) (P2136) extends std::invoke with an explicit return type. The callable's return value is converted to R. If R is void, the return value is silently discarded. This is useful in generic code where the result type must be determined by the interface signature rather than the concrete callable's type — for example, in a dispatch table of heterogeneous handlers or when passing a lambda to a typed adapter. Without invoke_r you had to write static_cast<R>(std::invoke(f, args...)), which does not work when R is void.\n\nstd::is_scoped_enum<T> and std::is_scoped_enum_v<T> (P1048) is a type trait that distinguishes scoped enumerations (enum class / enum struct) from unscoped ones. Before C++23 the check looked like std::is_enum_v<T> && !std::is_convertible_v<T, std::underlying_type_t<T>> — an expression that requires intimate knowledge of the type system and is nearly unreadable at a glance. The new trait is a single name with obvious semantics. It returns false for non-enum types including int, and true only for enum class.",
+      "examples": [
+        {
+          "id": "m7-l4-ex1",
+          "title": "contains and is_scoped_enum",
+          "level": "basic",
+          "code": "#include <string>\n#include <type_traits>\n#include <print>\n\nenum class Color { Red, Green, Blue };\nenum Direction { Up, Down };\n\nint main() {\n    std::string s = \"C++23 is great\";\n    std::println(\"contains \\\"C++23\\\": {}\", s.contains(\"C++23\"));\n    std::println(\"contains \\\"C++26\\\": {}\", s.contains(\"C++26\"));\n    std::println(\"contains '2': {}\", s.contains('2'));\n\n    std::println(\"Color is scoped enum: {}\", std::is_scoped_enum_v<Color>);\n    std::println(\"Direction is scoped enum: {}\", std::is_scoped_enum_v<Direction>);\n    std::println(\"int is scoped enum: {}\", std::is_scoped_enum_v<int>);\n}",
+          "expectedOutput": "contains \"C++23\": true\ncontains \"C++26\": false\ncontains '2': true\nColor is scoped enum: true\nDirection is scoped enum: false\nint is scoped enum: false",
+          "explanation": "contains() accepts std::string_view (which covers string literals and std::string) or char — three overloads, none requiring npos arithmetic. std::is_scoped_enum_v<Color> is true because Color is declared as enum class and has no implicit conversion to an integer. Direction is a plain unscoped enum that implicitly converts to int, so the trait returns false. For int the trait is also false: is_scoped_enum only holds for enum types."
+        },
+        {
+          "id": "m7-l4-ex2",
+          "title": "resize_and_overwrite and invoke_r",
+          "level": "intermediate",
+          "code": "#include <string>\n#include <functional>\n#include <cstdio>\n#include <print>\n\nint main() {\n    // resize_and_overwrite: fill string via snprintf\n    std::string msg;\n    msg.resize_and_overwrite(64, [](char* p, std::size_t n) {\n        int written = std::snprintf(p, n, \"Value: %d, Pi: %.2f\", 42, 3.14);\n        return static_cast<std::size_t>(written < 0 ? 0 : written);\n    });\n    std::println(\"msg: {}\", msg);\n    std::println(\"msg.size(): {}\", msg.size());\n\n    // invoke_r: explicit return type\n    auto add = [](int a, int b) { return a + b; };\n    double result = std::invoke_r<double>(add, 10, 3);\n    std::println(\"invoke_r<double>(add, 10, 3): {}\", result);\n\n    // invoke_r<void>: discard return value\n    std::invoke_r<void>(add, 1, 2);\n    std::println(\"invoke_r<void> works: true\");\n}",
+          "expectedOutput": "msg: Value: 42, Pi: 3.14\nmsg.size(): 19\ninvoke_r<double>(add, 10, 3): 13\ninvoke_r<void> works: true",
+          "explanation": "resize_and_overwrite allocates a 64-character buffer without zero-initialization and hands it to the lambda. snprintf writes the formatted string and returns the number of characters that would have been written without truncation (19 here). The string is given exactly that length, so msg.size() == 19. invoke_r<double> calls add(10, 3) == 13 and converts the result to double, giving 13.0. invoke_r<void> calls the callable for its side effect and completely discards the return value — something that cannot be expressed via a plain static_cast when R is void."
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }
