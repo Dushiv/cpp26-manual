@@ -44,8 +44,41 @@
     },
     {
       "id": "m2-l2",
-      "title": "Deducing this - Lesson 2",
-      "stub": true
+      "title": "Recursive Lambdas and CRTP Replacement",
+      "prerequisites": ["m2-l1"],
+      "background": {
+        "title": "CRTP in C++17",
+        "body": "CRTP (Curiously Recurring Template Pattern) is a C++17 idiom where a base class is parameterized with the derived class: template<typename Derived> struct Base { ... }; struct Concrete : Base<Concrete> { ... };. This lets Base call methods on Concrete via static_cast<Derived*>(this) without virtual function overhead — enabling static polymorphism and the mixin pattern. The drawbacks are a verbose template parameter on every base class, an unsafe downcast that causes UB if the hierarchy is wrong, and non-obvious syntax that makes the code harder to read."
+      },
+      "motivation": "Before C++23, a recursive lambda required either wrapping it in std::function — incurring heap allocation and type erasure overhead — or using the Y-combinator trick, which is clever but hard to read. The CRTP pattern for static polymorphism and mixins also suffered from verbose template parameters and an unsafe downcast. The explicit object parameter (deducing this) solves both problems: a lambda can refer to itself via a self parameter without std::function, and a base class can call methods on the derived type without a template parameter and without any cast.",
+      "theory": "Before C++23, recursive lambdas were written by capturing themselves through a std::function<int(int)> wrapper, which required a heap allocation and type erasure. The alternative was the Y-combinator — a higher-order function that passes the lambda to itself — but its syntax is difficult to follow. With the explicit object parameter, a lambda receives its own closure type as a deduced template parameter self and can call itself directly: auto fib = [](this auto self, int n) -> int { return n <= 1 ? n : self(n-1) + self(n-2); };. The parameter this auto self means: \"deduce the closure type and pass it as self by value.\" There is no overhead — the compiler instantiates a concrete function just like any template. The explicit return type annotation (-> int) is required here because the compiler cannot deduce the return type of a recursive body automatically.\n\nThe CRTP replacement works differently. In classic CRTP the base class knows the derived type through a template parameter and reaches it via static_cast<Derived*>(this). This is unsafe: a wrong hierarchy makes the cast undefined behavior. With deducing this the base class needs no template parameter at all: void interface(this auto& self) { self.implementation(); }. When derived.interface() is called, the compiler deduces Self = Derived and passes the object as self — the call self.implementation() resolves on the actual type without any cast. If the derived class does not define implementation(), you get a clear compile error. If it does, the correct function is called.\n\nThe Overloaded pattern for std::visit is another application of variadic base classes. The template template<typename... Ts> struct Overloaded : Ts... { using Ts::operator()...; }; aggregates multiple lambdas and exposes all their operator() in a single type. std::visit dispatches the value stored in a variant to the matching operator() by type. This is cleaner than a chain of if-else on std::holds_alternative and safer than switching on the index: the compiler verifies that all variant alternatives are handled.\n\nAll three idioms share a single mechanism: the compiler deduces the exact type at the call site and instantiates a concrete function, freeing the developer from explicit casts, template parameters, and helper wrappers. The resulting code is shorter, reads like an ordinary method call, and is fully checked by the type system.",
+      "examples": [
+        {
+          "id": "m2-l2-ex1",
+          "title": "Recursive lambda: Fibonacci without std::function",
+          "level": "basic",
+          "code": "#include <iostream>\n\nint main() {\n    auto fib = [](this auto self, int n) -> int {\n        if (n <= 1) return n;\n        return self(n - 1) + self(n - 2);\n    };\n    std::cout << fib(10) << \"\\n\";\n}",
+          "expectedOutput": "55",
+          "explanation": "The parameter this auto self means the closure type of the lambda itself is deduced and passed in self by value. Inside the body, self(n-1) calls the same lambda recursively. The explicit return type -> int is required: without it the compiler cannot deduce the return type from a recursive body. Compared to std::function there is no heap allocation and no type erasure — the compiler generates an ordinary template function."
+        },
+        {
+          "id": "m2-l2-ex2",
+          "title": "CRTP replacement: Printable mixin without a template parameter",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Printable {\n    void print_info(this auto& self) {\n        std::cout << \"[Info] \" << self.describe() << \"\\n\";\n    }\n};\n\nstruct Cat : Printable {\n    std::string name;\n    explicit Cat(std::string n) : name(std::move(n)) {}\n    std::string describe() const { return \"Cat: \" + name; }\n};\n\nstruct Dog : Printable {\n    std::string name;\n    explicit Dog(std::string n) : name(std::move(n)) {}\n    std::string describe() const { return \"Dog: \" + name; }\n};\n\nint main() {\n    Cat c{\"Whiskers\"};\n    Dog d{\"Rex\"};\n    c.print_info();\n    d.print_info();\n}",
+          "expectedOutput": "[Info] Cat: Whiskers\n[Info] Dog: Rex",
+          "explanation": "Printable knows nothing about Cat or Dog — it has no template parameter. When c.print_info() is called, the compiler deduces Self = Cat and passes c in self. The call self.describe() resolves to Cat::describe() — no downcast, no UB. When d.print_info() is called, Self is deduced as Dog. If any subclass had omitted describe(), the compiler would report an error at the print_info() call site, not deep inside template machinery. This is cleaner than classic CRTP: no template<typename Derived> on the base class, no static_cast."
+        },
+        {
+          "id": "m2-l2-ex3",
+          "title": "Overloaded for std::visit: variant visitor without if-else",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <variant>\n#include <string>\n\ntemplate<typename... Ts>\nstruct Overloaded : Ts... { using Ts::operator()...; };\n\nint main() {\n    using V = std::variant<int, std::string, double>;\n    V v1 = 42;\n    V v2 = std::string(\"hello\");\n    V v3 = 3.14;\n\n    auto visitor = Overloaded{\n        [](int x)                { std::cout << \"int: \" << x << \"\\n\"; },\n        [](const std::string& s) { std::cout << \"string: \" << s << \"\\n\"; },\n        [](double d)             { std::cout << \"double: \" << d << \"\\n\"; },\n    };\n\n    std::visit(visitor, v1);\n    std::visit(visitor, v2);\n    std::visit(visitor, v3);\n}",
+          "expectedOutput": "int: 42\nstring: hello\ndouble: 3.14",
+          "explanation": "Overloaded inherits from all the supplied types (here three lambdas) and exposes all their operator() via using. std::visit looks at the active type in the variant and calls the matching operator() on the visitor. The compiler verifies that every possible variant type is handled — a missing case is a compile error. This is safer than switching on std::variant::index() and reads like a table: each case is one line. The pattern works without deducing this, but it illustrates the same principle: aggregating behavior without virtual functions and without any explicit downcast."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m2-l3",

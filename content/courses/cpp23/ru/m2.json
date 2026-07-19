@@ -44,8 +44,41 @@
     },
     {
       "id": "m2-l2",
-      "title": "Deducing this - Lesson 2",
-      "stub": true
+      "title": "Рекурсивные лямбды и замена CRTP",
+      "prerequisites": ["m2-l1"],
+      "background": {
+        "title": "CRTP в C++17",
+        "body": "CRTP (Curiously Recurring Template Pattern) — идиома C++17, при которой базовый класс параметризуется производным: template<typename Derived> struct Base { ... }; struct Concrete : Base<Concrete> { ... };. Это позволяет Base вызывать методы Concrete через static_cast<Derived*>(this) без накладных расходов виртуальных функций — статический полиморфизм и примешивание (mixin). Недостатки: громоздкий шаблонный параметр на каждом базовом классе, небезопасный downcast, который становится UB при неправильном наследовании, и неочевидный синтаксис, осложняющий чтение кода."
+      },
+      "motivation": "До C++23 рекурсивная лямбда требовала либо обёртки std::function с накладными расходами на выделение памяти и стирание типов, либо трюка с Y-комбинатором, который сложно читать. Паттерн CRTP для статического полиморфизма и примесей также страдал от многословного шаблонного параметра и небезопасного downcast. Явный параметр объекта (deducing this) решает обе задачи: лямбда может ссылаться на себя через параметр self без std::function, а базовый класс может вызывать методы производного без шаблонного параметра и без cast.",
+      "theory": "Рекурсивные лямбды до C++23 писались так: лямбда захватывала себя через std::function<int(int)> wrapper, что влекло выделение памяти в куче и стирание типа. Альтернативой был Y-комбинатор — функция высшего порядка, которая передаёт лямбду саму себе, — но её синтаксис труден для восприятия. С явным параметром объекта лямбда получает собственный тип замыкания как шаблонный параметр self, и может вызывать себя напрямую: auto fib = [](this auto self, int n) -> int { return n <= 1 ? n : self(n-1) + self(n-2); };. Параметр this auto self означает: «выведи тип замыкания и передай его как self по значению». Накладных расходов нет — компилятор инстанцирует конкретную функцию, как любой шаблон. Явная аннотация возвращаемого типа (-> int) здесь обязательна, поскольку компилятор не может вывести рекурсивный тип автоматически.\n\nЗамена CRTP работает иначе. В классическом CRTP базовый класс знает тип производного через шаблонный параметр и обращается к нему через static_cast<Derived*>(this). Это небезопасно: при неправильной иерархии cast даст UB. С deducing this базовый класс вообще не нуждается в шаблонном параметре: void interface(this auto& self) { self.implementation(); }. При вызове derived.interface() компилятор выводит Self = Derived и передаёт объект как self — вызов self.implementation() разрешается на фактическом типе без какого-либо cast. Если производный класс не определяет implementation(), получаем понятную ошибку компиляции. Если определяет — вызывается нужная функция.\n\nПаттерн Overloaded для std::visit — ещё одно применение вариадических базовых классов. Шаблон template<typename... Ts> struct Overloaded : Ts... { using Ts::operator()...; }; агрегирует несколько лямбд и открывает все их operator() в одном типе. std::visit передаёт хранящееся в variant значение в подходящий operator() по типу. Это чище, чем писать if-else по std::holds_alternative, и безопаснее, чем switch по индексу: компилятор проверяет, что обработаны все варианты.\n\nВсе три идиомы объединяет одна механика: компилятор выводит точный тип на месте вызова и инстанцирует конкретную функцию, избавляя разработчика от явного cast, шаблонных параметров и вспомогательных обёрток. Результирующий код короче, читается как обычный вызов метода, и полностью проверяется системой типов.",
+      "examples": [
+        {
+          "id": "m2-l2-ex1",
+          "title": "Рекурсивная лямбда: числа Фибоначчи без std::function",
+          "level": "basic",
+          "code": "#include <iostream>\n\nint main() {\n    auto fib = [](this auto self, int n) -> int {\n        if (n <= 1) return n;\n        return self(n - 1) + self(n - 2);\n    };\n    std::cout << fib(10) << \"\\n\";\n}",
+          "expectedOutput": "55",
+          "explanation": "Параметр this auto self означает, что тип замыкания самой лямбды выводится и передаётся в self по значению. Внутри тела self(n-1) вызывает ту же лямбду рекурсивно. Явный тип возврата -> int обязателен: без него компилятор не может вывести тип из рекурсивного тела. По сравнению со std::function нет выделения памяти в куче и нет стирания типа — компилятор генерирует обычную шаблонную функцию."
+        },
+        {
+          "id": "m2-l2-ex2",
+          "title": "Замена CRTP: примесь Printable без шаблонного параметра",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <string>\n\nstruct Printable {\n    void print_info(this auto& self) {\n        std::cout << \"[Info] \" << self.describe() << \"\\n\";\n    }\n};\n\nstruct Cat : Printable {\n    std::string name;\n    explicit Cat(std::string n) : name(std::move(n)) {}\n    std::string describe() const { return \"Cat: \" + name; }\n};\n\nstruct Dog : Printable {\n    std::string name;\n    explicit Dog(std::string n) : name(std::move(n)) {}\n    std::string describe() const { return \"Dog: \" + name; }\n};\n\nint main() {\n    Cat c{\"Whiskers\"};\n    Dog d{\"Rex\"};\n    c.print_info();\n    d.print_info();\n}",
+          "expectedOutput": "[Info] Cat: Whiskers\n[Info] Dog: Rex",
+          "explanation": "Printable не знает о Cat и Dog — у него нет шаблонного параметра. При вызове c.print_info() компилятор выводит Self = Cat и передаёт c в self. Вызов self.describe() разрешается на Cat::describe() — без downcast и без UB. При вызове d.print_info() Self выводится как Dog. Если бы какой-то наследник не определил describe(), компилятор выдал бы ошибку в точке вызова print_info(), а не в недрах шаблонного кода. Это чище классического CRTP: нет template<typename Derived> на базовом классе, нет static_cast."
+        },
+        {
+          "id": "m2-l2-ex3",
+          "title": "Overloaded для std::visit: посетитель variant без if-else",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <variant>\n#include <string>\n\ntemplate<typename... Ts>\nstruct Overloaded : Ts... { using Ts::operator()...; };\n\nint main() {\n    using V = std::variant<int, std::string, double>;\n    V v1 = 42;\n    V v2 = std::string(\"hello\");\n    V v3 = 3.14;\n\n    auto visitor = Overloaded{\n        [](int x)                { std::cout << \"int: \" << x << \"\\n\"; },\n        [](const std::string& s) { std::cout << \"string: \" << s << \"\\n\"; },\n        [](double d)             { std::cout << \"double: \" << d << \"\\n\"; },\n    };\n\n    std::visit(visitor, v1);\n    std::visit(visitor, v2);\n    std::visit(visitor, v3);\n}",
+          "expectedOutput": "int: 42\nstring: hello\ndouble: 3.14",
+          "explanation": "Overloaded наследует от всех переданных типов (в данном случае — трёх лямбд) и открывает все их operator() через using. std::visit смотрит на активный тип в variant и вызывает подходящий operator() посетителя. Компилятор проверяет, что все возможные типы variant обработаны — пропущенный вариант даст ошибку компиляции. Это безопаснее switch по std::variant::index() и читается как таблица: каждый случай — отдельная строка. Паттерн работает и без deducing this, но иллюстрирует ту же идею: агрегирование поведения без виртуальных функций и без явного downcast."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m2-l3",
