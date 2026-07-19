@@ -101,8 +101,30 @@
     },
     {
       "id": "m1-l4",
-      "title": "Language improvements - Lesson 4",
-      "stub": true
+      "title": "Preprocessor and Attributes: #elifdef, [[assume]], [[nodiscard]] on Constructors",
+      "prerequisites": ["m1-l3"],
+      "background": null,
+      "motivation": "Three small but practical C++23 additions eliminate specific friction points developers encounter regularly. The #elifdef directive removes the awkward #elif defined(...) in preprocessor conditional chains. The [[assume]] attribute lets you tell the compiler something it cannot prove on its own — for example, that an array length is a multiple of four — and unlock more aggressive optimisation. Extending [[nodiscard]] to constructors closes a dangerous gap in RAII types: the compiler can now warn when an RAII object is created as a temporary and immediately destroyed, never actually guarding the resource.",
+      "theory": "The #elifdef and #elifndef directives are shorthand for #elif defined(...) and #elif !defined(...) respectively. Before C++23 a preprocessor chain with multiple macro branches looked like this: #ifdef FOO / ... / #elif defined(BAR) / ... / #elif !defined(BAZ) / ... / #endif. The same chain can now be written more compactly: #ifdef FOO / ... / #elifdef BAR / ... / #elifndef BAZ / ... / #endif. The semantics are unchanged — this is a purely syntactic improvement that mirrors the already-existing #ifdef and #ifndef shorthand.\n\nThe [[assume(expr)]] attribute tells the compiler that, at this point in the program, expr is guaranteed to be true — without actually evaluating that expression at runtime. It is the standard, portable replacement for __builtin_unreachable() in GCC/Clang and __assume(expr) in MSVC. Typical uses: informing the compiler that an array size is positive and a multiple of a power of two (enabling SIMD loop unrolling without a remainder branch), that a pointer is aligned to a cache-line boundary, or that a value lies within a specific range. The critical caveat: if the assumption is false at runtime, the behaviour of the program is undefined — the compiler is entitled to generate any code relying on that premise. [[assume]] is an expert tool for code where invariants are known with certainty.\n\nThe [[nodiscard]] attribute has existed since C++17 for functions and types. C++23 permits it to be applied directly to a constructor. This is particularly valuable for RAII types whose entire purpose is their lifetime. The classic example is a guard object: auto guard = std::lock_guard(m) correctly holds the mutex locked for the duration of guard. But writing std::lock_guard(m) without naming the variable creates a temporary that is immediately destroyed — the mutex is locked and unlocked in the same expression, so the guard never actually protects anything. Before C++23 the compiler silently accepted this. With [[nodiscard]] on the constructor the compiler issues a warning, exactly as it does when the return value of a [[nodiscard]] function is discarded.\n\nAll three features share a common trait: they solve real, frequently encountered problems without introducing new semantics. #elifdef improves readability of preprocessor code; [[assume]] passes invariant knowledge to the optimiser; [[nodiscard]] on constructors catches the classic RAII mistake at compile time.",
+      "examples": [
+        {
+          "id": "m1-l4-ex1",
+          "title": "#elifdef: selecting a platform branch in the preprocessor",
+          "code": "#include <print>\n\n#define PLATFORM_LINUX\n\n#ifdef PLATFORM_WINDOWS\n  constexpr const char* platform = \"Windows\";\n#elifdef PLATFORM_LINUX\n  constexpr const char* platform = \"Linux\";\n#elifdef PLATFORM_MACOS\n  constexpr const char* platform = \"macOS\";\n#else\n  constexpr const char* platform = \"Unknown\";\n#endif\n\nint main() {\n    std::println(\"Platform: {}\", platform);\n}",
+          "expectedOutput": "Platform: Linux",
+          "outputsVerified": true,
+          "explanation": "The preprocessor tests the macros in order. Because PLATFORM_LINUX is defined, the second branch is selected. #elifdef PLATFORM_LINUX is exactly equivalent to #elif defined(PLATFORM_LINUX) — the difference is purely in brevity. With the classic syntax you would write #elif defined(PLATFORM_LINUX), which becomes increasingly verbose as macro names grow longer."
+        },
+        {
+          "id": "m1-l4-ex2",
+          "title": "[[assume]]: hinting the compiler about data invariants",
+          "code": "#include <print>\n#include <cstddef>\n\n// [[assume]] passes invariants to the compiler without a runtime check.\n// Knowing that n > 0 and n is divisible by 4, the compiler can optimise\n// the loop more aggressively (e.g. unroll by 4 iterations with no remainder).\n// The program output is unchanged — only the generated machine code differs.\ndouble sum_optimized(const double* data, size_t n) {\n    [[assume(n > 0)]];\n    [[assume(n % 4 == 0)]];\n    double result = 0.0;\n    for (size_t i = 0; i < n; ++i) {\n        result += data[i];\n    }\n    return result;\n}\n\nint main() {\n    double data[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0};\n    std::println(\"sum: {:.1f}\", sum_optimized(data, 8));\n\n    // [[assume]] on a value range: compiler knows x is in [1, 9]\n    int x = 7;\n    [[assume(x > 0 && x < 10)]];\n    std::println(\"x in range [1,9]: {}\", x);\n}",
+          "expectedOutput": "sum: 36.0\nx in range [1,9]: 7",
+          "outputsVerified": true,
+          "explanation": "The program output is identical with and without [[assume]] — the difference is in the generated machine code. Knowing n > 0, the compiler can eliminate the empty-loop check. Knowing n % 4 == 0, it can unroll the loop four iterations at a time with no leftover branch. If n actually violated these conditions the behaviour would be undefined — [[assume]] is not an assertion and does not check the condition; it only promises that the condition holds."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m1-l5",
