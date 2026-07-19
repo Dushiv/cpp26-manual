@@ -9,8 +9,33 @@
   "lessons": [
     {
       "id": "m1-l1",
-      "title": "Language improvements - Lesson 1",
-      "stub": true
+      "title": "if consteval and auto Function Parameters",
+      "prerequisites": [],
+      "background": {
+        "title": "consteval in C++20",
+        "body": "consteval (C++20) declares a function as \"immediate\": it can only be called in a constant evaluation context. Unlike constexpr, which can run both at compile time and at runtime, consteval always executes exclusively at compile time."
+      },
+      "motivation": "A constexpr function can be called both at compile time and at runtime. This flexibility is useful, but it creates a problem: if you want to call a consteval function (which is compile-time only) from inside a constexpr function, the compiler rejects it — it cannot know whether execution is happening at compile time. Before C++23, the only workaround was std::is_constant_evaluated() from C++20, but it had subtle pitfalls. Separately, auto in ordinary function parameters was only valid in lambdas. C++23 solves both issues: if consteval provides a reliable way to branch on the evaluation context, and auto in ordinary function parameters turns them into abbreviated function templates.",
+      "theory": "if consteval is a new branching construct introduced in C++23. Unlike if constexpr, it takes no condition expression: instead, it checks whether the current evaluation is happening in a constant evaluation context. The true branch executes only at compile time; the false branch executes only at runtime. The critical property: the true branch is itself a \"manifestly constant-evaluated context\", so consteval functions may be called inside it — exactly what was impossible with std::is_constant_evaluated(). A negated form is also available: if !consteval { ... } executes only at runtime.\n\nThe second C++23 feature is auto in ordinary function parameters. Since C++14, lambdas have supported auto parameters to create generic lambdas. C++23 extends this syntax to regular (named) functions. Writing void print(auto x) is equivalent to template<typename T> void print(T x): each auto parameter becomes a separate template parameter. This is called an \"abbreviated function template\".\n\nauto parameters fully support qualifiers: const auto&, auto&&, auto*, and so on. Multiple auto parameters each introduce an independent template parameter — so void combine(auto a, auto b) can accept an int and a double simultaneously. During overload resolution, a function with a concrete type takes priority over a generic one: if both void describe(const std::string&) and void describe(const auto&) exist, the former is chosen for a std::string argument.\n\nBoth features make C++23 code more expressive without sacrificing performance. if consteval eliminates an entire class of errors that arose when consteval functions were called in the wrong context. auto parameters reduce template boilerplate: there is no need to write template<typename T> for straightforward generic functions.",
+      "examples": [
+        {
+          "id": "m1-l1-ex1",
+          "title": "if consteval: different paths at compile time vs runtime",
+          "code": "#include <print>\n#include <cmath>\n\nconsteval double compile_time_sqrt(double x) {\n    // Newton's method — evaluated only at compile time\n    double r = x;\n    for (int i = 0; i < 10; ++i) r = (r + x/r) / 2;\n    return r;\n}\n\nconstexpr double my_sqrt(double x) {\n    if consteval {\n        return compile_time_sqrt(x); // safe: we are in a compile-time context\n    } else {\n        return std::sqrt(x); // runtime: use libm\n    }\n}\n\nint main() {\n    constexpr double ct = my_sqrt(2.0); // compile-time path\n    double rt = my_sqrt(2.0);           // runtime path\n    std::println(\"compile-time: {:.6f}\", ct);\n    std::println(\"runtime:      {:.6f}\", rt);\n}",
+          "expectedOutput": "compile-time: 1.414214\nruntime:      1.414214",
+          "outputsVerified": true,
+          "explanation": "my_sqrt is declared constexpr, so it can be called both at compile time and at runtime. Inside the if consteval branch the call to compile_time_sqrt is valid — we are guaranteed to be in a constant evaluation context. Without if consteval the compiler would reject the consteval call because it cannot know the context. Both paths produce the same result but use different implementations."
+        },
+        {
+          "id": "m1-l1-ex2",
+          "title": "auto function parameters: generic functions and overloading",
+          "code": "#include <print>\n#include <string>\n\n// abbreviated function template — instantiated for each distinct argument type\nvoid describe(const auto& x) {\n    std::println(\"value: {}\", x);\n}\n\n// overload for string — more specific, wins for string arguments\nvoid describe(const std::string& s) {\n    std::println(\"string of length {}: {}\", s.size(), s);\n}\n\n// multiple auto params — each is a separate template parameter\nauto add(auto a, auto b) {\n    return a + b;\n}\n\nint main() {\n    describe(42);\n    describe(3.14);\n    describe(std::string{\"hello\"});\n\n    std::println(\"add: {}\", add(1, 2));\n    std::println(\"add: {}\", add(1.5, 2.5));\n    std::println(\"add: {}\", add(std::string{\"foo\"}, std::string{\"bar\"}));\n}",
+          "expectedOutput": "value: 42\nvalue: 3.14\nstring of length 5: hello\nadd: 3\nadd: 4\nadd: foobar",
+          "outputsVerified": true,
+          "explanation": "describe(const auto& x) is an abbreviated function template, equivalent to template<typename T> void describe(const T& x). When called with std::string{\"hello\"}, the compiler selects the more specialized overload describe(const std::string&). add(auto a, auto b) introduces two independent template parameters: a and b may have different types. For strings, operator+ performs concatenation."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m1-l2",

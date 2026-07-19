@@ -9,8 +9,33 @@
   "lessons": [
     {
       "id": "m1-l1",
-      "title": "Языковые улучшения - Lesson 1",
-      "stub": true
+      "title": "if consteval и auto в параметрах функций",
+      "prerequisites": [],
+      "background": {
+        "title": "consteval в C++20",
+        "body": "consteval (C++20) объявляет функцию «немедленно вычисляемой»: она может вызываться только в контексте константного вычисления. В отличие от constexpr, которая может выполняться и во время компиляции, и во время выполнения, consteval всегда выполняется только во время компиляции."
+      },
+      "motivation": "Функция constexpr может вызываться как во время компиляции, так и во время выполнения. Это удобно, но порождает проблему: если внутри constexpr-функции нужно вызвать consteval-функцию (которая допустима только при константном вычислении), компилятор отклонит такой вызов — он не знает, происходит ли исполнение во время компиляции. До C++23 единственным выходом был std::is_constant_evaluated() из C++20, но он имел тонкие ловушки. Параллельно в обычных функциях было нельзя использовать auto в параметрах — только в лямбдах. C++23 решает обе проблемы: if consteval даёт надёжный способ разветвить логику по контексту вычисления, а auto в параметрах обычных функций превращает их в сокращённые шаблоны функций.",
+      "theory": "if consteval — это новый вид оператора ветвления, введённый в C++23. В отличие от if constexpr, он не принимает условного выражения: вместо этого он проверяет, происходит ли текущее вычисление в контексте константного вычисления. Истинная ветвь выполняется только при компиляции, ложная — только во время выполнения. Ключевое свойство: истинная ветвь сама является «явно константно-вычисляемым контекстом» (manifestly constant-evaluated context), поэтому внутри неё разрешено вызывать consteval-функции — именно это и было невозможно с std::is_constant_evaluated(). Доступна и отрицательная форма: if !consteval { ... } выполняется только при выполнении во время выполнения.\n\nВторая фича C++23 — auto в параметрах обычных функций. Начиная с C++14 лямбды поддерживали auto-параметры, создавая обобщённые лямбды. C++23 распространяет этот синтаксис на обычные (именованные) функции. Запись void print(auto x) эквивалентна template<typename T> void print(T x): каждый параметр auto становится отдельным параметром шаблона. Это называется «сокращённым шаблоном функции» (abbreviated function template).\n\nАuto-параметры полностью поддерживают квалификаторы: const auto&, auto&&, auto* и т.д. Несколько auto-параметров создают независимые параметры шаблона — то есть void combine(auto a, auto b) может принять int и double одновременно. При перегрузке функция с конкретным типом приоритетнее обобщённой: если есть void describe(const std::string&) и void describe(const auto&), для аргумента типа std::string будет выбрана первая.\n\nОба нововведения делают C++23-код выразительнее без потери производительности. if consteval устраняет целый класс ошибок, когда consteval-функцию пытались вызвать в неподходящем контексте. Auto-параметры сокращают шаблонный boilerplate: не нужно писать template<typename T> для простых обобщённых функций.",
+      "examples": [
+        {
+          "id": "m1-l1-ex1",
+          "title": "if consteval: разные пути при компиляции и при выполнении",
+          "code": "#include <print>\n#include <cmath>\n\nconsteval double compile_time_sqrt(double x) {\n    // метод Ньютона — вычисляется только при компиляции\n    double r = x;\n    for (int i = 0; i < 10; ++i) r = (r + x/r) / 2;\n    return r;\n}\n\nconstexpr double my_sqrt(double x) {\n    if consteval {\n        return compile_time_sqrt(x); // безопасно: мы в compile-time контексте\n    } else {\n        return std::sqrt(x); // runtime: используем libm\n    }\n}\n\nint main() {\n    constexpr double ct = my_sqrt(2.0); // путь compile-time\n    double rt = my_sqrt(2.0);           // путь runtime\n    std::println(\"compile-time: {:.6f}\", ct);\n    std::println(\"runtime:      {:.6f}\", rt);\n}",
+          "expectedOutput": "compile-time: 1.414214\nruntime:      1.414214",
+          "outputsVerified": true,
+          "explanation": "my_sqrt объявлена как constexpr, поэтому может вызываться и во время компиляции, и во время выполнения. Внутри if consteval вызов compile_time_sqrt разрешён — мы гарантированно находимся в контексте константного вычисления. Без if consteval компилятор отклонил бы вызов consteval-функции, не зная контекста. Оба пути дают один результат, но используют разные реализации."
+        },
+        {
+          "id": "m1-l1-ex2",
+          "title": "auto в параметрах функций: обобщённые функции и перегрузка",
+          "code": "#include <print>\n#include <string>\n\n// сокращённый шаблон функции — для каждого вызова создаётся экземпляр нужного типа\nvoid describe(const auto& x) {\n    std::println(\"value: {}\", x);\n}\n\n// перегрузка для string — более специфична, выигрывает для string-аргументов\nvoid describe(const std::string& s) {\n    std::println(\"string of length {}: {}\", s.size(), s);\n}\n\n// несколько auto-параметров — каждый является отдельным параметром шаблона\nauto add(auto a, auto b) {\n    return a + b;\n}\n\nint main() {\n    describe(42);\n    describe(3.14);\n    describe(std::string{\"hello\"});\n\n    std::println(\"add: {}\", add(1, 2));\n    std::println(\"add: {}\", add(1.5, 2.5));\n    std::println(\"add: {}\", add(std::string{\"foo\"}, std::string{\"bar\"}));\n}",
+          "expectedOutput": "value: 42\nvalue: 3.14\nstring of length 5: hello\nadd: 3\nadd: 4\nadd: foobar",
+          "outputsVerified": true,
+          "explanation": "describe(const auto& x) — это сокращённый шаблон функции, эквивалентный template<typename T> void describe(const T& x). При вызове describe(std::string{\"hello\"}) компилятор выбирает более специализированную перегрузку — describe(const std::string&). Функция add(auto a, auto b) имеет два независимых параметра шаблона: a и b могут быть разных типов. Для строк operator+ выполняет конкатенацию."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m1-l2",
