@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m7-l1",
-      "title": "Контейнеры и утилиты - Lesson 1",
-      "stub": true
+      "title": "std::flat_map и std::flat_set: ассоциативные контейнеры над массивом",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "std::map и std::set — рабочие лошадки C++, но под капотом у них красно-чёрное дерево: каждый узел — отдельная аллокация в куче, переход к следующему элементу — разыменование указателя. На read-heavy нагрузках (поиск, итерация) это означает постоянные cache miss'ы. C++23 добавил std::flat_map и std::flat_set — контейнеры с тем же интерфейсом, но хранящие данные в отсортированных векторах. Бинарный поиск по вектору на порядок кэш-дружелюбнее дерева, и для типичного use case «заполнить один раз, читать много раз» это даёт ощутимый выигрыш без изменения кода.",
+      "theory": "std::flat_map<K, V> хранит ключи и значения в двух отдельных отсортированных векторах. Поиск выполняется бинарным поиском по вектору ключей за O(log n), как и в std::map, но обращение к последовательным ключам идёт по непрерывной памяти — процессорный кэш используется эффективно. Заголовок: <flat_map>. std::flat_set<T> аналогично хранит элементы в одном отсортированном векторе; заголовок: <flat_set>.\n\nИнтерфейс flat_map и flat_set намеренно совпадает с map/set: operator[], at(), find(), contains(), insert(), erase(), итерация по парам [key, value]. Переход с map на flat_map часто сводится к замене одного имени типа. Важное отличие касается итераторов: разыменование итератора flat_map возвращает proxy-пару ссылок (std::pair<const K&, V&>), которая является временным объектом — структурированные привязки нужно объявлять через auto [k, v], а не через auto& [k, v].\n\nПроизводительность зависит от паттерна доступа. flat_map выигрывает при чтении, итерации и небольших/средних наборах данных (тысячи-десятки тысяч элементов). Проигрывает при частых вставках в середину: каждая вставка требует сдвига элементов за O(n). Если данные уже отсортированы, тег std::sorted_unique позволяет сконструировать контейнер без лишней сортировки. Правило выбора: строите таблицу один раз и потом только читаете — flat_map; активно вставляете/удаляете в произвольных местах — обычный map.\n\nflat_map открывает доступ к базовым контейнерам через методы keys() и values(), возвращающие константные ссылки на внутренние векторы. Это позволяет передать список ключей в алгоритм без копирования, использовать SIMD-дружелюбный доступ или просто получить размер без прохода по всему контейнеру. По умолчанию базовый контейнер — std::vector, но через параметры шаблона можно подставить std::deque или любой другой контейнер с произвольным доступом.",
+      "examples": [
+        {
+          "id": "m7-l1-ex1",
+          "title": "Базовый flat_map: тот же интерфейс, что у map",
+          "level": "basic",
+          "code": "#include <flat_map>\n#include <print>\n#include <string>\nint main() {\n    std::flat_map<std::string, int> scores;\n    scores[\"Alice\"] = 95;\n    scores[\"Bob\"] = 87;\n    scores[\"Carol\"] = 92;\n    scores[\"Alice\"] = 98;\n    for (auto [name, score] : scores)\n        std::println(\"{}: {}\", name, score);\n    std::println(\"contains Dave: {}\", scores.contains(\"Dave\"));\n}",
+          "expectedOutput": "Alice: 98\nBob: 87\nCarol: 92\ncontains Dave: false",
+          "explanation": "flat_map ведёт себя как map: дублирующая запись scores[\"Alice\"] = 98 обновляет значение, итерация идёт в отсортированном по ключу порядке, contains() работает через бинарный поиск. Обратите внимание на auto [name, score] без &: итератор flat_map возвращает proxy-пару временных ссылок, привязка по lvalue-ссылке не компилируется."
+        },
+        {
+          "id": "m7-l1-ex2",
+          "title": "flat_set и тег sorted_unique",
+          "level": "intermediate",
+          "code": "#include <flat_map>\n#include <flat_set>\n#include <print>\nint main() {\n    std::flat_set<int> nums;\n    nums.insert(7);\n    nums.insert(2);\n    nums.insert(5);\n    nums.insert(3);\n    nums.insert(2); // дубликат игнорируется\n    std::print(\"sorted:\");\n    for (int x : nums)\n        std::print(\" {}\", x);\n    std::println(\"\");\n\n    std::flat_map<int, std::string> m(\n        std::sorted_unique,\n        {{1, \"one\"}, {2, \"two\"}, {3, \"three\"}}\n    );\n    for (auto [k, v] : m)\n        std::println(\"{} -> {}\", k, v);\n}",
+          "expectedOutput": "sorted: 2 3 5 7\n1 -> one\n2 -> two\n3 -> three",
+          "explanation": "flat_set хранит элементы в отсортированном векторе и автоматически отбрасывает дубликаты при вставке. Тег std::sorted_unique при конструировании flat_map сигнализирует, что входные данные уже упорядочены и уникальны — контейнер пропускает O(n log n) сортировку и принимает данные напрямую. Используйте этот тег только тогда, когда гарантируете порядок и уникальность: нарушение приводит к UB."
+        },
+        {
+          "id": "m7-l1-ex3",
+          "title": "Таблица конфигурации: find() и keys()",
+          "level": "advanced",
+          "code": "#include <flat_map>\n#include <print>\n#include <string>\n#include <vector>\nint main() {\n    std::flat_map<std::string, int> config = {\n        {\"buffer_size\", 4096}, {\"max_conn\", 100},\n        {\"port\", 8080}, {\"retries\", 3}, {\"timeout\", 30}\n    };\n    for (const auto& key : {\"port\", \"retries\", \"missing\"}) {\n        auto it = config.find(key);\n        if (it != config.end())\n            std::println(\"{} = {}\", key, it->second);\n        else\n            std::println(\"{} not found\", key);\n    }\n    // keys() возвращает ссылку на внутренний вектор ключей\n    std::println(\"key count: {}\", config.keys().size());\n}",
+          "expectedOutput": "port = 8080\nretries = 3\nmissing not found\nkey count: 5",
+          "explanation": "flat_map идеально подходит для таблиц конфигурации: строится один раз при старте программы, затем используется только для чтения. find() выполняет бинарный поиск и возвращает итератор или end(). Метод keys() открывает прямой доступ к внутреннему вектору ключей без копирования — удобно для передачи в алгоритмы или логирования. Аналогично values() даёт доступ к вектору значений."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m7-l2",

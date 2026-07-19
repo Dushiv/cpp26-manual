@@ -9,8 +9,38 @@
   "lessons": [
     {
       "id": "m7-l1",
-      "title": "Containers and utilities - Lesson 1",
-      "stub": true
+      "title": "std::flat_map and std::flat_set: Array-Backed Associative Containers",
+      "prerequisites": [],
+      "background": null,
+      "motivation": "std::map and std::set are C++ workhorses, but under the hood they use a red-black tree: every node is a separate heap allocation, and traversing to the next element means chasing a pointer. On read-heavy workloads — lookups and iteration — this causes constant cache misses. C++23 introduced std::flat_map and std::flat_set: containers with the same interface but storing data in sorted vectors. Binary search over a vector is far more cache-friendly than a tree, and for the typical use case of \"fill once, query many times\" this delivers a measurable speedup without changing calling code.",
+      "theory": "std::flat_map<K, V> stores keys and values in two separate sorted vectors. Lookup is performed by binary search over the keys vector in O(log n), just like std::map, but accessing consecutive keys walks contiguous memory — the CPU cache is used efficiently. Header: <flat_map>. std::flat_set<T> similarly stores elements in a single sorted vector; header: <flat_set>.\n\nThe interface of flat_map and flat_set deliberately mirrors map/set: operator[], at(), find(), contains(), insert(), erase(), and range-for over key-value pairs. Switching from map to flat_map often amounts to changing one type name. One important difference concerns iterators: dereferencing a flat_map iterator returns a proxy pair of references (std::pair<const K&, V&>), which is a temporary object — structured bindings must be declared as auto [k, v], not auto& [k, v].\n\nPerformance depends on the access pattern. flat_map wins for reads, iteration, and small-to-medium datasets (thousands to tens of thousands of elements). It loses when elements are inserted frequently in the middle: each insertion requires shifting elements in O(n). If the input data is already sorted, the std::sorted_unique tag lets you construct the container without an extra sort pass. Decision rule: build the table once and only read it afterward — prefer flat_map; insert and erase frequently at arbitrary positions — use regular map.\n\nflat_map exposes its underlying storage through keys() and values(), which return const references to the internal vectors. This allows passing the key list to an algorithm without copying, enables SIMD-friendly sequential access, or simply retrieves the size without iterating. The default backing container is std::vector, but any random-access container (e.g. std::deque) can be substituted via template parameters.",
+      "examples": [
+        {
+          "id": "m7-l1-ex1",
+          "title": "Basic flat_map: same interface as map",
+          "level": "basic",
+          "code": "#include <flat_map>\n#include <print>\n#include <string>\nint main() {\n    std::flat_map<std::string, int> scores;\n    scores[\"Alice\"] = 95;\n    scores[\"Bob\"] = 87;\n    scores[\"Carol\"] = 92;\n    scores[\"Alice\"] = 98;\n    for (auto [name, score] : scores)\n        std::println(\"{}: {}\", name, score);\n    std::println(\"contains Dave: {}\", scores.contains(\"Dave\"));\n}",
+          "expectedOutput": "Alice: 98\nBob: 87\nCarol: 92\ncontains Dave: false",
+          "explanation": "flat_map behaves exactly like map: the duplicate assignment scores[\"Alice\"] = 98 updates the value, iteration visits elements in sorted key order, and contains() uses binary search. Notice auto [name, score] without &: a flat_map iterator returns a proxy pair of temporary references, and binding by lvalue reference does not compile."
+        },
+        {
+          "id": "m7-l1-ex2",
+          "title": "flat_set and the sorted_unique tag",
+          "level": "intermediate",
+          "code": "#include <flat_map>\n#include <flat_set>\n#include <print>\nint main() {\n    std::flat_set<int> nums;\n    nums.insert(7);\n    nums.insert(2);\n    nums.insert(5);\n    nums.insert(3);\n    nums.insert(2); // duplicate ignored\n    std::print(\"sorted:\");\n    for (int x : nums)\n        std::print(\" {}\", x);\n    std::println(\"\");\n\n    std::flat_map<int, std::string> m(\n        std::sorted_unique,\n        {{1, \"one\"}, {2, \"two\"}, {3, \"three\"}}\n    );\n    for (auto [k, v] : m)\n        std::println(\"{} -> {}\", k, v);\n}",
+          "expectedOutput": "sorted: 2 3 5 7\n1 -> one\n2 -> two\n3 -> three",
+          "explanation": "flat_set keeps elements in a sorted vector and silently drops duplicates on insert. The std::sorted_unique tag signals to the flat_map constructor that the input is already ordered and unique — the container skips the O(n log n) sort and copies the data directly. Only use this tag when you can guarantee order and uniqueness: violating either is undefined behavior."
+        },
+        {
+          "id": "m7-l1-ex3",
+          "title": "Configuration table: find() and keys()",
+          "level": "advanced",
+          "code": "#include <flat_map>\n#include <print>\n#include <string>\n#include <vector>\nint main() {\n    std::flat_map<std::string, int> config = {\n        {\"buffer_size\", 4096}, {\"max_conn\", 100},\n        {\"port\", 8080}, {\"retries\", 3}, {\"timeout\", 30}\n    };\n    for (const auto& key : {\"port\", \"retries\", \"missing\"}) {\n        auto it = config.find(key);\n        if (it != config.end())\n            std::println(\"{} = {}\", key, it->second);\n        else\n            std::println(\"{} not found\", key);\n    }\n    // keys() returns a reference to the internal keys vector\n    std::println(\"key count: {}\", config.keys().size());\n}",
+          "expectedOutput": "port = 8080\nretries = 3\nmissing not found\nkey count: 5",
+          "explanation": "flat_map is an excellent fit for configuration tables: built once at startup, then used exclusively for reads. find() performs binary search and returns an iterator or end(). keys() gives direct access to the internal keys vector without copying — handy for passing to algorithms or logging. Similarly, values() exposes the values vector."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m7-l2",
