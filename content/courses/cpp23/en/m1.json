@@ -39,8 +39,38 @@
     },
     {
       "id": "m1-l2",
-      "title": "Language improvements - Lesson 2",
-      "stub": true
+      "title": "Multidimensional operator[]: m[i, j] Syntax",
+      "prerequisites": ["m1-l1"],
+      "background": null,
+      "motivation": "Before C++23, operator[] could only take a single argument. Writing m[i, j] inside the brackets was interpreted by the compiler as the comma operator: m[i, j] meant m[(i, j)], which evaluates to m[j] — the right operand. C++20 deprecated this behaviour, and C++23 made it ill-formed. To index two-dimensional structures, developers resorted to workarounds: operator() in the style of m(i, j), chained subscripts m[i][j] via row proxy objects, or a helper index type m[{i, j}]. None of these feel natural for indexing. C++23 removed the restriction: operator[] can now accept any number of parameters, and commas inside [] separate arguments rather than invoking the comma operator.",
+      "theory": "C++23 allows operator[] to accept an arbitrary number of parameters — zero, one, two, or more. The declaration syntax is identical to any other operator overload: parameters are listed separated by commas. Commas inside [] at the call site now separate arguments rather than invoking the comma operator. The old behaviour (comma operator in subscript context) was deprecated in C++20 and became ill-formed in C++23, so legacy code that accidentally wrote m[i, j] to mean m[j] will no longer compile.\n\nParameters of operator[] can have any types and qualifiers. Both a mutating and a non-mutating overload can coexist: double& operator[](size_t i, size_t j) for writes and const double& operator[](size_t i, size_t j) const for reads. A variadic form using auto... is also valid, but for concrete data structures a fixed number of parameters with the appropriate types is more common.\n\nThe primary motivation for this language change was std::mdspan — a multidimensional array view added to the standard library in C++23. mdspan stores a pointer to a one-dimensional buffer and a mapping from multi-index to flat offset. The expression md[i, j] invokes a two-argument operator[] that computes the offset internally. Before this language change it was impossible to give mdspan an intuitive subscript interface, which is why the language feature and the library component landed together in C++23.\n\nAn operator with zero arguments — operator[]() — is technically valid since C++23, though rarely needed: it can be useful in proxy objects or DSL builders where a subscript without an index carries semantic meaning. One important note: the change only affects the subscript operator itself. Calling a[i, j] where a is a plain built-in array or a type that does not define a matching operator[] remains an error.",
+      "examples": [
+        {
+          "id": "m1-l2-ex1",
+          "title": "Simple 3x3 matrix with operator[](size_t, size_t)",
+          "code": "#include <print>\n#include <cstddef>\n\nstruct Matrix3x3 {\n    double data[3][3]{};\n\n    double& operator[](size_t i, size_t j) { return data[i][j]; }\n    const double& operator[](size_t i, size_t j) const { return data[i][j]; }\n};\n\nint main() {\n    Matrix3x3 m;\n    m[0, 0] = 1.0;\n    m[1, 1] = 2.0;\n    m[2, 2] = 3.0;\n\n    for (size_t i = 0; i < 3; ++i) {\n        for (size_t j = 0; j < 3; ++j) {\n            std::print(\"{:.0f} \", m[i, j]);\n        }\n        std::println(\"\");\n    }\n}",
+          "expectedOutput": "1 0 0 \n0 2 0 \n0 0 3 ",
+          "outputsVerified": true,
+          "explanation": "Both overloads of operator[] take two size_t parameters. The expression m[0, 0] = 1.0 calls the non-const overload (returning double&), and m[i, j] in the loop body calls the const overload. Before C++23 this would not compile: the compiler would treat m[0, 0] as the comma operator and invoke a single-parameter operator[] with argument 0."
+        },
+        {
+          "id": "m1-l2-ex2",
+          "title": "3D tensor with operator[](size_t, size_t, size_t)",
+          "code": "#include <print>\n#include <cstddef>\n\nstruct Tensor3D {\n    double data[2][2][2]{};\n\n    double& operator[](size_t i, size_t j, size_t k) {\n        return data[i][j][k];\n    }\n};\n\nint main() {\n    Tensor3D t;\n    t[0, 0, 0] = 1.0;\n    t[0, 0, 1] = 2.0;\n    t[1, 0, 0] = 3.0;\n    t[1, 1, 1] = 4.0;\n\n    std::println(\"t[0,0,0] = {:.0f}\", t[0, 0, 0]);\n    std::println(\"t[0,0,1] = {:.0f}\", t[0, 0, 1]);\n    std::println(\"t[1,0,0] = {:.0f}\", t[1, 0, 0]);\n    std::println(\"t[1,1,1] = {:.0f}\", t[1, 1, 1]);\n}",
+          "expectedOutput": "t[0,0,0] = 1\nt[0,0,1] = 2\nt[1,0,0] = 3\nt[1,1,1] = 4",
+          "outputsVerified": true,
+          "explanation": "operator[] can now take three arguments. The syntax t[0, 0, 0] reads as naturally as indexing a built-in three-dimensional array. Internally the operator simply delegates to data[i][j][k] — no proxy objects required."
+        },
+        {
+          "id": "m1-l2-ex3",
+          "title": "Dynamic grid with bounds checking — the same pattern as std::mdspan",
+          "code": "#include <print>\n#include <vector>\n#include <stdexcept>\n#include <cstddef>\n\n// Dynamic 2D grid — the same pattern that std::mdspan uses internally:\n// a flat storage buffer + flat-index computation inside operator[]\nstruct Grid {\n    size_t rows, cols;\n    std::vector<double> data;\n\n    Grid(size_t r, size_t c) : rows(r), cols(c), data(r * c, 0.0) {}\n\n    double& operator[](size_t i, size_t j) {\n        if (i >= rows || j >= cols) throw std::out_of_range(\"Grid: index out of range\");\n        return data[i * cols + j];\n    }\n\n    double operator[](size_t i, size_t j) const {\n        if (i >= rows || j >= cols) throw std::out_of_range(\"Grid: index out of range\");\n        return data[i * cols + j];\n    }\n};\n\nint main() {\n    Grid g{3, 4};\n    g[0, 0] = 1.0;\n    g[1, 2] = 5.0;\n    g[2, 3] = 9.0;\n\n    std::println(\"g[0,0] = {:.0f}\", g[0, 0]);\n    std::println(\"g[1,2] = {:.0f}\", g[1, 2]);\n    std::println(\"g[2,3] = {:.0f}\", g[2, 3]);\n    std::println(\"g[0,1] = {:.0f}\", g[0, 1]);\n\n    try {\n        [[maybe_unused]] double x = g[5, 0]; // out of bounds\n    } catch (const std::out_of_range& e) {\n        std::println(\"caught: {}\", e.what());\n    }\n}",
+          "expectedOutput": "g[0,0] = 1\ng[1,2] = 5\ng[2,3] = 9\ng[0,1] = 0\ncaught: Grid: index out of range",
+          "outputsVerified": true,
+          "explanation": "Grid stores its data in a flat std::vector and computes the offset i * cols + j inside operator[] — exactly what std::mdspan does under the hood. The non-const overload returns double& for writes; the const overload returns by value for reads. The bounds check shows that a two-parameter operator[] is not restricted in any way: it can contain arbitrary logic."
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m1-l3",
