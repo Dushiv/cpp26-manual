@@ -9,8 +9,41 @@
   "lessons": [
     {
       "id": "m4-l1",
-      "title": "Ranges C++23 - Lesson 1",
-      "stub": true
+      "title": "std::ranges::to — материализация диапазонов",
+      "prerequisites": [],
+      "background": {
+        "title": "View-адаптеры ленивы (C++20)",
+        "body": "В C++20 view-адаптеры (filter, transform, take и др.) ленивы: они не хранят элементы, а вычисляют их при итерации. Это значит, что pipeline из view — это не вектор, а описание вычисления. Передать такой view в API, ожидающий vector, напрямую нельзя — нужна явная материализация."
+      },
+      "motivation": "Работа с ranges в C++20 принесла мощные инструменты для композиции алгоритмов. Однако получить из готового pipeline обычный контейнер было неудобно: приходилось явно конструировать вектор через итераторы или использовать std::ranges::copy с back_inserter. Для сложных pipeline это превращалось в шаблонный код, который скрывал намерение. В C++23 появился std::ranges::to — единый способ материализовать любой range в любой контейнер одной строкой.",
+      "theory": "До C++23 для преобразования range в контейнер использовались два подхода. Первый: конструирование через пару итераторов — std::vector<int> result(filtered.begin(), filtered.end()). Второй: std::ranges::copy(filtered, std::back_inserter(result)). Оба многословны, требуют явного указания типа элемента и не вписываются в цепочку операторов |.\n\nstd::ranges::to<C>() решает эту проблему. Он поддерживает два синтаксиса: pipe-синтаксис (range | std::ranges::to<std::vector>()) и функциональный (std::ranges::to<std::vector>(range)). При использовании CTAD тип элемента выводится автоматически — std::ranges::to<std::vector>() без угловых скобок для типа элемента. Если нужен конкретный тип, его указывают явно: std::ranges::to<std::vector<int>>().\n\nФункция работает с любым контейнером, который имеет конструктор с тегом std::from_range_t (добавлен в C++23 для vector, list, deque, set, map и других стандартных контейнеров), либо поддерживает push_back или insert. Это означает, что std::ranges::to применим и к пользовательским контейнерам, если они отвечают этим требованиям. Конвертация между типами контейнеров естественна: список можно превратить в множество (с автоматической дедупликацией и сортировкой), множество — обратно в вектор, а диапазон символов — в строку.\n\nДля вложенных диапазонов std::ranges::to работает рекурсивно: range of ranges можно собрать в vector<vector<...>>, причём внутренний to применяется к каждому вложенному диапазону в рамках transform. Это делает std::ranges::to универсальным финальным звеном любого pipeline, независимо от его сложности.",
+      "examples": [
+        {
+          "id": "m4-l1-ex1",
+          "title": "Filter + transform → vector",
+          "description": "Цепочка filter и transform материализуется в вектор одним вызовом std::ranges::to. CTAD выводит тип элемента автоматически.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    std::vector<int> nums = {-3, -1, 0, 2, 4, 6, 8};\n\n    // C++23: one-liner\n    auto evens = nums\n        | std::views::filter([](int x){ return x > 0; })\n        | std::views::transform([](int x){ return x * x; })\n        | std::ranges::to<std::vector>();\n\n    std::println(\"{}\", evens);\n}",
+          "expectedOutput": "[4, 16, 36, 64]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l1-ex2",
+          "title": "Конвертация между контейнерами и строка",
+          "description": "std::ranges::to позволяет конвертировать между типами контейнеров: vector → set для дедупликации, set → vector для получения отсортированного вектора, и диапазон символов в строку.",
+          "code": "#include <ranges>\n#include <vector>\n#include <set>\n#include <string>\n#include <print>\nint main() {\n    std::vector<int> v = {3, 1, 4, 1, 5, 9, 2, 6, 5};\n\n    // deduplicate via set\n    auto unique = v | std::ranges::to<std::set>();\n    std::println(\"unique: {}\", unique);\n\n    // back to sorted vector\n    auto sorted_v = unique | std::ranges::to<std::vector>();\n    std::println(\"sorted: {}\", sorted_v);\n\n    // chars to string\n    auto letters = std::views::iota(0, 5)\n        | std::views::transform([](int i){ return static_cast<char>('a' + i); })\n        | std::ranges::to<std::string>();\n    std::println(\"letters: {}\", letters);\n}",
+          "expectedOutput": "unique: {1, 2, 3, 4, 5, 6, 9}\nsorted: [1, 2, 3, 4, 5, 6, 9]\nletters: abcde",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l1-ex3",
+          "title": "Вложенные диапазоны: vector<vector<string>>",
+          "description": "При работе с вложенными диапазонами std::ranges::to применяется на каждом уровне. Здесь каждая строка разбивается по пробелу в вектор слов, а результаты собираются во внешний вектор.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<std::string> words = {\"hello world\", \"foo bar\", \"cpp23\"};\n\n    // split each word by space, collect into vector<vector<string>>\n    auto split_words = words\n        | std::views::transform([](const std::string& s) {\n            return s | std::views::split(' ')\n                     | std::views::transform([](auto r){\n                           return std::string(r.begin(), r.end());\n                       })\n                     | std::ranges::to<std::vector>();\n          })\n        | std::ranges::to<std::vector>();\n\n    for (const auto& parts : split_words) {\n        std::println(\"{}\", parts);\n    }\n}",
+          "expectedOutput": "[\"hello\", \"world\"]\n[\"foo\", \"bar\"]\n[\"cpp23\"]",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l2",

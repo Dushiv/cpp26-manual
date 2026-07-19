@@ -9,8 +9,41 @@
   "lessons": [
     {
       "id": "m4-l1",
-      "title": "Ranges C++23 - Lesson 1",
-      "stub": true
+      "title": "std::ranges::to — Materializing Ranges into Containers",
+      "prerequisites": [],
+      "background": {
+        "title": "View adaptors are lazy (C++20)",
+        "body": "In C++20, view adaptors (filter, transform, take, etc.) are lazy: they store no elements and compute them on demand during iteration. This means a pipeline of views is not a vector — it is a description of a computation. You cannot pass such a view directly to an API that expects a vector; explicit materialization is required."
+      },
+      "motivation": "The ranges library introduced in C++20 brought powerful tools for composing algorithms via view pipelines. However, turning a finished pipeline back into a regular container was awkward: you had to construct a vector via iterators, or use std::ranges::copy with a back_inserter. For complex pipelines this became boilerplate that obscured the intent. C++23 introduced std::ranges::to — a single, uniform way to materialize any range into any container in one line.",
+      "theory": "Before C++23, two approaches existed for converting a range into a container. The first was construction via an iterator pair: std::vector<int> result(filtered.begin(), filtered.end()). The second was std::ranges::copy(filtered, std::back_inserter(result)). Both are verbose, require explicitly naming the element type, and do not compose cleanly in a pipe chain.\n\nstd::ranges::to<C>() solves this. It supports two syntaxes: pipe syntax (range | std::ranges::to<std::vector>()) and function call syntax (std::ranges::to<std::vector>(range)). With CTAD the element type is deduced automatically — std::ranges::to<std::vector>() without explicit element type angle brackets. When a specific element type is needed it can be given explicitly: std::ranges::to<std::vector<int>>().\n\nThe function works with any container that has a constructor taking std::from_range_t (added in C++23 for vector, list, deque, set, map, and other standard containers), or that supports push_back or insert. This means std::ranges::to also works with user-defined containers that meet these requirements. Conversion between container types is natural: a list can become a set (with automatic deduplication and sorting), a set can become a vector, and a range of characters can become a string.\n\nFor nested ranges std::ranges::to works recursively: a range of ranges can be collected into a vector<vector<...>>, with the inner to applied to each nested range inside a transform step. This makes std::ranges::to a universal terminal step for any pipeline, regardless of its depth or complexity.",
+      "examples": [
+        {
+          "id": "m4-l1-ex1",
+          "title": "Filter + transform → vector",
+          "description": "A filter-and-transform pipeline is materialized into a vector with a single std::ranges::to call. CTAD deduces the element type automatically.",
+          "code": "#include <ranges>\n#include <vector>\n#include <print>\nint main() {\n    std::vector<int> nums = {-3, -1, 0, 2, 4, 6, 8};\n\n    // C++23: one-liner\n    auto evens = nums\n        | std::views::filter([](int x){ return x > 0; })\n        | std::views::transform([](int x){ return x * x; })\n        | std::ranges::to<std::vector>();\n\n    std::println(\"{}\", evens);\n}",
+          "expectedOutput": "[4, 16, 36, 64]",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l1-ex2",
+          "title": "Converting between container types and to string",
+          "description": "std::ranges::to makes container conversions natural: vector to set for deduplication, set back to vector for a sorted sequence, and a range of chars into a string.",
+          "code": "#include <ranges>\n#include <vector>\n#include <set>\n#include <string>\n#include <print>\nint main() {\n    std::vector<int> v = {3, 1, 4, 1, 5, 9, 2, 6, 5};\n\n    // deduplicate via set\n    auto unique = v | std::ranges::to<std::set>();\n    std::println(\"unique: {}\", unique);\n\n    // back to sorted vector\n    auto sorted_v = unique | std::ranges::to<std::vector>();\n    std::println(\"sorted: {}\", sorted_v);\n\n    // chars to string\n    auto letters = std::views::iota(0, 5)\n        | std::views::transform([](int i){ return static_cast<char>('a' + i); })\n        | std::ranges::to<std::string>();\n    std::println(\"letters: {}\", letters);\n}",
+          "expectedOutput": "unique: {1, 2, 3, 4, 5, 6, 9}\nsorted: [1, 2, 3, 4, 5, 6, 9]\nletters: abcde",
+          "outputsVerified": true
+        },
+        {
+          "id": "m4-l1-ex3",
+          "title": "Nested ranges: vector<vector<string>>",
+          "description": "When working with nested ranges, std::ranges::to is applied at each level. Here each sentence is split by spaces into a vector of words, and the results are collected into an outer vector.",
+          "code": "#include <ranges>\n#include <vector>\n#include <string>\n#include <print>\nint main() {\n    std::vector<std::string> words = {\"hello world\", \"foo bar\", \"cpp23\"};\n\n    // split each word by space, collect into vector<vector<string>>\n    auto split_words = words\n        | std::views::transform([](const std::string& s) {\n            return s | std::views::split(' ')\n                     | std::views::transform([](auto r){\n                           return std::string(r.begin(), r.end());\n                       })\n                     | std::ranges::to<std::vector>();\n          })\n        | std::ranges::to<std::vector>();\n\n    for (const auto& parts : split_words) {\n        std::println(\"{}\", parts);\n    }\n}",
+          "expectedOutput": "[\"hello\", \"world\"]\n[\"foo\", \"bar\"]\n[\"cpp23\"]",
+          "outputsVerified": true
+        }
+      ],
+      "outputsVerified": true
     },
     {
       "id": "m4-l2",
