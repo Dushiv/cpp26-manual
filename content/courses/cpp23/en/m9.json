@@ -71,8 +71,34 @@
     },
     {
       "id": "m9-l3",
-      "title": "Numbers and low-level - Lesson 3",
-      "stub": true
+      "title": "`std::out_ptr`, `uz` Literals, `ranges::shift_left/right`: Final C++23 Utilities",
+      "prerequisites": ["m9-l2"],
+      "background": null,
+      "motivation": "Three small but practically important additions in C++23 close long-standing friction points. The `uz` suffix finally gives `std::size_t` as the type of an integer literal — before this, `for (auto i = 0; i < vec.size(); ++i)` generated a `-Wsign-compare` warning with no clean way to suppress it. `std::out_ptr` and `std::inout_ptr` eliminate the awkward two-step pattern of \"first get a raw pointer from a C API, then wrap it in a `unique_ptr`\" — now it's a single call. `std::ranges::shift_left` and `std::ranges::shift_right` give a straightforward way to shift elements in a range in-place, replacing the indirect `std::rotate` trick or manual `std::move`. Each of the three features standardizes something programmers had been writing by hand or through non-standard extensions for years.",
+      "theory": "The `uz` and `z` suffixes for integer literals (P0330) solve a classic problem: the type of the literal `0` is `int`, while `.size()` returns `std::size_t`. Comparing `int` with `size_t` is a signed/unsigned comparison and triggers the `-Wsign-compare` warning. Before C++23 the options were to explicitly write `size_t i = 0` or suppress the warning with a cast. Now the `uz` suffix produces the unsigned type `std::size_t` (unsigned size), while `z` produces the signed type `std::ptrdiff_t` (signed size). Both work with any numeric base: `0x10uz`, `0b1010z`. In practice `uz` is used more often — `.size()`, `.length()`, and `sizeof` all return `size_t`.\n\n`std::out_ptr` and `std::inout_ptr` (header `<memory>`, P1132) solve the problem of interoperating smart pointers with C APIs that take `T**` as an output parameter. The typical pattern before C++23: declare `T* raw = nullptr`, pass `&raw` to the C API, then manually call `.reset(raw)` or re-construct the `unique_ptr`. `std::out_ptr(ptr)` creates a temporary adaptor object that holds a `T*` and, when destroyed (at the end of the full expression), calls `ptr.reset(raw_ptr)` with whatever value the C API wrote. `std::inout_ptr` does the same but additionally extracts the current raw pointer from the smart pointer before passing it in — needed for C APIs that may reuse an already-allocated buffer. Both work with `unique_ptr`, `shared_ptr`, and any type that has a `.reset()` member.\n\n`std::ranges::shift_left` and `std::ranges::shift_right` (header `<algorithm>`, P1243) move elements of a range n positions to the left or right in-place. `shift_left(r, n)` moves each element n positions toward the beginning: `r[i] = move(r[i+n])`. It returns a subrange of the valid elements (the first `size - n` elements). `shift_right(r, n)` symmetrically shifts toward the end and returns the last `size - n` elements. Elements \"pushed off\" the edge remain in the range in a valid but unspecified state — they are not destroyed, but their values must not be relied upon. The range's size does not change. If `n >= size`, an empty subrange is returned. Practical uses include ring-buffer implementations, sliding-window algorithms, and efficient removal of elements from the front without `erase(begin())`, which would move the entire contents.\n\nAll three additions share one idea: eliminating specific friction that previously required non-standard extensions (`__builtin_bswap`, `__builtin_unreachable`), verbose patterns (the two-step `T* raw; api(&raw); ptr.reset(raw)`), or workarounds (`std::rotate` instead of a direct shift). C++23 systematically \"mops up\" such pain points — each small utility looks minor in isolation, but together they meaningfully reduce the cognitive overhead of real-world code.",
+      "examples": [
+        {
+          "id": "m9-l3-ex1",
+          "title": "`uz`/`z` literals and `ranges::shift_left/right`",
+          "description": "The `uz` suffix eliminates the `-Wsign-compare` warning in an index-based loop. `shift_left` and `shift_right` shift elements in-place and return a subrange of the valid elements.",
+          "code": "#include <vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nint main() {\n    // uz literals eliminate sign-comparison warnings\n    std::vector<int> v = {10, 20, 30, 40, 50};\n    for (auto i = 0uz; i < v.size(); ++i)\n        std::print(\"{} \", v[i]);\n    std::println(\"\");\n\n    // shift_left: shift elements left by 2\n    std::vector<int> data = {1, 2, 3, 4, 5};\n    auto valid = std::ranges::shift_left(data, 2);\n    std::print(\"after shift_left(2), valid part: \");\n    for (int x : valid) std::print(\"{} \", x);\n    std::println(\"\");\n    std::println(\"full vector size still: {}\", data.size());\n\n    // shift_right: shift elements right by 1\n    std::vector<int> data2 = {1, 2, 3, 4, 5};\n    auto valid2 = std::ranges::shift_right(data2, 1);\n    std::print(\"after shift_right(1), valid part: \");\n    for (int x : valid2) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "10 20 30 40 50 \nafter shift_left(2), valid part: 3 4 5 \nfull vector size still: 5\nafter shift_right(1), valid part: 1 2 3 4 ",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m9-l3-ex2",
+          "title": "`std::out_ptr`: smart pointers and C APIs",
+          "description": "`std::out_ptr` replaces the two-step pattern of \"get a raw pointer from a C API, then manually call `.reset()`\". The adaptor calls `.reset()` itself when it is destroyed at the end of the expression.",
+          "code": "#include <memory>\n#include <print>\n\n// Simulate a C API that allocates a resource via an out-parameter\nstruct Resource {\n    int value;\n    explicit Resource(int v) : value(v) {}\n};\n\nint c_api_create(Resource** out, int val) {\n    *out = new Resource(val);\n    return 0; // success\n}\n\nvoid c_api_destroy(Resource* r) {\n    delete r;\n}\n\nint main() {\n    // Old pattern (before out_ptr):\n    {\n        Resource* raw = nullptr;\n        c_api_create(&raw, 42);\n        std::unique_ptr<Resource, decltype(&c_api_destroy)> ptr{raw, c_api_destroy};\n        std::println(\"old pattern value: {}\", ptr->value);\n    }\n\n    // New pattern with std::out_ptr:\n    {\n        std::unique_ptr<Resource, decltype(&c_api_destroy)> ptr{nullptr, c_api_destroy};\n        c_api_create(std::out_ptr(ptr), 99);\n        std::println(\"out_ptr pattern value: {}\", ptr->value);\n    }\n\n    std::println(\"both resources properly destroyed\");\n}",
+          "expectedOutput": "old pattern value: 42\nout_ptr pattern value: 99\nboth resources properly destroyed",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }

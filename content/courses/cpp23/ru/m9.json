@@ -71,8 +71,34 @@
     },
     {
       "id": "m9-l3",
-      "title": "Числа и низкоуровневое - Lesson 3",
-      "stub": true
+      "title": "`std::out_ptr`, литералы `uz`, `ranges::shift_left/right`: финальные утилиты C++23",
+      "prerequisites": ["m9-l2"],
+      "background": null,
+      "motivation": "Три маленьких, но практически важных добавления C++23 закрывают давние болевые точки. Суффикс `uz` наконец-то даёт тип `std::size_t` для целочисленных литералов — до этого `for (auto i = 0; i < vec.size(); ++i)` порождал предупреждение `-Wsign-compare`, а подавить его без лишних деталей было нельзя. `std::out_ptr` и `std::inout_ptr` устраняют неуклюжий двухэтапный паттерн «сначала получить сырой указатель из C API, потом завернуть в `unique_ptr`» — теперь это делается одним вызовом. `std::ranges::shift_left` и `std::ranges::shift_right` дают прямолинейный способ сдвигать элементы диапазона in-place, вместо косвенного трюка через `std::rotate` или ручного `std::move`. Каждая из трёх фич стандартизирует то, что программисты писали вручную или через нестандартные расширения годами.",
+      "theory": "Суффиксы `uz` и `z` для целых литералов (P0330) решают классическую проблему: тип литерала `0` — `int`, а `.size()` возвращает `std::size_t`. Сравнение `int` и `size_t` — это сравнение знакового и беззнакового типа, что порождает предупреждение `-Wsign-compare`. До C++23 выходов было два: явно писать `size_t i = 0` или подавлять предупреждение через cast. Теперь суффикс `uz` даёт беззнаковый тип `std::size_t` (unsigned size), а `z` — знаковый `std::ptrdiff_t` (signed size). Оба работают с числами любой системы счисления: `0x10uz`, `0b1010z`. На практике `uz` используется чаще — `.size()`, `.length()`, `sizeof` все возвращают `size_t`.\n\n`std::out_ptr` и `std::inout_ptr` (заголовок `<memory>`, P1132) решают проблему взаимодействия умных указателей с C API, принимающими `T**` в качестве out-параметра. Типичный паттерн до C++23: объявить `T* raw = nullptr`, передать `&raw` в C API, а потом вручную вызвать `.reset(raw)` или заново конструировать `unique_ptr`. `std::out_ptr(ptr)` создаёт временный объект-адаптор, который хранит `T*` и при уничтожении (в конце выражения) вызывает `ptr.reset(raw_ptr)` с тем значением, которое записал C API. `std::inout_ptr` делает то же самое, но дополнительно извлекает текущий сырой указатель из умного указателя перед передачей — нужно для C API, которые могут переиспользовать уже выделенную память. Оба работают с `unique_ptr`, `shared_ptr` и любым типом, у которого есть `.reset()`.\n\n`std::ranges::shift_left` и `std::ranges::shift_right` (заголовок `<algorithm>`, P1243) сдвигают элементы диапазона на n позиций влево или вправо in-place. `shift_left(r, n)` перемещает каждый элемент на n позиций к началу: `r[i] = move(r[i+n])`. Возвращает subrange валидных элементов (первые `size - n` элементов). `shift_right(r, n)` симметрично сдвигает к концу и возвращает последние `size - n` элементов. Элементы, «вытолкнутые» за границу, остаются в диапазоне в валидном, но неопределённом состоянии — они не уничтожены, но полагаться на их значение нельзя. Размер диапазона не меняется. Если `n >= size`, возвращается пустой subrange. Полезные применения: реализация кольцевого буфера, алгоритм скользящего окна, эффективное удаление элементов с начала без `erase(begin())`, которое требует перемещения всего содержимого.\n\nВсе три добавления объединяет одна идея: устранение специфического трения, которое раньше требовало нестандартных расширений (`__builtin_bswap`, `__builtin_unreachable`), многословных паттернов (двухэтапный `T* raw; api(&raw); ptr.reset(raw)`) или обходных решений (`std::rotate` вместо прямого shift). C++23 последовательно «добивает» подобные точки — каждая маленькая утилита по отдельности кажется незначительной, но вместе они существенно снижают когнитивную нагрузку в реальном коде.",
+      "examples": [
+        {
+          "id": "m9-l3-ex1",
+          "title": "Литералы `uz`/`z` и `ranges::shift_left/right`",
+          "description": "Суффикс `uz` устраняет предупреждение `-Wsign-compare` в цикле по индексу. `shift_left` и `shift_right` сдвигают элементы in-place и возвращают subrange валидных элементов.",
+          "code": "#include <vector>\n#include <algorithm>\n#include <ranges>\n#include <print>\n\nint main() {\n    // uz literals eliminate sign-comparison warnings\n    std::vector<int> v = {10, 20, 30, 40, 50};\n    for (auto i = 0uz; i < v.size(); ++i)\n        std::print(\"{} \", v[i]);\n    std::println(\"\");\n\n    // shift_left: shift elements left by 2\n    std::vector<int> data = {1, 2, 3, 4, 5};\n    auto valid = std::ranges::shift_left(data, 2);\n    std::print(\"after shift_left(2), valid part: \");\n    for (int x : valid) std::print(\"{} \", x);\n    std::println(\"\");\n    std::println(\"full vector size still: {}\", data.size());\n\n    // shift_right: shift elements right by 1\n    std::vector<int> data2 = {1, 2, 3, 4, 5};\n    auto valid2 = std::ranges::shift_right(data2, 1);\n    std::print(\"after shift_right(1), valid part: \");\n    for (int x : valid2) std::print(\"{} \", x);\n    std::println(\"\");\n}",
+          "expectedOutput": "10 20 30 40 50 \nafter shift_left(2), valid part: 3 4 5 \nfull vector size still: 5\nafter shift_right(1), valid part: 1 2 3 4 ",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m9-l3-ex2",
+          "title": "`std::out_ptr`: умные указатели и C API",
+          "description": "`std::out_ptr` заменяет двухэтапный паттерн «получить сырой указатель из C API, потом вручную вызвать `.reset()`». Адаптор сам вызывает `.reset()` при уничтожении в конце выражения.",
+          "code": "#include <memory>\n#include <print>\n\n// Имитируем C API, выделяющий ресурс через out-параметр\nstruct Resource {\n    int value;\n    explicit Resource(int v) : value(v) {}\n};\n\nint c_api_create(Resource** out, int val) {\n    *out = new Resource(val);\n    return 0; // success\n}\n\nvoid c_api_destroy(Resource* r) {\n    delete r;\n}\n\nint main() {\n    // Старый паттерн (до out_ptr):\n    {\n        Resource* raw = nullptr;\n        c_api_create(&raw, 42);\n        std::unique_ptr<Resource, decltype(&c_api_destroy)> ptr{raw, c_api_destroy};\n        std::println(\"old pattern value: {}\", ptr->value);\n    }\n\n    // Новый паттерн с std::out_ptr:\n    {\n        std::unique_ptr<Resource, decltype(&c_api_destroy)> ptr{nullptr, c_api_destroy};\n        c_api_create(std::out_ptr(ptr), 99);\n        std::println(\"out_ptr pattern value: {}\", ptr->value);\n    }\n\n    std::println(\"both resources properly destroyed\");\n}",
+          "expectedOutput": "old pattern value: 42\nout_ptr pattern value: 99\nboth resources properly destroyed",
+          "outputsVerified": true,
+          "compiler": "gsnapshot",
+          "compilerFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }
