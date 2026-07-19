@@ -82,8 +82,41 @@
     },
     {
       "id": "m2-l3",
-      "title": "Deducing this - Lesson 3",
-      "stub": true
+      "title": "Продвинутые паттерны: chain builders, std::variant, ограничения",
+      "prerequisites": ["m2-l2"],
+      "background": {
+        "title": "std::variant и std::visit (C++17)",
+        "body": "std::variant<T...> хранит ровно одно из перечисленных значений. std::visit(visitor, v) вызывает visitor с фактически хранимым типом — что требовало либо перегруженных операторов (), либо шаблонного визитора. Concepts C++20: синтаксис requires позволяет ограничить шаблонный параметр — Self в explicit object parameter можно ограничить тем же способом."
+      },
+      "motivation": "После освоения базового синтаксиса и рекурсивных лямбд закономерно возникают вопросы: как грамотно спроектировать builder-паттерн — возвращать ссылку или копию? Можно ли использовать explicit object parameter внутри stateful-визитора для std::variant? И где проходят границы возможностей deducing this — что запрещено и почему? Понимание этих деталей необходимо для уверенного применения фичи в реальном коде.",
+      "theory": "Центральный вопрос при проектировании builder-паттерна с deducing this: возвращать this auto& self или this auto self? Разница принципиальная. Метод с this auto& self принимает объект по lvalue-ссылке и возвращает её же — это эффективно, но значит, что вызвать цепочку на временном объекте нельзя: Widget{}.set_a(1).set_b(2) завершится висячей ссылкой, поскольку set_a вернёт ссылку на уже уничтоженный временный. Метод с this auto self принимает объект по значению (копирует его) и возвращает новую копию — цепочка на rvalue работает корректно. Выбор зависит от контекста: для изменяемых lvalue-объектов предпочтительнее ссылочный вариант; для иммутабельных строителей или API, где допустимо копирование, — вариант по значению. При наследовании оба варианта дают нужный тип автоматически: производный класс получает Self = Derived без CRTP.\n\nStateful-визитор для std::variant с deducing this — ещё один практичный паттерн. Вместо Overloaded из нескольких лямбд можно написать одну структуру с несколькими перегрузками operator(), каждый из которых принимает this auto& self. Компилятор выберет наиболее специализированный operator() по типу аргумента из variant: если есть operator() для int и обобщённый operator() для auto, вызов с int пойдёт в специализированный. Состояние визитора живёт прямо в полях структуры и обновляется через self — никакого внешнего замыкания и никаких захваченных ссылок.\n\nОграничения explicit object parameter важно знать, чтобы не тратить время на поиск несуществующих решений. Во-первых, такой метод не может быть virtual: виртуальная диспетчеризация требует фиксированного адреса функции в vtable, а шаблонный параметр Self делает каждую инстанцию отдельной функцией — эти механизмы несовместимы. Во-вторых, метод не может быть static: статический метод существует без объекта, а explicit object parameter именно и описывает объект. В-третьих, нельзя одновременно добавить квалификаторы &, && или const к самому методу — они теперь выражены через тип self, и дублировать их бессмысленно: void foo(this auto& self) const — ошибка компиляции. В-четвёртых, в C++23 нельзя применять явный параметр объекта к operator=, operator->, а также к конструкторам и деструкторам — у конструктора просто нет готового объекта для вывода типа.\n\nC++20 concepts органично сочетаются с deducing this: тип self можно ограничить concept-ом прямо в сигнатуре — this HasDescribe auto const& self. Это компактнее отдельного requires-clause и точнее выражает намерение: «метод print доступен только тем типам, у которых есть метод describe()». Ошибка компиляции возникает в точке вызова g.print() для неподходящего типа — с чётким сообщением о нарушении concept, а не об отсутствии члена где-то в глубине шаблонной инстанциации. Такой подход позволяет строить выразительные mixin-библиотеки без виртуальных функций и без CRTP.",
+      "examples": [
+        {
+          "id": "m2-l3-ex1",
+          "title": "Chain builder с возвратом по значению: цепочка на временном объекте",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\nstruct Email {\n    std::string to_, subject_, body_;\n    auto to(this auto self, std::string v)      { self.to_ = v; return self; }\n    auto subject(this auto self, std::string v) { self.subject_ = v; return self; }\n    auto body(this auto self, std::string v)    { self.body_ = v; return self; }\n    void send() const {\n        std::cout << \"To: \" << to_ << \"\\nSubject: \" << subject_ << \"\\n\";\n    }\n};\nint main() {\n    Email{}.to(\"alice@example.com\").subject(\"Hello\").body(\"World\").send();\n}",
+          "expectedOutput": "To: alice@example.com\nSubject: Hello",
+          "explanation": "Каждый метод принимает self по значению (this auto self) и возвращает копию с обновлённым полем. Цепочка вызывается на временном объекте Email{}: to() создаёт копию с заполненным to_, subject() — ещё одну копию с subject_, и так далее. Ни одна ссылка не становится висячей. Если бы методы возвращали this auto& self, вызов Email{}.to(...) вернул бы ссылку на уничтожаемый временный объект и привёл бы к UB. При наследовании тип Self выводится в производный класс — методы автоматически возвращают DerivedEmail, а не Email."
+        },
+        {
+          "id": "m2-l3-ex2",
+          "title": "Stateful визитор для std::variant через explicit object parameter",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <variant>\n#include <string>\n#include <vector>\nstruct Counter {\n    int ints = 0, strings = 0;\n    void operator()(this auto& self, int)                { ++self.ints; }\n    void operator()(this auto& self, const std::string&) { ++self.strings; }\n    void operator()(this auto& self, double)             { /* ignore */ }\n};\nint main() {\n    using V = std::variant<int, std::string, double>;\n    std::vector<V> vs = {1, std::string(\"hello\"), 2.0, 3, std::string(\"world\")};\n    Counter c;\n    for (auto& v : vs) std::visit(c, v);\n    std::cout << \"ints: \" << c.ints << \"\\nstrings: \" << c.strings << \"\\n\";\n}",
+          "expectedOutput": "ints: 2\nstrings: 2",
+          "explanation": "Counter — stateful-визитор: его поля ints и strings накапливают результат обхода. Три перегрузки operator() принимают self по lvalue-ссылке и обновляют его поля. std::visit(c, v) передаёт c по ссылке (не копирует) и вызывает подходящую перегрузку по фактическому типу в variant. Компилятор выбирает наиболее специализированный operator(): для int — первый, для std::string — второй, для double — третий. После пяти вызовов c содержит актуальные счётчики. Без deducing this пришлось бы писать ++ints (без self) или передавать указатель на this явно."
+        },
+        {
+          "id": "m2-l3-ex3",
+          "title": "Concept-ограничение на explicit object parameter: безопасный mixin",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <concepts>\n#include <string>\ntemplate<typename T>\nconcept HasDescribe = requires(const T& t) {\n    { t.describe() } -> std::convertible_to<std::string>;\n};\nstruct Printable {\n    void print(this HasDescribe auto const& self) {\n        std::cout << self.describe() << \"\\n\";\n    }\n};\nstruct GoodClass : Printable {\n    std::string describe() const { return \"I am GoodClass\"; }\n};\n// struct BadClass : Printable { }; // BadClass{}.print() — ошибка компиляции\nint main() {\n    GoodClass g;\n    g.print();\n}",
+          "expectedOutput": "I am GoodClass",
+          "explanation": "HasDescribe ограничивает тип Self: метод print доступен только тем наследникам Printable, у которых есть метод describe(), возвращающий нечто, конвертируемое в std::string. Запись this HasDescribe auto const& self компактнее отдельного requires-clause. При попытке вызвать BadClass{}.print() компилятор немедленно сообщит о нарушении concept HasDescribe — чёткое и читаемое сообщение об ошибке прямо в точке вызова. Это сочетание deducing this с concepts позволяет строить выразительные mixin-интерфейсы без виртуальных функций и без громоздкого CRTP."
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }

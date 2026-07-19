@@ -82,8 +82,41 @@
     },
     {
       "id": "m2-l3",
-      "title": "Deducing this - Lesson 3",
-      "stub": true
+      "title": "Advanced Patterns: Chain Builders, std::variant, Limitations",
+      "prerequisites": ["m2-l2"],
+      "background": {
+        "title": "std::variant and std::visit (C++17)",
+        "body": "std::variant<T...> holds exactly one of its listed types at a time. std::visit(visitor, v) calls the visitor with the currently stored type — which traditionally required either overloaded operator() s or a templated visitor. C++20 concepts: the requires syntax lets you constrain a template parameter — the Self in an explicit object parameter can be constrained the same way."
+      },
+      "motivation": "After mastering the basic syntax and recursive lambdas, natural follow-up questions arise: how should you design a builder pattern — return by reference or by value? Can you use an explicit object parameter inside a stateful visitor for std::variant? And where exactly are the limits of deducing this — what is forbidden and why? Understanding these details is essential for using the feature confidently in production code.",
+      "theory": "The central design question for builder patterns with deducing this is: should the method take this auto& self (lvalue reference) or this auto self (by value)? The difference is significant. A method with this auto& self accepts the object by lvalue reference and returns it — this is efficient, but means that chaining on a temporary fails: Widget{}.set_a(1).set_b(2) produces a dangling reference because set_a returns a reference to an already-destroyed temporary. A method with this auto self accepts the object by value (copies it) and returns a new copy — chaining on rvalues works correctly. The choice depends on context: for mutable lvalue objects the reference variant is preferred; for immutable builders or APIs where copying is acceptable, the by-value variant is the right pick. In either case, inheritance works automatically: the derived class gets Self = Derived without CRTP.\n\nA stateful visitor for std::variant using deducing this is another practical pattern. Instead of an Overloaded structure assembling several lambdas, you can write a single struct with multiple operator() overloads, each taking this auto& self. The compiler selects the most specialized operator() based on the type held in the variant: if there is an operator() for int and a generic one for auto, a call with an int goes to the specialized version. The visitor's state lives directly in the struct's fields and is updated through self — no external closure, no captured references.\n\nKnowing the limitations of the explicit object parameter saves time that would otherwise go to searching for non-existent solutions. First, such a method cannot be virtual: virtual dispatch requires a fixed function address in the vtable, while the template parameter Self produces a distinct instantiation per type — the two mechanisms are incompatible. Second, the method cannot be static: a static method exists without an object, but an explicit object parameter is precisely about describing the object. Third, you cannot simultaneously add &, &&, or const qualifiers to the method itself — they are now expressed through the type of self, and duplicating them is meaningless: void foo(this auto& self) const is a compile error. Fourth, in C++23 the explicit object parameter cannot be applied to operator=, operator->, constructors, or destructors — a constructor simply has no existing object to deduce a type from.\n\nC++20 concepts combine naturally with deducing this: the type of self can be constrained by a concept directly in the signature — this HasDescribe auto const& self. This is more compact than a separate requires-clause and expresses intent more precisely: \"the method print is only available to types that have a describe() method.\" The compile error appears at the call site g.print() for an unsuitable type, with a clear concept-violation message rather than a cryptic template-instantiation failure buried deep in the error log. This approach enables expressive mixin libraries without virtual functions and without CRTP.",
+      "examples": [
+        {
+          "id": "m2-l3-ex1",
+          "title": "Chain builder with value return: chaining on a temporary",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\nstruct Email {\n    std::string to_, subject_, body_;\n    auto to(this auto self, std::string v)      { self.to_ = v; return self; }\n    auto subject(this auto self, std::string v) { self.subject_ = v; return self; }\n    auto body(this auto self, std::string v)    { self.body_ = v; return self; }\n    void send() const {\n        std::cout << \"To: \" << to_ << \"\\nSubject: \" << subject_ << \"\\n\";\n    }\n};\nint main() {\n    Email{}.to(\"alice@example.com\").subject(\"Hello\").body(\"World\").send();\n}",
+          "expectedOutput": "To: alice@example.com\nSubject: Hello",
+          "explanation": "Each method accepts self by value (this auto self) and returns a copy with the updated field. The chain starts on a temporary Email{}: to() produces a copy with to_ filled, subject() another copy with subject_ set, and so on. No reference ever becomes dangling. If the methods returned this auto& self instead, Email{}.to(...) would return a reference to the expiring temporary, causing undefined behavior. With inheritance, Self is deduced as the derived class — methods automatically return DerivedEmail, not Email."
+        },
+        {
+          "id": "m2-l3-ex2",
+          "title": "Stateful std::variant visitor via explicit object parameter",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <variant>\n#include <string>\n#include <vector>\nstruct Counter {\n    int ints = 0, strings = 0;\n    void operator()(this auto& self, int)                { ++self.ints; }\n    void operator()(this auto& self, const std::string&) { ++self.strings; }\n    void operator()(this auto& self, double)             { /* ignore */ }\n};\nint main() {\n    using V = std::variant<int, std::string, double>;\n    std::vector<V> vs = {1, std::string(\"hello\"), 2.0, 3, std::string(\"world\")};\n    Counter c;\n    for (auto& v : vs) std::visit(c, v);\n    std::cout << \"ints: \" << c.ints << \"\\nstrings: \" << c.strings << \"\\n\";\n}",
+          "expectedOutput": "ints: 2\nstrings: 2",
+          "explanation": "Counter is a stateful visitor: its fields ints and strings accumulate the result of the traversal. Three operator() overloads accept self by lvalue reference and update its fields. std::visit(c, v) passes c by reference (no copy) and calls the matching overload based on the active type in the variant. The compiler selects the most specialized operator(): the first for int, the second for std::string, the third for double. After five visits, c holds the correct counts. Without deducing this, updating the state required writing ++ints (without self) or passing an explicit this pointer."
+        },
+        {
+          "id": "m2-l3-ex3",
+          "title": "Concept constraint on explicit object parameter: a safe mixin",
+          "level": "advanced",
+          "code": "#include <iostream>\n#include <concepts>\n#include <string>\ntemplate<typename T>\nconcept HasDescribe = requires(const T& t) {\n    { t.describe() } -> std::convertible_to<std::string>;\n};\nstruct Printable {\n    void print(this HasDescribe auto const& self) {\n        std::cout << self.describe() << \"\\n\";\n    }\n};\nstruct GoodClass : Printable {\n    std::string describe() const { return \"I am GoodClass\"; }\n};\n// struct BadClass : Printable { }; // BadClass{}.print() — compile error\nint main() {\n    GoodClass g;\n    g.print();\n}",
+          "expectedOutput": "I am GoodClass",
+          "explanation": "HasDescribe constrains the type Self: the method print is only available to subclasses of Printable that have a describe() method returning something convertible to std::string. Writing this HasDescribe auto const& self is more compact than a separate requires-clause. If BadClass{}.print() were attempted, the compiler would immediately report a HasDescribe concept violation — a clear, readable error at the exact call site rather than a cryptic message buried in template instantiation output. This combination of deducing this with concepts enables expressive mixin interfaces without virtual functions and without the ceremony of CRTP."
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }
