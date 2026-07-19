@@ -53,8 +53,34 @@
     },
     {
       "id": "m8-l2",
-      "title": "std::generator - Lesson 2",
-      "stub": true
+      "title": "std::generator: Advanced Patterns and Performance",
+      "prerequisites": ["m8-l1"],
+      "background": null,
+      "motivation": "The basics of `std::generator<T>` — yielding values and hooking into range algorithms — get you started. But three practical challenges surface immediately: traversing recursive structures (trees, graphs), working with expensive objects without unnecessary copies, and correctly combining generators with standard library algorithms. Each demands understanding the subtleties of `elements_of`, reference semantics, and single-pass iteration — without which code either won't compile or runs inefficiently.",
+      "theory": "**Recursive generators and `elements_of`.** The most compelling use case for `std::ranges::elements_of` is traversing recursive structures. Without it, you would either manually iterate a nested generator in a loop, or collect results into an intermediate buffer. `co_yield std::ranges::elements_of(dfs(child))` tells the current coroutine: \"take all values from this nested generator and yield them as your own.\" The standard mandates that this is implemented via *symmetric transfer* — control passes directly between coroutine frames rather than through recursive calls. This eliminates the O(depth²) overhead that naive manual iteration would incur, and keeps the consumption stack depth constant regardless of tree depth.\n\n**Reference semantics: `T&` and `const T&`.** By default, `std::generator<T>` copies the yielded value into a wrapper inside the coroutine frame. For heavyweight types (strings, vectors) this can be expensive. `std::generator<T&>` changes the contract: `co_yield x` yields a reference to x (x must be an lvalue from the coroutine body or a by-reference parameter). The caller receives a `T&` and can mutate through it. `std::generator<const T&>` is analogous but prohibits mutation. The key invariant: the coroutine must guarantee that the object referenced by the yielded reference remains alive until the next resume — this is naturally satisfied when the reference points to a variable in the coroutine body or to an element of a range passed in by reference.\n\n**Performance characteristics.** The coroutine frame is heap-allocated once when the generator is created and reused on every resume — no repeated allocations. Each `co_yield` / resume is O(1): it is simply an intra-thread context switch. The compiler may eliminate the heap allocation entirely (the HALO — Heap Allocation eLision Optimization) when the generator's lifetime is bounded to a lexical scope and visible statically. In practice, generators outperform the pattern of \"collect everything into a `std::vector`, then iterate\" in two situations: the sequence is large or infinite, or early termination is required — cases where an intermediate buffer is either wasteful or impossible.\n\n**Algorithm integration and single-pass semantics.** `std::generator<T>` models `std::ranges::input_range`, so any standard library algorithm accepting an `input_range` works directly: `std::ranges::find_if`, `std::ranges::count_if`, `std::ranges::for_each`, and others. The critical constraint is that generators are single-pass. Once the iterator has advanced past a position, there is no going back — generators do not model `forward_range`. This means `std::ranges::sort`, `std::ranges::reverse`, and algorithms requiring `random_access_range` cannot be applied directly; for those, materialize the generator into a container first using `std::ranges::to<std::vector>()` (C++23) or a plain loop.",
+      "examples": [
+        {
+          "id": "m8-l2-ex1",
+          "title": "Tree Traversal with a Recursive Generator",
+          "description": "The `dfs` generator traverses the tree depth-first. `co_yield std::ranges::elements_of(dfs(child))` splices all values from the nested call into the current stream without an intermediate buffer and without recursive stack growth — control is transferred directly between coroutine frames (symmetric transfer).",
+          "code": "#include <generator>\n#include <ranges>\n#include <vector>\n#include <print>\n\nstruct Node {\n    int value;\n    std::vector<Node> children;\n};\n\nstd::generator<int> dfs(const Node& n) {\n    co_yield n.value;\n    for (const auto& child : n.children)\n        co_yield std::ranges::elements_of(dfs(child));\n}\n\nint main() {\n    Node root = {1, {\n        {2, {{4, {}}, {5, {}}}},\n        {3, {{6, {}}}}\n    }};\n\n    std::print(\"DFS order: \");\n    for (int v : dfs(root))\n        std::print(\"{} \", v);\n    std::println(\"\");\n}",
+          "expectedOutput": "DFS order: 1 2 4 5 3 6 ",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m8-l2-ex2",
+          "title": "Mutable References and Algorithm Integration",
+          "description": "`mutable_view` returns `std::generator<int&>` — each `co_yield x` yields a reference to a vector element, letting the caller mutate the data in place. `powers_of_2` is an infinite generator that is correctly bounded via `std::views::take` and `std::ranges::find_if`, demonstrating that any algorithm over `input_range` works directly with a generator.",
+          "code": "#include <generator>\n#include <ranges>\n#include <vector>\n#include <algorithm>\n#include <print>\n\nstd::generator<int&> mutable_view(std::vector<int>& v) {\n    for (int& x : v)\n        co_yield x;\n}\n\nstd::generator<long long> powers_of_2() {\n    long long p = 1;\n    while (true) {\n        co_yield p;\n        p *= 2;\n    }\n}\n\nint main() {\n    // Mutable reference: double each element\n    std::vector<int> data = {1, 2, 3, 4, 5};\n    for (int& x : mutable_view(data))\n        x *= 2;\n\n    std::print(\"After doubling: \");\n    for (int x : data) std::print(\"{} \", x);\n    std::println(\"\");\n\n    // Infinite generator + views: first 8 powers of 2\n    std::print(\"Powers of 2: \");\n    for (long long p : powers_of_2() | std::views::take(8))\n        std::print(\"{} \", p);\n    std::println(\"\");\n\n    // std::ranges::find_if on a generator\n    auto gen = powers_of_2();\n    auto it = std::ranges::find_if(gen, [](long long x){ return x > 100; });\n    std::println(\"First power of 2 > 100: {}\", *it);\n}",
+          "expectedOutput": "After doubling: 2 4 6 8 10 \nPowers of 2: 1 2 4 8 16 32 64 128 \nFirst power of 2 > 100: 128",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }

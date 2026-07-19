@@ -53,8 +53,34 @@
     },
     {
       "id": "m8-l2",
-      "title": "std::generator - Lesson 2",
-      "stub": true
+      "title": "std::generator: продвинутые паттерны и производительность",
+      "prerequisites": ["m8-l1"],
+      "background": null,
+      "motivation": "Базовый `std::generator<T>` умеет выдавать значения и работать с диапазонными алгоритмами. Но три задачи возникают на практике немедленно: обход рекурсивных структур (деревьев, графов), работа с дорогостоящими объектами без лишних копий, и корректное «склеивание» генератора с произвольными алгоритмами стандартной библиотеки. Каждая из них требует понимания тонкостей `elements_of`, семантики ссылок и однопроходности — без этого код либо не компилируется, либо работает неэффективно.",
+      "theory": "**Рекурсивные генераторы и `elements_of`.** Самый показательный сценарий `std::ranges::elements_of` — обход рекурсивных структур. Без него пришлось бы либо вручную итерировать вложенный генератор в цикле внутри `co_yield`, либо собирать результаты в буфер. `co_yield std::ranges::elements_of(dfs(child))` говорит текущей корутине: «возьми все значения этого вложенного генератора и выдай их как свои собственные». Стандарт гарантирует, что это реализовано через механизм «симметричного переноса» (symmetric transfer) — вместо рекурсивного вызова фреймов происходит прямая передача управления между корутинами. Это убирает потенциальный O(depth²) overhead, который возник бы при наивной ручной итерации, и делает стек потребления константным по глубине дерева.\n\n**Семантика ссылок: `T&` и `const T&`.** По умолчанию `std::generator<T>` копирует выданное значение в объект-обёртку внутри фрейма. Если T — тяжёлый объект (строка, вектор), это может быть дорого. `std::generator<T&>` меняет контракт: `co_yield x` выдаёт ссылку на x (x должен быть lvalue из тела корутины или захваченного аргумента). Вызывающий код получает `T&` и может мутировать через неё. `std::generator<const T&>` аналогично, но запрещает мутацию. Важно: корутина должна гарантировать, что объект, на который ссылается yielded-ссылка, жив до следующего resume — это естественно выполняется, когда ссылка указывает на переменную из тела корутины или на элемент диапазона, переданного по ссылке в параметре.\n\n**Характеристики производительности.** Фрейм корутины выделяется на куче один раз при создании генератора и переиспользуется при каждом resume — никаких повторных аллокаций. Каждый `co_yield` / resume — O(1), это просто контекстный переключатель внутри одного потока. Компилятор может полностью элиминировать heap-аллокацию фрейма (оптимизация HALO — Heap Allocation eLision Optimization), когда время жизни генератора ограничено лексическим блоком и видно статически. На практике генераторы выигрывают у паттерна «собрать всё в `std::vector`, потом итерировать» в двух случаях: последовательность большая или бесконечная, либо требуется ранний выход — в этих случаях промежуточный буфер либо расточителен, либо вообще невозможен.\n\n**Интеграция с алгоритмами и однопроходность.** `std::generator<T>` моделирует концепцию `std::ranges::input_range` — любой алгоритм стандартной библиотеки, принимающий `input_range`, работает с генератором напрямую: `std::ranges::find_if`, `std::ranges::count_if`, `std::ranges::for_each` и так далее. Ключевое ограничение: генератор однопроходен. После того как итератор прошёл позицию, вернуться к ней нельзя — это не `forward_range`. Это означает, что `std::ranges::sort`, `std::ranges::reverse` и алгоритмы с `random_access_range` не применимы напрямую; для них нужно материализовать генератор в контейнер через `std::ranges::to<std::vector>()` (C++23) или обычный цикл.",
+      "examples": [
+        {
+          "id": "m8-l2-ex1",
+          "title": "Обход дерева рекурсивным генератором",
+          "description": "Генератор `dfs` обходит дерево в глубину. `co_yield std::ranges::elements_of(dfs(child))` вставляет все значения вложенного вызова в текущий поток без промежуточного буфера и без рекурсивного роста стека — управление передаётся напрямую между фреймами корутин (symmetric transfer).",
+          "code": "#include <generator>\n#include <ranges>\n#include <vector>\n#include <print>\n\nstruct Node {\n    int value;\n    std::vector<Node> children;\n};\n\nstd::generator<int> dfs(const Node& n) {\n    co_yield n.value;\n    for (const auto& child : n.children)\n        co_yield std::ranges::elements_of(dfs(child));\n}\n\nint main() {\n    Node root = {1, {\n        {2, {{4, {}}, {5, {}}}},\n        {3, {{6, {}}}}\n    }};\n\n    std::print(\"DFS order: \");\n    for (int v : dfs(root))\n        std::print(\"{} \", v);\n    std::println(\"\");\n}",
+          "expectedOutput": "DFS order: 1 2 4 5 3 6 ",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        },
+        {
+          "id": "m8-l2-ex2",
+          "title": "Мутируемые ссылки и интеграция с алгоритмами",
+          "description": "`mutable_view` возвращает `std::generator<int&>` — каждый `co_yield x` выдаёт ссылку на элемент вектора, позволяя вызывающему коду изменять данные на месте. `powers_of_2` — бесконечный генератор, который корректно ограничивается через `std::views::take` и через `std::ranges::find_if`, демонстрируя, что любой алгоритм над `input_range` работает с генератором напрямую.",
+          "code": "#include <generator>\n#include <ranges>\n#include <vector>\n#include <algorithm>\n#include <print>\n\nstd::generator<int&> mutable_view(std::vector<int>& v) {\n    for (int& x : v)\n        co_yield x;\n}\n\nstd::generator<long long> powers_of_2() {\n    long long p = 1;\n    while (true) {\n        co_yield p;\n        p *= 2;\n    }\n}\n\nint main() {\n    // Мутируемая ссылка: умножить каждый элемент на 2\n    std::vector<int> data = {1, 2, 3, 4, 5};\n    for (int& x : mutable_view(data))\n        x *= 2;\n\n    std::print(\"After doubling: \");\n    for (int x : data) std::print(\"{} \", x);\n    std::println(\"\");\n\n    // Бесконечный генератор + views: первые 8 степеней двойки\n    std::print(\"Powers of 2: \");\n    for (long long p : powers_of_2() | std::views::take(8))\n        std::print(\"{} \", p);\n    std::println(\"\");\n\n    // std::ranges::find_if на генераторе\n    auto gen = powers_of_2();\n    auto it = std::ranges::find_if(gen, [](long long x){ return x > 100; });\n    std::println(\"First power of 2 > 100: {}\", *it);\n}",
+          "expectedOutput": "After doubling: 2 4 6 8 10 \nPowers of 2: 1 2 4 8 16 32 64 128 \nFirst power of 2 > 100: 128",
+          "outputsVerified": true,
+          "compiler": "clang_trunk",
+          "compileFlags": "-std=c++23 -O2"
+        }
+      ],
+      "outputsVerified": true
     }
   ]
 }
