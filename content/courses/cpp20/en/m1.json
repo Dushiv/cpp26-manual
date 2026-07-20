@@ -7,27 +7,44 @@
   "lessons": [
     {
       "id": "m1-l1",
-      "title": "Three-Way Comparison: operator <=>",
-      "stub": true
+      "title": "Three-Way Comparison: the spaceship operator <=>",
+      "background": null,
+      "outputsVerified": true,
+      "motivation": "Before C++20, fully ordering a user-defined type required six operators: `==`, `!=`, `<`, `>`, `<=`, `>=`. All six are nearly identical and must stay in sync — a classic source of bugs and duplication. For heterogeneous comparison (e.g., `MyString` vs `const char*`) the count doubled. The `<=>` (\"spaceship\") operator (P0515) eliminates the burden: one definition replaces the whole set.",
+      "theory": "Before C++20, fully ordering a type required six comparison operators written by hand and kept in sync. The `<=>` operator (spaceship operator, P0515) returns not a `bool` but a *comparison category*: negative if `a < b`, zero if `a == b`, positive if `a > b`. From a single `operator<=>` the compiler automatically derives `<`, `>`, `<=`, `>=`; from a single `operator==` it derives `!=`.\n\nC++20 defines three comparison categories. `std::strong_ordering` (integers) is a strict total order: if `a == b`, the objects are indistinguishable. Values: `less`, `equal`, `greater`. `std::weak_ordering` (e.g., case-insensitive string comparison) is a total order where equivalent objects may still differ in other respects. Values: `less`, `equivalent`, `greater`. `std::partial_ordering` (floating point) is used when not all pairs are comparable: `NaN` is unordered relative to everything. Values: `less`, `equivalent`, `greater`, `unordered`. The hierarchy: `strong_ordering` implicitly converts to `weak_ordering`, which in turn converts to `partial_ordering`.\n\n`= default` for `<=>` generates lexicographic member-wise comparison in declaration order. The result type is determined automatically as the weakest category among all member types. A defaulted `<=>` also causes the compiler to synthesize `operator==` (lexicographic), so a single `= default` gives all six operators for a value-type struct.\n\nComparisons in C++20 are reversible: `a == b` is also tried as `b == a`; `a < b` can be derived from both `a <=> b` and `b <=> a`. This means one `operator<=>` is sufficient for heterogeneous comparison. All standard library types — `std::string`, `std::vector`, `std::optional`, and others — gained `<=>` support in C++20.",
+      "examples": [
+        {
+          "id": "m1-l1-ex1",
+          "title": "Versions and case-insensitive strings",
+          "level": "basic",
+          "code": "#include <compare>\n#include <iostream>\n#include <string>\n#include <cctype>\n#include <algorithm>\n\nstruct Version {\n    int major, minor, patch;\n    auto operator<=>(const Version&) const = default;\n};\n\nstruct CaseInsensitiveString {\n    std::string s;\n\n    std::weak_ordering operator<=>(const CaseInsensitiveString& other) const {\n        auto lower = [](unsigned char c){ return std::tolower(c); };\n        for (size_t i = 0; i < std::min(s.size(), other.s.size()); ++i) {\n            if (auto c = lower(s[i]) <=> lower(other.s[i]); c != 0) return c;\n        }\n        return s.size() <=> other.s.size();\n    }\n    bool operator==(const CaseInsensitiveString& other) const {\n        return (*this <=> other) == 0;\n    }\n};\n\nint main() {\n    Version v1{1, 2, 3}, v2{1, 3, 0}, v3{1, 2, 3};\n\n    std::cout << std::boolalpha;\n    std::cout << \"v1 < v2: \" << (v1 < v2) << '\\n';\n    std::cout << \"v1 > v2: \" << (v1 > v2) << '\\n';\n    std::cout << \"v1 == v3: \" << (v1 == v3) << '\\n';\n    std::cout << \"v1 <= v3: \" << (v1 <= v3) << '\\n';\n\n    CaseInsensitiveString a{\"Hello\"}, b{\"hello\"}, c{\"World\"};\n    std::cout << \"Hello == hello: \" << (a == b) << '\\n';\n    std::cout << \"Hello < World: \" << (a < c) << '\\n';\n}",
+          "expectedOutput": "v1 < v2: true\nv1 > v2: false\nv1 == v3: true\nv1 <= v3: true\nHello == hello: true\nHello < World: true",
+          "explanation": "`Version` uses `= default` — the compiler generates lexicographic comparison over `major`, `minor`, `patch` and all six operators automatically. `CaseInsensitiveString` defines `weak_ordering` manually because `\"Hello\"` and `\"hello\"` are equivalent in ordering but store different data."
+        },
+        {
+          "id": "m1-l1-ex2",
+          "title": "Comparison categories and sorting",
+          "level": "intermediate",
+          "code": "#include <compare>\n#include <iostream>\n#include <vector>\n#include <algorithm>\n#include <string>\n#include <limits>\n\nstruct Employee {\n    std::string name;\n    int salary;\n\n    // Order by salary only; same salary = equivalent but distinguishable\n    std::weak_ordering operator<=>(const Employee& other) const {\n        return salary <=> other.salary;\n    }\n    bool operator==(const Employee& other) const {\n        return salary == other.salary;\n    }\n};\n\nvoid show_categories() {\n    auto si = (1 <=> 2);  // strong_ordering::less\n\n    std::weak_ordering w = si;\n    std::partial_ordering p = si;\n\n    std::cout << \"int <=> yields strong_ordering\\n\";\n    std::cout << \"converts to weak:    \" << (w == std::weak_ordering::less ? \"less\" : \"other\") << '\\n';\n    std::cout << \"converts to partial: \" << (p == std::partial_ordering::less ? \"less\" : \"other\") << '\\n';\n\n    double nan = std::numeric_limits<double>::quiet_NaN();\n    auto fc = nan <=> 1.0;\n    std::cout << \"NaN <=> 1.0 unordered: \" << (fc == std::partial_ordering::unordered) << '\\n';\n}\n\nint main() {\n    std::cout << std::boolalpha;\n    show_categories();\n\n    std::vector<Employee> team = {\n        {\"Alice\", 90000}, {\"Bob\", 75000}, {\"Charlie\", 90000}\n    };\n    std::sort(team.begin(), team.end());\n    std::cout << \"\\nSorted by salary:\\n\";\n    for (auto& e : team) std::cout << \"  \" << e.name << \": \" << e.salary << '\\n';\n}",
+          "expectedOutput": "int <=> yields strong_ordering\nconverts to weak:    less\nconverts to partial: less\nNaN <=> 1.0 unordered: true\n\nSorted by salary:\n  Bob: 75000\n  Alice: 90000\n  Charlie: 90000",
+          "explanation": "`strong_ordering` (result of `int <=> int`) implicitly converts to both `weak_ordering` and `partial_ordering`. `double` yields `partial_ordering`, and `NaN <=> 1.0` gives `unordered`. `Employee` with `weak_ordering` by salary sorts correctly with `std::sort`: Alice and Charlie are equivalent in order but remain distinct objects."
+        }
+      ]
     },
     {
       "id": "m1-l2",
-      "title": "Designated Initializers, using enum, std::ssize",
       "stub": true
     },
     {
       "id": "m1-l3",
-      "title": "consteval, constinit, std::is_constant_evaluated",
       "stub": true
     },
     {
       "id": "m1-l4",
-      "title": "Lambda Improvements: Template Lambdas, [=, this]",
       "stub": true
     },
     {
       "id": "m1-l5",
-      "title": "[[likely]], [[no_unique_address]], Bit Operations",
       "stub": true
     }
   ]
