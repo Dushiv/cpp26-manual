@@ -1,0 +1,24 @@
+{
+  "id": "m8",
+  "moduleNumber": 8,
+  "title": "Chrono: Calendar and Timezones",
+  "significance": "basic",
+  "prerequisites": ["m7"],
+  "lessons": [
+    {
+      "id": "m8-l1",
+      "title": "Date Types: year_month_day, Arithmetic, hh_mm_ss",
+      "stub": true
+    },
+    {
+      "id": "m8-l2",
+      "title": "Timezones: time_zone, zoned_time, Conversion",
+      "stub": true
+    },
+    {
+      "id": "m8-l3",
+      "title": "chrono in Practice: Measurement, parse, Formatting",
+      "stub": true
+    }
+  ]
+}

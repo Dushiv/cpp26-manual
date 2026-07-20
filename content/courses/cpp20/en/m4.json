@@ -1,0 +1,24 @@
+{
+  "id": "m4",
+  "moduleNumber": 4,
+  "title": "Coroutines",
+  "significance": "flagship",
+  "prerequisites": ["m3"],
+  "lessons": [
+    {
+      "id": "m4-l1",
+      "title": "Coroutine Mechanics: co_yield, co_return, co_await",
+      "stub": true
+    },
+    {
+      "id": "m4-l2",
+      "title": "promise_type: Writing a Generator from Scratch",
+      "stub": true
+    },
+    {
+      "id": "m4-l3",
+      "title": "Awaitables and Async Task: co_await in Practice",
+      "stub": true
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "id": "m1",
+  "moduleNumber": 1,
+  "title": "Language Improvements",
+  "significance": "basic",
+  "prerequisites": ["m0"],
+  "lessons": [
+    {
+      "id": "m1-l1",
+      "title": "Three-Way Comparison: operator <=>",
+      "stub": true
+    },
+    {
+      "id": "m1-l2",
+      "title": "Designated Initializers, using enum, std::ssize",
+      "stub": true
+    },
+    {
+      "id": "m1-l3",
+      "title": "consteval, constinit, std::is_constant_evaluated",
+      "stub": true
+    },
+    {
+      "id": "m1-l4",
+      "title": "Lambda Improvements: Template Lambdas, [=, this]",
+      "stub": true
+    },
+    {
+      "id": "m1-l5",
+      "title": "[[likely]], [[no_unique_address]], Bit Operations",
+      "stub": true
+    }
+  ]
+}

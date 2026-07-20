@@ -1,0 +1,24 @@
+{
+  "id": "m9",
+  "moduleNumber": 9,
+  "title": "Низкоуровневые утилиты",
+  "significance": "basic",
+  "prerequisites": ["m8"],
+  "lessons": [
+    {
+      "id": "m9-l1",
+      "title": "std::bit_cast, std::source_location, std::numbers",
+      "stub": true
+    },
+    {
+      "id": "m9-l2",
+      "title": "std::midpoint, std::lerp, std::erase_if, std::to_address",
+      "stub": true
+    },
+    {
+      "id": "m9-l3",
+      "title": "String/container improvements и прочие утилиты",
+      "stub": true
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "id": "m2",
+  "moduleNumber": 2,
+  "title": "Concepts",
+  "significance": "flagship",
+  "prerequisites": ["m1"],
+  "lessons": [
+    {
+      "id": "m2-l1",
+      "title": "Синтаксис: concept, requires, стандартные концепты",
+      "stub": true
+    },
+    {
+      "id": "m2-l2",
+      "title": "Ограниченные шаблоны и abbreviated function templates",
+      "stub": true
+    },
+    {
+      "id": "m2-l3",
+      "title": "Subsumption, conjunction, disjunction и перегрузка",
+      "stub": true
+    },
+    {
+      "id": "m2-l4",
+      "title": "Продвинутые паттерны: концепты в классах и ranges-концепты",
+      "stub": true
+    }
+  ]
+}

@@ -15,11 +15,11 @@ if (courseIdx !== -1 && courseIdx + 1 < process.argv.length) {
   courseArg = process.argv[courseIdx + 1];
 }
 
-const validCourses = ["cpp26", "cpp23"];
+const validCourses = ["cpp20", "cpp26", "cpp23"];
 const coursesToCheck = courseArg === "all" ? validCourses : [courseArg];
 
 if (!validCourses.includes(courseArg) && courseArg !== "all") {
-  console.error(`Invalid course: ${courseArg}. Must be: cpp26, cpp23, or all`);
+  console.error(`Invalid course: ${courseArg}. Must be: cpp20, cpp26, cpp23, or all`);
   process.exit(1);
 }
 

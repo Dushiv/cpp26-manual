@@ -1,0 +1,19 @@
+{
+  "id": "m10",
+  "moduleNumber": 10,
+  "title": "Удалённое, устаревшее, итог",
+  "significance": "closing",
+  "prerequisites": ["m9"],
+  "lessons": [
+    {
+      "id": "m10-l1",
+      "title": "Deprecated и removed в C++20",
+      "stub": true
+    },
+    {
+      "id": "m10-l2",
+      "title": "C++20 в контексте: путь к C++23 и C++26",
+      "stub": true
+    }
+  ]
+}

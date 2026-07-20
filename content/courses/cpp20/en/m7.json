@@ -1,0 +1,24 @@
+{
+  "id": "m7",
+  "moduleNumber": 7,
+  "title": "Concurrency in C++20",
+  "significance": "basic",
+  "prerequisites": ["m6"],
+  "lessons": [
+    {
+      "id": "m7-l1",
+      "title": "std::jthread and Cooperative Cancellation",
+      "stub": true
+    },
+    {
+      "id": "m7-l2",
+      "title": "std::latch, std::barrier, std::counting_semaphore",
+      "stub": true
+    },
+    {
+      "id": "m7-l3",
+      "title": "std::atomic_ref, std::atomic<shared_ptr>, Atomic Wait",
+      "stub": true
+    }
+  ]
+}

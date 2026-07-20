@@ -1,0 +1,19 @@
+{
+  "id": "m6",
+  "moduleNumber": 6,
+  "title": "std::format и std::span",
+  "significance": "basic",
+  "prerequisites": ["m5"],
+  "lessons": [
+    {
+      "id": "m6-l1",
+      "title": "std::format: типобезопасный форматированный вывод",
+      "stub": true
+    },
+    {
+      "id": "m6-l2",
+      "title": "std::span в API: практические паттерны",
+      "stub": true
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "m0",
+  "moduleNumber": 0,
+  "title": "Контекст C++20",
+  "significance": "intro",
+  "prerequisites": [],
+  "lessons": [
+    {
+      "id": "m0-l1",
+      "title": "Контекст C++20",
+      "stub": true
+    }
+  ]
+}

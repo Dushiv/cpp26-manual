@@ -1,0 +1,19 @@
+{
+  "id": "m5",
+  "moduleNumber": 5,
+  "title": "Modules",
+  "significance": "flagship",
+  "prerequisites": ["m4"],
+  "lessons": [
+    {
+      "id": "m5-l1",
+      "title": "Синтаксис модулей: module, export, import",
+      "stub": true
+    },
+    {
+      "id": "m5-l2",
+      "title": "Module partitions, header units, практика",
+      "stub": true
+    }
+  ]
+}

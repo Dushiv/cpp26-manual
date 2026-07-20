@@ -1,0 +1,19 @@
+{
+  "id": "m6",
+  "moduleNumber": 6,
+  "title": "std::format and std::span",
+  "significance": "basic",
+  "prerequisites": ["m5"],
+  "lessons": [
+    {
+      "id": "m6-l1",
+      "title": "std::format: Type-Safe Formatted Output",
+      "stub": true
+    },
+    {
+      "id": "m6-l2",
+      "title": "std::span in APIs: Practical Patterns",
+      "stub": true
+    }
+  ]
+}

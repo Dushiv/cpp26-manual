@@ -1,0 +1,29 @@
+{
+  "id": "m2",
+  "moduleNumber": 2,
+  "title": "Concepts",
+  "significance": "flagship",
+  "prerequisites": ["m1"],
+  "lessons": [
+    {
+      "id": "m2-l1",
+      "title": "Syntax: concept, requires, Standard Concepts",
+      "stub": true
+    },
+    {
+      "id": "m2-l2",
+      "title": "Constrained Templates and Abbreviated Function Templates",
+      "stub": true
+    },
+    {
+      "id": "m2-l3",
+      "title": "Subsumption, Conjunction, Disjunction and Overloading",
+      "stub": true
+    },
+    {
+      "id": "m2-l4",
+      "title": "Advanced Patterns: Concepts in Classes and Ranges Concepts",
+      "stub": true
+    }
+  ]
+}

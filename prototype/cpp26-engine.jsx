@@ -2,6 +2,7 @@ const { useState, useEffect, useRef } = React;
 const { Check, SkipForward, Circle, CircleDot, Repeat, ChevronRight, BookOpen, LogIn, LogOut, User } = window.lucideReact || window.LucideReact;
 
 const MODULE_IDS = {
+  cpp20: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
   cpp26: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
   cpp23: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10"],
 };
@@ -662,8 +663,8 @@ function LocaleSwitcher({ locale, setLocale }) {
 
 function CoursePicker({ onSelect }) {
   const COURSES = [
-    { id: "cpp20", label: "C++20", disabled: true,
-      tagline: "концепты · ranges · coroutines", lessons: null },
+    { id: "cpp20", label: "C++20",
+      tagline: "концепты · ranges · coroutines", lessons: 33 },
     { id: "cpp23", label: "C++23",
       tagline: "deducing this · expected · generator", lessons: 30 },
     { id: "cpp26", label: "C++26",

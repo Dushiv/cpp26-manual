@@ -1,0 +1,24 @@
+{
+  "id": "m4",
+  "moduleNumber": 4,
+  "title": "Coroutines",
+  "significance": "flagship",
+  "prerequisites": ["m3"],
+  "lessons": [
+    {
+      "id": "m4-l1",
+      "title": "Механика корутин: co_yield, co_return, co_await",
+      "stub": true
+    },
+    {
+      "id": "m4-l2",
+      "title": "promise_type: пишем генератор с нуля",
+      "stub": true
+    },
+    {
+      "id": "m4-l3",
+      "title": "Awaitables и async task: co_await на практике",
+      "stub": true
+    }
+  ]
+}

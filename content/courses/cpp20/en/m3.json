@@ -1,0 +1,34 @@
+{
+  "id": "m3",
+  "moduleNumber": 3,
+  "title": "Ranges",
+  "significance": "flagship",
+  "prerequisites": ["m2"],
+  "lessons": [
+    {
+      "id": "m3-l1",
+      "title": "Range Concepts and Ranges Algorithms",
+      "stub": true
+    },
+    {
+      "id": "m3-l2",
+      "title": "Views: filter, transform, take, drop, Pipe Syntax",
+      "stub": true
+    },
+    {
+      "id": "m3-l3",
+      "title": "Composite Views: join, split, reverse, enumerate, iota",
+      "stub": true
+    },
+    {
+      "id": "m3-l4",
+      "title": "std::span: Non-Owning Contiguous View",
+      "stub": true
+    },
+    {
+      "id": "m3-l5",
+      "title": "Ranges Deep Dive: Custom Ranges, Sentinels, subrange",
+      "stub": true
+    }
+  ]
+}

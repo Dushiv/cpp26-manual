@@ -1,0 +1,24 @@
+{
+  "id": "m8",
+  "moduleNumber": 8,
+  "title": "Chrono: календарь и timezones",
+  "significance": "basic",
+  "prerequisites": ["m7"],
+  "lessons": [
+    {
+      "id": "m8-l1",
+      "title": "Типы дат: year_month_day, арифметика, hh_mm_ss",
+      "stub": true
+    },
+    {
+      "id": "m8-l2",
+      "title": "Timezones: time_zone, zoned_time, конвертация",
+      "stub": true
+    },
+    {
+      "id": "m8-l3",
+      "title": "chrono на практике: измерение, parse, форматирование",
+      "stub": true
+    }
+  ]
+}
