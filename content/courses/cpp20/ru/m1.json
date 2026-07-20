@@ -33,7 +33,30 @@
     },
     {
       "id": "m1-l2",
-      "stub": true
+      "title": "Designated initializers, aggregate improvements, `using enum`",
+      "background": null,
+      "motivation": "До C++20 инициализация структур с несколькими полями была ненадёжной: приходилось передавать значения позиционно, и добавление нового поля в середину структуры ломало весь код. Кроме того, `switch` по `enum class` требовал постоянно писать префикс типа, а в обратных циклах по вектору нужно было вставлять явное приведение к `int`, чтобы избежать предупреждений. C++20 закрывает все три проблемы: именованные инициализаторы делают brace-init читаемым и устойчивым к рефакторингу; `using enum` убирает обязательный префикс в switch; `std::ssize` даёт беззаботный сигнированный размер.",
+      "theory": "**Designated initializers** позволяют указывать имена полей прямо в фигурных скобках: `Config c{.host = \"localhost\", .port = 443}`. Поля без обозначения получают значение по умолчанию или инициализируются нулём. Обозначения должны идти в том же порядке, что объявлены поля (в отличие от C99, где порядок произвольный), нельзя смешивать помеченные и непомеченные инициализаторы и нельзя указывать одно поле дважды. Механизм работает только на агрегатах — классах без пользовательских конструкторов, деструкторов и виртуальных функций.\n\nДо C++20 производный тип переставал быть агрегатом, если имел базовый класс, и тогда brace-init требовал явного конструктора. C++20 снимает это ограничение: если базовый класс сам является агрегатом, производный также остаётся агрегатом и может быть инициализирован фигурными скобками. При инициализации базовый подобъект передаётся первым — вложенными фигурными скобками.\n\n**`using enum`** вводит все перечислители `enum class` в текущую область видимости: `using enum Color;` позволяет писать `case Red:` вместо `case Color::Red:`. Это делает `switch` по scoped enum таким же чистым, как по unscoped, не жертвуя изоляцией имён за пределами блока. Можно импортировать и один конкретный перечислитель: `using Color::Red;`.\n\n**`std::ssize(container)`** возвращает знаковый размер типа `std::ptrdiff_t` вместо беззнакового `std::size_t`. Это устраняет необходимость в явных приведениях в обратных циклах (`i >= 0` корректно работает только с знаковым индексом) и при сравнении размера с переменной типа `int`. Функция принимает любой диапазон с методом `.size()` или массив в стиле C.",
+      "examples": [
+        {
+          "id": "m1-l2-ex1",
+          "title": "Designated initializers и using enum",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\n\nstruct HttpRequest {\n    std::string method = \"GET\";\n    std::string path = \"/\";\n    int timeout_ms = 5000;\n    bool keep_alive = true;\n};\n\nenum class LogLevel { Trace, Debug, Info, Warning, Error };\n\nstd::string level_name(LogLevel level) {\n    using enum LogLevel;\n    switch (level) {\n        case Trace:   return \"TRACE\";\n        case Debug:   return \"DEBUG\";\n        case Info:    return \"INFO\";\n        case Warning: return \"WARNING\";\n        case Error:   return \"ERROR\";\n    }\n    return \"?\";\n}\n\nint main() {\n    // Only override what changes — rest gets defaults\n    HttpRequest req{.path = \"/api/v2/users\", .timeout_ms = 1000};\n    std::cout << \"method: \" << req.method << '\\n';\n    std::cout << \"path: \" << req.path << '\\n';\n    std::cout << \"timeout: \" << req.timeout_ms << \"ms\\n\";\n    std::cout << \"keep_alive: \" << std::boolalpha << req.keep_alive << '\\n';\n\n    std::cout << '\\n';\n    for (auto lv : {LogLevel::Debug, LogLevel::Warning, LogLevel::Error})\n        std::cout << level_name(lv) << '\\n';\n}",
+          "expectedOutput": "method: GET\npath: /api/v2/users\ntimeout: 1000ms\nkeep_alive: true\n\nDEBUG\nWARNING\nERROR",
+          "outputsVerified": true,
+          "compilerExplorerUrl": "https://godbolt.org/z/placeholder"
+        },
+        {
+          "id": "m1-l2-ex2",
+          "title": "Агрегатные базовые классы и std::ssize",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <vector>\n#include <string>\n#include <span>\n\nstruct Named {\n    std::string name;\n};\n\nstruct Point : Named {\n    double x, y;\n};\n\nstruct ColoredPoint : Point {\n    int r, g, b;\n};\n\n// std::ssize prevents -Wsign-compare warning\nvoid print_backward(std::span<const int> data) {\n    for (auto i = std::ssize(data) - 1; i >= 0; --i)\n        std::cout << data[i] << \" \";\n    std::cout << '\\n';\n}\n\nint main() {\n    // Aggregate init of derived types: base subobject comes first\n    Point p{{\"origin\"}, 0.0, 0.0};\n    std::cout << p.name << \": (\" << p.x << \", \" << p.y << \")\\n\";\n\n    // ColoredPoint : Point : Named — nest each base in order\n    ColoredPoint cp{{{\"red dot\"}, 3.0, 4.0}, 255, 0, 0};\n    std::cout << cp.name << \": (\" << cp.x << \", \" << cp.y << \") rgb(\"\n              << cp.r << \",\" << cp.g << \",\" << cp.b << \")\\n\";\n\n    std::vector<int> v = {10, 20, 30, 40, 50};\n    std::cout << \"backward: \";\n    print_backward(v);\n    std::cout << \"std::ssize(v) = \" << std::ssize(v) << '\\n';\n}",
+          "expectedOutput": "origin: (0, 0)\nred dot: (3, 4) rgb(255,0,0)\nbackward: 50 40 30 20 10 \nstd::ssize(v) = 5",
+          "outputsVerified": true,
+          "compilerExplorerUrl": "https://godbolt.org/z/placeholder"
+        }
+      ]
     },
     {
       "id": "m1-l3",

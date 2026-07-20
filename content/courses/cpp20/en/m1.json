@@ -33,7 +33,30 @@
     },
     {
       "id": "m1-l2",
-      "stub": true
+      "title": "Designated initializers, aggregate improvements, `using enum`",
+      "background": null,
+      "motivation": "Before C++20, initializing structs with multiple fields was fragile: values had to be supplied positionally, and inserting a new field in the middle silently broke all call sites. On top of that, `switch` on a `enum class` forced you to write the type prefix on every case label, and reverse loops over vectors required an ugly cast to `int` to silence sign-comparison warnings. C++20 closes all three gaps: designated initializers make brace-init readable and refactoring-safe; `using enum` removes the mandatory prefix inside switch blocks; `std::ssize` provides a painless signed size.",
+      "theory": "**Designated initializers** let you name fields directly in the braces: `Config c{.host = \"localhost\", .port = 443}`. Fields without a designator receive their default value or are zero-initialized. Designators must appear in the same order as the field declarations (unlike C99, which allows arbitrary order); mixing designated and non-designated initializers in the same list is ill-formed, and designating the same field twice is an error. The feature applies only to aggregates — classes with no user-provided constructors, destructors, or virtual functions.\n\nBefore C++20, a derived struct with a base class lost aggregate status, and brace-init required an explicit constructor. C++20 lifts this restriction: as long as the base class is itself an aggregate, the derived type remains an aggregate and can be brace-initialized. The base subobject is always passed first — as a nested pair of braces — and derived members follow.\n\n**`using enum`** brings all enumerators of an `enum class` into the current scope: after `using enum Color;` you can write `case Red:` instead of `case Color::Red:`. This makes `switch` on scoped enums as clean as on unscoped ones without sacrificing name isolation outside the block. You can also import a single enumerator: `using Color::Red;`.\n\n**`std::ssize(container)`** returns a signed size of type `std::ptrdiff_t` instead of the unsigned `std::size_t` that `.size()` and `std::size()` return. This eliminates casts in reverse loops (the comparison `i >= 0` is only safe with a signed index) and when comparing a container's size with a plain `int`. The function accepts any range with a `.size()` method or a C-style array.",
+      "examples": [
+        {
+          "id": "m1-l2-ex1",
+          "title": "Designated initializers and using enum",
+          "level": "basic",
+          "code": "#include <iostream>\n#include <string>\n\nstruct HttpRequest {\n    std::string method = \"GET\";\n    std::string path = \"/\";\n    int timeout_ms = 5000;\n    bool keep_alive = true;\n};\n\nenum class LogLevel { Trace, Debug, Info, Warning, Error };\n\nstd::string level_name(LogLevel level) {\n    using enum LogLevel;\n    switch (level) {\n        case Trace:   return \"TRACE\";\n        case Debug:   return \"DEBUG\";\n        case Info:    return \"INFO\";\n        case Warning: return \"WARNING\";\n        case Error:   return \"ERROR\";\n    }\n    return \"?\";\n}\n\nint main() {\n    // Only override what changes — rest gets defaults\n    HttpRequest req{.path = \"/api/v2/users\", .timeout_ms = 1000};\n    std::cout << \"method: \" << req.method << '\\n';\n    std::cout << \"path: \" << req.path << '\\n';\n    std::cout << \"timeout: \" << req.timeout_ms << \"ms\\n\";\n    std::cout << \"keep_alive: \" << std::boolalpha << req.keep_alive << '\\n';\n\n    std::cout << '\\n';\n    for (auto lv : {LogLevel::Debug, LogLevel::Warning, LogLevel::Error})\n        std::cout << level_name(lv) << '\\n';\n}",
+          "expectedOutput": "method: GET\npath: /api/v2/users\ntimeout: 1000ms\nkeep_alive: true\n\nDEBUG\nWARNING\nERROR",
+          "outputsVerified": true,
+          "compilerExplorerUrl": "https://godbolt.org/z/placeholder"
+        },
+        {
+          "id": "m1-l2-ex2",
+          "title": "Aggregate base classes and std::ssize",
+          "level": "intermediate",
+          "code": "#include <iostream>\n#include <vector>\n#include <string>\n#include <span>\n\nstruct Named {\n    std::string name;\n};\n\nstruct Point : Named {\n    double x, y;\n};\n\nstruct ColoredPoint : Point {\n    int r, g, b;\n};\n\n// std::ssize prevents -Wsign-compare warning\nvoid print_backward(std::span<const int> data) {\n    for (auto i = std::ssize(data) - 1; i >= 0; --i)\n        std::cout << data[i] << \" \";\n    std::cout << '\\n';\n}\n\nint main() {\n    // Aggregate init of derived types: base subobject comes first\n    Point p{{\"origin\"}, 0.0, 0.0};\n    std::cout << p.name << \": (\" << p.x << \", \" << p.y << \")\\n\";\n\n    // ColoredPoint : Point : Named — nest each base in order\n    ColoredPoint cp{{{\"red dot\"}, 3.0, 4.0}, 255, 0, 0};\n    std::cout << cp.name << \": (\" << cp.x << \", \" << cp.y << \") rgb(\"\n              << cp.r << \",\" << cp.g << \",\" << cp.b << \")\\n\";\n\n    std::vector<int> v = {10, 20, 30, 40, 50};\n    std::cout << \"backward: \";\n    print_backward(v);\n    std::cout << \"std::ssize(v) = \" << std::ssize(v) << '\\n';\n}",
+          "expectedOutput": "origin: (0, 0)\nred dot: (3, 4) rgb(255,0,0)\nbackward: 50 40 30 20 10 \nstd::ssize(v) = 5",
+          "outputsVerified": true,
+          "compilerExplorerUrl": "https://godbolt.org/z/placeholder"
+        }
+      ]
     },
     {
       "id": "m1-l3",
