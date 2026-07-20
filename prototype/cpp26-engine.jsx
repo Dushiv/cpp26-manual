@@ -20,6 +20,7 @@ async function loadCourseData(courseId, locale) {
 }
 
 const COURSE_TITLES = {
+  cpp20: { ru: "C++20 — для разработчиков на C++17", en: "C++20 — for C++17 developers" },
   cpp26: { ru: "C++26 — от нуля до полного понимания", en: "C++26 — from zero to full understanding" },
   cpp23: { ru: "C++23 — для разработчиков на C++17/20", en: "C++23 — for C++17/20 developers" },
 };
