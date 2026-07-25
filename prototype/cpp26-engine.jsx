@@ -94,6 +94,10 @@ const UI_STRINGS = {
     statusNotStarted: "Не начато",
     outputsPending: "выводы ждут прогона на GCC 16.1",
     loadError: "Не удалось загрузить контент урока. Обновите страницу или попробуйте позже.",
+    pickStandard: "Выбери стандарт для изучения",
+    allCourses: "Все курсы",
+    started: "● начато",
+    lessonCount: (n) => `${n} уроков`,
   },
   en: {
     courseTitle: "C++26 — from zero to full understanding",
@@ -163,6 +167,10 @@ const UI_STRINGS = {
     statusNotStarted: "Not started",
     outputsPending: "outputs await a run on GCC 16.1",
     loadError: "Failed to load lesson content. Please reload or try again later.",
+    pickStandard: "Choose your standard",
+    allCourses: "All courses",
+    started: "● started",
+    lessonCount: (n) => `${n} lessons`,
   },
 };
 
@@ -662,7 +670,8 @@ function LocaleSwitcher({ locale, setLocale }) {
   );
 }
 
-function CoursePicker({ onSelect }) {
+function CoursePicker({ onSelect, locale, setLocale }) {
+  const tr = (key, ...args) => t(locale, key, ...args);
   const COURSES = [
     { id: "cpp20", label: "C++20",
       tagline: "концепты · ranges · coroutines", lessons: 33 },
@@ -682,9 +691,12 @@ function CoursePicker({ onSelect }) {
     <div className="app">
       <style>{CSS}</style>
       <div className="picker">
+        <div className="picker-topbar">
+          <LocaleSwitcher locale={locale} setLocale={setLocale} />
+        </div>
         <div className="picker-hero">
           <h1 className="picker-title">C++ Learning Path</h1>
-          <p className="picker-sub">Выбери стандарт для изучения</p>
+          <p className="picker-sub">{tr("pickStandard")}</p>
         </div>
         <div className="picker-cards">
           {COURSES.map((c) => (
@@ -696,10 +708,10 @@ function CoursePicker({ onSelect }) {
               <div className="picker-card-label">{c.label}</div>
               <div className="picker-card-tagline">{c.tagline}</div>
               {c.disabled
-                ? <span className="picker-soon">скоро</span>
-                : <div className="picker-card-lessons">{c.lessons} уроков</div>}
+                ? <span className="picker-soon">{tr("soon")}</span>
+                : <div className="picker-card-lessons">{tr("lessonCount", c.lessons)}</div>}
               {!c.disabled && hasStarted(c.id) && (
-                <div className="picker-card-started">● начато</div>
+                <div className="picker-card-started">{tr("started")}</div>
               )}
             </div>
           ))}
@@ -709,9 +721,8 @@ function CoursePicker({ onSelect }) {
   );
 }
 
-function CourseView({ courseId, onBackToPicker }) {
+function CourseView({ courseId, onBackToPicker, locale, setLocale }) {
   const [saved] = useState(() => loadProgress(courseId));
-  const [locale, setLocale] = useState(saved && saved.locale ? saved.locale : "ru");
   const tr = (key, ...args) => t(locale, key, ...args);
   const [courseData, setCourseData] = useState(null);
   const [loadError, setLoadError] = useState(null);
@@ -738,10 +749,6 @@ function CourseView({ courseId, onBackToPicker }) {
   useEffect(() => {
     saveProgress(courseId, { cur, view, exStatus, mastery, viewed, strict, locale });
   }, [courseId, cur, view, exStatus, mastery, strict, locale]);
-
-  useEffect(() => {
-    document.documentElement.lang = locale;
-  }, [locale]);
 
   useEffect(() => { window.scrollTo(0, 0); }, [cur]);
 
@@ -928,14 +935,13 @@ function CourseView({ courseId, onBackToPicker }) {
       <style>{CSS}</style>
       <header className="topbar">
         <div className="topbar-left">
-          <button className="back-btn" onClick={onBackToPicker}>← {locale === "ru" ? "Все курсы" : "All courses"}</button>
+          <button className="back-btn" onClick={onBackToPicker}>← {tr("allCourses")}</button>
           <div className="brand"><BookOpen size={18} /><span>{COURSE_TITLES[courseId][locale]}</span></div>
         </div>
         <div className="prog">
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{tr("lessonsProgress", doneCount, real.length)}</span>
         </div>
-        <LocaleSwitcher locale={locale} setLocale={setLocale} />
         <AccountWidget session={session} onSignIn={signIn} onSignOut={signOut} />
       </header>
 
@@ -1244,7 +1250,8 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 
 /* CoursePicker */
 .picker { display:flex; flex-direction:column; align-items:center; justify-content:center;
-  min-height:100vh; padding:40px 20px; }
+  min-height:100vh; padding:40px 20px; position:relative; }
+.picker-topbar { position:absolute; top:20px; right:24px; }
 .picker-hero { text-align:center; margin-bottom:40px; }
 .picker-title { font-family:'IBM Plex Serif',Georgia,serif; font-size:28px; color:var(--ink); margin:0 0 8px; }
 .picker-sub { color:var(--mut); margin:0; }
@@ -1284,6 +1291,22 @@ function App() {
     return null;
   });
 
+  const [locale, setLocale] = useState(() => {
+    const saved = localStorage.getItem("locale");
+    if (saved) return saved;
+    const active = localStorage.getItem("active-course");
+    if (active) {
+      const prog = loadProgress(active);
+      if (prog && prog.locale) return prog.locale;
+    }
+    return "ru";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("locale", locale);
+    document.documentElement.lang = locale;
+  }, [locale]);
+
   function selectCourse(id) {
     localStorage.setItem("active-course", id);
     setCourseId(id);
@@ -1294,8 +1317,8 @@ function App() {
     setCourseId(null);
   }
 
-  if (!courseId) return <CoursePicker onSelect={selectCourse} />;
-  return <CourseView key={courseId} courseId={courseId} onBackToPicker={backToPicker} />;
+  if (!courseId) return <CoursePicker onSelect={selectCourse} locale={locale} setLocale={setLocale} />;
+  return <CourseView key={courseId} courseId={courseId} onBackToPicker={backToPicker} locale={locale} setLocale={setLocale} />;
 }
 
 window.CPP26Engine = App;
