@@ -670,15 +670,15 @@ function LocaleSwitcher({ locale, setLocale }) {
   );
 }
 
-function CoursePicker({ onSelect, locale, setLocale }) {
+function CoursePicker({ onSelect, locale, setLocale, session, onSignIn, onSignOut }) {
   const tr = (key, ...args) => t(locale, key, ...args);
   const COURSES = [
     { id: "cpp20", label: "C++20",
-      tagline: "концепты · ranges · coroutines", lessons: 33 },
+      tagline: { ru: "концепты · ranges · coroutines", en: "concepts · ranges · coroutines" }, lessons: 33 },
     { id: "cpp23", label: "C++23",
-      tagline: "deducing this · expected · generator", lessons: 30 },
+      tagline: { ru: "deducing this · expected · generator", en: "deducing this · expected · generator" }, lessons: 30 },
     { id: "cpp26", label: "C++26",
-      tagline: "reflection · contracts · execution", lessons: 33 },
+      tagline: { ru: "reflection · contracts · execution", en: "reflection · contracts · execution" }, lessons: 33 },
   ];
 
   function hasStarted(cid) {
@@ -688,11 +688,13 @@ function CoursePicker({ onSelect, locale, setLocale }) {
   }
 
   return (
+    <LocaleContext.Provider value={locale}>
     <div className="app">
       <style>{CSS}</style>
       <div className="picker">
         <div className="picker-topbar">
           <LocaleSwitcher locale={locale} setLocale={setLocale} />
+          <AccountWidget session={session} onSignIn={onSignIn} onSignOut={onSignOut} />
         </div>
         <div className="picker-hero">
           <h1 className="picker-title">C++ Learning Path</h1>
@@ -706,7 +708,7 @@ function CoursePicker({ onSelect, locale, setLocale }) {
               onClick={() => !c.disabled && onSelect(c.id)}
             >
               <div className="picker-card-label">{c.label}</div>
-              <div className="picker-card-tagline">{c.tagline}</div>
+              <div className="picker-card-tagline">{c.tagline[locale]}</div>
               {c.disabled
                 ? <span className="picker-soon">{tr("soon")}</span>
                 : <div className="picker-card-lessons">{tr("lessonCount", c.lessons)}</div>}
@@ -718,10 +720,11 @@ function CoursePicker({ onSelect, locale, setLocale }) {
         </div>
       </div>
     </div>
+    </LocaleContext.Provider>
   );
 }
 
-function CourseView({ courseId, onBackToPicker, locale, setLocale }) {
+function CourseView({ courseId, onBackToPicker, locale, setLocale, session }) {
   const [saved] = useState(() => loadProgress(courseId));
   const tr = (key, ...args) => t(locale, key, ...args);
   const [courseData, setCourseData] = useState(null);
@@ -742,29 +745,14 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale }) {
   const [mastery, setMastery] = useState(saved && saved.mastery ? saved.mastery : {});
   const [viewed, setViewed] = useState(saved && saved.viewed ? saved.viewed : {});
   const [strict, setStrict] = useState(saved ? !!saved.strict : false);
-  const [session, setSession] = useState(null);
   const lastSyncedBlob = useRef(null);
-  const pulledForUserId = useRef(null);
+  const prevUserIdRef = useRef(null);
 
   useEffect(() => {
     saveProgress(courseId, { cur, view, exStatus, mastery, viewed, strict, locale });
   }, [courseId, cur, view, exStatus, mastery, strict, locale]);
 
   useEffect(() => { window.scrollTo(0, 0); }, [cur]);
-
-  function signIn(provider) {
-    const client = getSupabaseClient();
-    if (!client) return;
-    client.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin + window.location.pathname } })
-      .then(({ error }) => { if (error) console.error("signInWithOAuth error:", error); })
-      .catch(console.error);
-  }
-  async function signOut() {
-    const client = getSupabaseClient();
-    if (!client) return;
-    if (session) await pushIfChanged(session.user.id);
-    client.auth.signOut().catch(() => {});
-  }
 
   function currentLocalBlob() {
     return loadProgress(courseId) || { cur: "m1-l1", view: "lesson", exStatus: {}, mastery: {}, strict: false, locale: "ru" };
@@ -832,25 +820,16 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale }) {
   }
 
   useEffect(() => {
-    const client = getSupabaseClient();
-    if (!client) return;
-    function handleSession(newSession) {
-      setSession(newSession);
-      if (newSession && pulledForUserId.current !== newSession.user.id) {
-        pulledForUserId.current = newSession.user.id;
-        syncOnLogin(newSession.user.id);
-      }
-      if (!newSession) {
-        // Only a real sign-out (we had pulled for a user) clears progress;
-        // a null session on initial load = anonymous, must NOT wipe local data.
-        if (pulledForUserId.current !== null) resetProgress();
-        pulledForUserId.current = null;
-      }
+    const userId = session ? session.user.id : null;
+    if (userId && userId !== prevUserIdRef.current) {
+      prevUserIdRef.current = userId;
+      syncOnLogin(userId);
     }
-    client.auth.getSession().then(({ data }) => handleSession(data.session)).catch(() => {});
-    const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => handleSession(newSession));
-    return () => sub.subscription.unsubscribe();
-  }, []);
+    if (!userId && prevUserIdRef.current !== null) {
+      resetProgress();
+      prevUserIdRef.current = null;
+    }
+  }, [session?.user?.id]);
 
   useEffect(() => {
     if (!session) return;
@@ -942,7 +921,6 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale }) {
           <div className="prog-bar"><div className="prog-fill" style={{ width: (real.length ? (doneCount / real.length * 100) : 0) + "%" }} /></div>
           <span className="prog-txt">{tr("lessonsProgress", doneCount, real.length)}</span>
         </div>
-        <AccountWidget session={session} onSignIn={signIn} onSignOut={signOut} />
       </header>
 
       <div className="body">
@@ -1251,7 +1229,7 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 /* CoursePicker */
 .picker { display:flex; flex-direction:column; align-items:center; justify-content:center;
   min-height:100vh; padding:40px 20px; position:relative; }
-.picker-topbar { position:absolute; top:20px; right:24px; }
+.picker-topbar { position:absolute; top:20px; right:24px; display:flex; align-items:center; gap:12px; }
 .picker-hero { text-align:center; margin-bottom:40px; }
 .picker-title { font-family:'IBM Plex Serif',Georgia,serif; font-size:28px; color:var(--ink); margin:0 0 8px; }
 .picker-sub { color:var(--mut); margin:0; }
@@ -1281,31 +1259,38 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 `;
 
 function App() {
-  const [courseId, setCourseId] = useState(() => {
-    const active = localStorage.getItem("active-course");
-    if (active) return active;
-    if (localStorage.getItem("cpp26-progress")) {
-      localStorage.setItem("active-course", "cpp26");
-      return "cpp26";
-    }
-    return null;
-  });
+  const [courseId, setCourseId] = useState(null);
 
-  const [locale, setLocale] = useState(() => {
-    const saved = localStorage.getItem("locale");
-    if (saved) return saved;
-    const active = localStorage.getItem("active-course");
-    if (active) {
-      const prog = loadProgress(active);
-      if (prog && prog.locale) return prog.locale;
-    }
-    return "ru";
-  });
+  const [locale, setLocale] = useState(() => localStorage.getItem("locale") || "ru");
+
+  const [session, setSession] = useState(null);
 
   useEffect(() => {
     localStorage.setItem("locale", locale);
     document.documentElement.lang = locale;
   }, [locale]);
+
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.getSession().then(({ data }) => setSession(data.session)).catch(() => {});
+    const { data: sub } = client.auth.onAuthStateChange((_event, newSession) => setSession(newSession));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  function signIn(provider) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.signInWithOAuth({ provider, options: { redirectTo: window.location.origin + window.location.pathname } })
+      .then(({ error }) => { if (error) console.error("signInWithOAuth error:", error); })
+      .catch(console.error);
+  }
+
+  async function signOut() {
+    const client = getSupabaseClient();
+    if (!client) return;
+    client.auth.signOut().catch(() => {});
+  }
 
   function selectCourse(id) {
     localStorage.setItem("active-course", id);
@@ -1317,8 +1302,8 @@ function App() {
     setCourseId(null);
   }
 
-  if (!courseId) return <CoursePicker onSelect={selectCourse} locale={locale} setLocale={setLocale} />;
-  return <CourseView key={courseId} courseId={courseId} onBackToPicker={backToPicker} locale={locale} setLocale={setLocale} />;
+  if (!courseId) return <CoursePicker onSelect={selectCourse} locale={locale} setLocale={setLocale} session={session} onSignIn={signIn} onSignOut={signOut} />;
+  return <CourseView key={courseId} courseId={courseId} onBackToPicker={backToPicker} locale={locale} setLocale={setLocale} session={session} />;
 }
 
 window.CPP26Engine = App;
