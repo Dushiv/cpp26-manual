@@ -1007,7 +1007,7 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale, session }) {
                     {lesson.examples.length > 0 && (
                       <section>
                         <h2>{tr("examples")}</h2>
-                        {lesson.examples.map((ex, i) => <ExampleCard key={i} ex={ex} idx={i} />)}
+                        {lesson.examples.map((ex, i) => <ExampleCard key={ex.id} ex={ex} idx={i} />)}
                       </section>
                     )}
 
