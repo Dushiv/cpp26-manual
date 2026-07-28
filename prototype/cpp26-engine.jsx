@@ -268,21 +268,26 @@ async function pullProgress(client, userId, courseId) {
   try {
     const { data, error } = await client.from("progress").select("blob")
       .eq("user_id", userId).eq("course_id", courseId).maybeSingle();
-    if (error) return { ok: false };
+    if (error) { console.error("pullProgress error:", courseId, error); return { ok: false }; }
     return { ok: true, blob: data ? data.blob : null };
   } catch (e) {
+    console.error("pullProgress threw:", courseId, e);
     return { ok: false };
   }
 }
 
 async function pushProgress(client, userId, courseId, blob) {
   try {
-    await client.from("progress").upsert(
+    // supabase-js v2 returns DB errors in `error` rather than throwing, so the
+    // try/catch alone would swallow them (e.g. a 23505 duplicate-key). Inspect it.
+    const { error } = await client.from("progress").upsert(
       { user_id: userId, course_id: courseId, blob, updated_at: new Date().toISOString() },
       { onConflict: "user_id,course_id" }
     );
+    if (error) console.error("pushProgress error:", courseId, error);
   } catch (e) {
     // network/Supabase unavailable — caller retries on the next sync tick
+    console.error("pushProgress threw:", courseId, e);
   }
 }
 
