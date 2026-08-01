@@ -1264,7 +1264,11 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 `;
 
 function App() {
-  const [courseId, setCourseId] = useState(null);
+  // Restore the active course on load so a reload / PWA restart returns the
+  // learner to the course (and, via saved progress, the exact lesson) they were
+  // on — instead of dumping them back on the picker. selectCourse/backToPicker
+  // keep this localStorage key in sync.
+  const [courseId, setCourseId] = useState(() => localStorage.getItem("active-course") || null);
 
   const [locale, setLocale] = useState(() => localStorage.getItem("locale") || "ru");
 
