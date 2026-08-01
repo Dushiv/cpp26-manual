@@ -1017,7 +1017,11 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale, session }) {
                       <h1>{renderInline(lesson.title, "h-")}</h1></div>
                     <div className="empty-big">{tr("stubLesson")}</div>
                   </div>
-                : <div className="lesson">
+                // key={lesson.id} remounts the whole lesson subtree on navigation
+                // so per-lesson local state (revealed example outputs, exercise
+                // verdicts) resets cleanly even when example/exercise ids collide
+                // across lessons (content reuses generic ids like "ex1").
+                : <div className="lesson" key={lesson.id}>
                     <div className="lhead">
                       <div className="lhead-top">{tr("module")} {lesson.mod.moduleNumber} · {lesson.mod.title}</div>
                       <h1>{lesson.title}</h1>
