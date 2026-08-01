@@ -175,6 +175,20 @@ const UI_STRINGS = {
 };
 
 const LocaleContext = React.createContext("ru");
+// Resolves in-prose lesson references (e.g. "m4-l2") to the lesson's human
+// title and provides navigation. Set by CourseView; null elsewhere, in which
+// case a reference falls back to showing its raw id.
+const LessonRefContext = React.createContext(null);
+
+// Renders a "mN-lM" prose reference as the target lesson's title, as a clickable
+// link when the id resolves. stopPropagation keeps clicks inside e.g. a sidebar
+// row from also triggering that row's own onClick.
+function LessonRef({ id }) {
+  const ref = React.useContext(LessonRefContext);
+  const title = ref && ref.titleOf(id);
+  if (!title) return id;
+  return <a className="lref" onClick={(e) => { e.stopPropagation(); ref.goTo(id); }}>{renderInline(title, "lref-" + id + "-")}</a>;
+}
 
 function t(locale, key, ...args) {
   const dict = UI_STRINGS[locale] || UI_STRINGS.ru;
@@ -319,13 +333,16 @@ function godboltVerdict(data) {
 
 function renderInline(text, kp) {
   const parts = [];
-  const re = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  // Inline-code and bold are matched before the lesson-ref token, so a backticked
+  // `m4-l2` stays code rather than becoming a link.
+  const re = /(`[^`]+`|\*\*[^*]+\*\*|\bm\d+-l\d+[a-z]?\b)/g;
   let last = 0, m, i = 0;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parts.push(text.slice(last, m.index));
     const t = m[0];
     if (t[0] === "`") parts.push(<code key={kp + "c" + i} className="ic">{t.slice(1, -1)}</code>);
-    else parts.push(<strong key={kp + "b" + i}>{t.slice(2, -2)}</strong>);
+    else if (t.startsWith("**")) parts.push(<strong key={kp + "b" + i}>{t.slice(2, -2)}</strong>);
+    else parts.push(<LessonRef key={kp + "l" + i} id={t} />);
     last = re.lastIndex; i++;
   }
   if (last < text.length) parts.push(text.slice(last));
@@ -913,8 +930,14 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale, session }) {
 
   const st = lessonStatus(lesson);
 
+  const lessonRef = {
+    titleOf: (id) => { const l = findLesson(id); return l ? l.title : null; },
+    goTo: (id) => { if (findLesson(id)) { setCur(id); setView("lesson"); } },
+  };
+
   return (
     <LocaleContext.Provider value={locale}>
+    <LessonRefContext.Provider value={lessonRef}>
     <div className="app">
       <style>{CSS}</style>
       <header className="topbar">
@@ -1052,6 +1075,7 @@ function CourseView({ courseId, onBackToPicker, locale, setLocale, session }) {
         </main>
       </div>
     </div>
+    </LessonRefContext.Provider>
     </LocaleContext.Provider>
   );
 }
@@ -1131,6 +1155,8 @@ section h2 { font-size:19px; margin:0 0 12px; padding-bottom:7px; border-bottom:
 .thr { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--amber); font-weight:400; }
 .lp { margin:0 0 13px; }
 .ic { background:var(--codebg); border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-size:.9em; color:#e3c98c; }
+.lref { color:var(--amber); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; text-underline-offset:2px; }
+.lref:hover { text-decoration-style:solid; }
 .md-h2 { font-size:17px; font-weight:700; margin:22px 0 8px; }
 .md-h3, .md-h4 { font-size:14px; font-weight:700; margin:18px 0 6px; color:var(--ink); }
 .md-ul, .md-ol { margin:0 0 13px 22px; padding:0; }
